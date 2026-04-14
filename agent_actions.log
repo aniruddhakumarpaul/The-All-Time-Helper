@@ -1,0 +1,2 @@
+2026-04-14 13:22:47,772 - INFO - [AGENT: Unknown Agent] | TOOUGHT:  | ACTION: No Tool
+2026-04-14 13:22:47,773 - ERROR - Failed to log step: 'charmap' codec can't encode character '\U0001f4e2' in position 2: character maps to <undefined>

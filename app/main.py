@@ -37,9 +37,9 @@ async def lifespan(app: FastAPI):
                 
                 public_url = ngrok.connect(9000).public_url
                 print("\n" + "="*50)
-                print("🚀 THE ALL TIME HELPER - PRO IS ONLINE!")
-                print(f"🌍 PUBLIC (Ngrok): {public_url}")
-                print(f"🏠 LOCAL: http://localhost:9000")
+                print("THE ALL TIME HELPER - PRO IS ONLINE!")
+                print(f"PUBLIC (Ngrok): {public_url}")
+                print(f"LOCAL: http://localhost:9000")
                 print("="*50 + "\n")
             else:
                 print(f"🌍 THE ALL TIME HELPER - PRO IS STILL ONLINE via {tunnels[0].public_url}")

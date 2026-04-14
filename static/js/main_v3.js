@@ -1,5 +1,6 @@
-console.log("DEBUG: All Time Helper Script Initializing...");
-        // Global Bot State
+document.addEventListener('DOMContentLoaded', () => {
+    console.log("DEBUG: All Time Helper Script Initializing...");
+    // Global Bot State
         window.botState = 'idle';
         const LOGO_DATA = "/static/img/logo.png";
         const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";
@@ -7,7 +8,7 @@ console.log("DEBUG: All Time Helper Script Initializing...");
         let user = null; 
         let chats = [];
         let activeId = null; let abortC = null; let currentImg = null;
-        let selectedModel = 'gemma2:2b';
+        let selectedModel = 'agentic-pro';
         let currentBlobUrl = null;
         let chatToDelete = null;
         let isRenaming = false;
@@ -61,7 +62,7 @@ console.log("DEBUG: All Time Helper Script Initializing...");
             try {
                 const res = await fetch('/'+t, { 
                     method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '69420' },
                     body: JSON.stringify(p) 
                 });
                 const data = await res.json();
@@ -208,6 +209,10 @@ console.log("DEBUG: All Time Helper Script Initializing...");
             applyThemeChoice(pref);
         }
         initTheme();
+        
+        // Final UI tweak
+        document.getElementById('active-model-name').innerText = 'Agentic Swarm (Pro)';
+        
         // -----------------------
         function toggleSet(id) { document.getElementById(id).classList.toggle('on'); }
 
@@ -370,6 +375,55 @@ console.log("DEBUG: All Time Helper Script Initializing...");
                             <pre><code class="${langClass}">${escapedCode}</code></pre>
                         </div>`;
                 };
+                renderer.image = function(href, title, text) {
+                    if (typeof href === 'object') {
+                        const obj = href;
+                        href = obj.href || '';
+                        text = obj.text || '';
+                        title = obj.title || '';
+                    }
+                    // Strip any previous retry param so we start clean
+                    const baseUrl = href.replace(/&_r=\d+/, '').replace(/\?_r=\d+/, '');
+                    const safeHref = baseUrl.replace(/'/g, "\\'");
+                    const safeAlt = (text || 'AI Generated Image').replace(/'/g, "\\'");
+                    const uniqueId = 'img-' + Math.random().toString(36).substr(2, 9);
+
+                    return `
+                        <div class="ai-img-wrapper" id="wrap-${uniqueId}">
+                            <div class="ai-img-loading" id="load-${uniqueId}">
+                                <div class="img-shimmer"></div>
+                                <span>🎨 Generating image...</span>
+                            </div>
+                            <img 
+                                id="${uniqueId}"
+                                src="${baseUrl}" 
+                                alt="${safeAlt}" 
+                                title="${title || ''}" 
+                                class="chat-rendered-img"
+                                style="display:none;"
+                                onclick="window.openImageModal('${safeHref}')"
+                                onload="
+                                    document.getElementById('load-${uniqueId}').style.display='none';
+                                    this.style.display='block';
+                                "
+                                onerror="
+                                    this.retryCount = (this.retryCount || 0) + 1;
+                                    if (this.retryCount <= 10) {
+                                        const s = this;
+                                        const delay = Math.min(5000 * this.retryCount, 30000);
+                                        const loadEl = document.getElementById('load-${uniqueId}');
+                                        if(loadEl) loadEl.querySelector('span').textContent = '🎨 Generating... (' + this.retryCount + '/10)';
+                                        setTimeout(() => { s.src = '${safeHref}' + (('${safeHref}'.includes('?')) ? '&' : '?') + '_r=' + s.retryCount; }, delay);
+                                    } else {
+                                        const loadEl = document.getElementById('load-${uniqueId}');
+                                        if(loadEl) loadEl.innerHTML = '<div style=\\'padding:16px;color:var(--text-sub)\\'>⚠️ Image timed out. <a href=\\'${safeHref}\\' target=\\'_blank\\' style=\\'color:var(--accent-blue)\\'>Open in new tab →</a></div>';
+                                    }
+                                "
+
+                            >
+                        </div>`;
+                };
+
                 return marked.parse(text, { renderer: renderer });
             } catch (e) {
                 console.error("Markdown Error:", e);
@@ -603,7 +657,8 @@ console.log("DEBUG: All Time Helper Script Initializing...");
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
+                        'Authorization': `Bearer ${token}`,
+                        'ngrok-skip-browser-warning': '69420'
                     },
                     body: JSON.stringify({
                         prompt: p, 
@@ -706,7 +761,7 @@ console.log("DEBUG: All Time Helper Script Initializing...");
             if(token) {
                 try {
                     console.log("DEBUG: Fetching chats from cloud...");
-                    const res = await fetch('/get_chats', { headers: { 'Authorization': `Bearer ${token}` } });
+                    const res = await fetch('/get_chats', { headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' } });
                     const data = await res.json();
                     if(data.success && data.chats) {
                         console.log("DEBUG: Cloud sync returned chats:", data.chats.length);
@@ -734,7 +789,7 @@ console.log("DEBUG: All Time Helper Script Initializing...");
                     console.log("DEBUG: Syncing chats to cloud...", chats.length);
                     const res = await fetch('/sync_chats', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' },
                         body: JSON.stringify(chats)
                     });
                     const data = await res.json();
@@ -814,34 +869,9 @@ console.log("DEBUG: All Time Helper Script Initializing...");
                 modelMenu.style.display = 'none';
             }
         });
-window.setAtmosphere = (mood) => {
-    const orbs = {
-        'calm': { o1: 'rgba(66, 133, 244, 0.4)', o2: 'rgba(0, 255, 255, 0.3)' },
-        'intense': { o1: 'rgba(255, 50, 50, 0.4)', o2: 'rgba(255, 0, 150, 0.3)' },
-        'coding': { o1: 'rgba(0, 255, 100, 0.4)', o2: 'rgba(0, 150, 255, 0.3)' },
-        'thinking': { o1: 'rgba(255, 200, 0, 0.4)', o2: 'rgba(255, 100, 0, 0.3)' }
-    };
-    const theme = orbs[mood] || orbs.calm;
-    document.documentElement.style.setProperty('--bg-orb-1', theme.o1);
-    document.documentElement.style.setProperty('--bg-orb-2', theme.o2);
-};
-
-window.openImageModal = function(src) {
-    const modal = document.getElementById('image-modal');
-    const img = document.getElementById('lightbox-img');
-    if (!modal || !img) return;
-    img.src = src;
-    modal.style.display = 'flex';
-    setTimeout(() => modal.classList.add('active'), 10);
-    history.pushState({ view: 'lightbox' }, "");
-};
-
-window.closeImageModal = function() {
-    const modal = document.getElementById('image-modal');
-    if (!modal) return;
-    modal.classList.remove('active');
-    setTimeout(() => modal.style.display = 'none', 300);
-};
+// NOTE: setAtmosphere, openImageModal, closeImageModal are defined
+// inside the DOMContentLoaded block above and exported to window there.
+// Duplicate outer definitions removed to prevent initialization conflicts.
 
 // --- Mobile hardware back button & Global Shortcuts ---
 window.addEventListener('popstate', (e) => {
@@ -932,10 +962,39 @@ window.addEventListener('touchend', () => {
     touchDiffY = 0;
 });
 
-const logoImg = document.getElementById('main-logo-img');
-if(logoImg) logoImg.addEventListener('click', () => {
-    jiggleLogo();
-    const moods = ['calm', 'intense', 'coding', 'thinking'];
-    const randMood = moods[Math.floor(Math.random() * moods.length)];
-    setAtmosphere(randMood);
+    const logoImg = document.getElementById('main-logo-img');
+    if(logoImg) logoImg.addEventListener('click', () => {
+        jiggleLogo();
+        const moods = ['calm', 'intense', 'coding', 'thinking'];
+        const randMood = moods[Math.floor(Math.random() * moods.length)];
+        window.setAtmosphere(randMood);
+    });
+
+    // --- Global Function Mapping for HTML onclick ---
+    window.handleAuth = handleAuth;
+    window.switchAuth = switchAuth;
+    window.signOut = signOut;
+    window.toggleDropdown = toggleDropdown;
+    window.selModel = selModel;
+    window.send = send;
+    window.startNewChat = startNewChat;
+    window.loadChat = loadChat;
+    window.showDeleteConfirm = showDeleteConfirm;
+    window.closeDeleteConfirm = closeDeleteConfirm;
+    window.clearImgPreview = clearImgPreview;
+    window.previewImg = previewImg;
+    window.toggleSidebar = toggleSidebar;
+    window.triggerBotReaction = triggerBotReaction;
+    window.copyCode = copyCode;
+    window.downloadCode = downloadCode;
+    window.startEditPrompt = startEditPrompt;
+    window.submitEdit = submitEdit;
+    window.openSettings = openSettings;
+    // BUG FIX: Restored correct closeSettings.
+    // The previous version only closed the modal when clicking the backdrop itself,
+    // which meant the X button (which has class 'close-settings') worked but
+    // calling closeSettings() directly from openSettings() button logic did not.
+    window.closeSettings = closeSettings;
+    // openImageModal and closeImageModal are already exported at lines 844/854 above.
+
 });

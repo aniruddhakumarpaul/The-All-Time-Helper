@@ -1,0 +1,11 @@
+langchain
+langchain-groq
+langchain-community
+crewai
+chromadb
+duckduckgo-search
+pydantic>=2.0.0
+fastapi
+python-dotenv
+openai
+requests
