@@ -42,8 +42,8 @@ function updPal(q) {
     // 1. Actions
     const actions = [
         { t: 'New Chat', i: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>', a: () => startNewChat() },
-        { t: 'Dark Theme', i: '🌙', a: () => { document.body.setAttribute('data-theme', 'dark'); if(window.updUI) updUI(); } },
-        { t: 'Light Theme', i: '☀️', a: () => { document.body.setAttribute('data-theme', 'light'); if(window.updUI) updUI(); } },
+        { t: 'Dark Theme', i: '🌙', a: () => { if(window.applyThemeChoice) window.applyThemeChoice('dark'); } },
+        { t: 'Light Theme', i: '☀️', a: () => { if(window.applyThemeChoice) window.applyThemeChoice('light'); } },
         { t: 'Settings', i: '⚙️', a: () => openSettings() }
     ];
 
@@ -53,9 +53,9 @@ function updPal(q) {
 
     // 2. Models
     const models = [
-        { t: 'Model: Antigravity Pro', i: '💎', a: () => selModel('gemini-1.5-pro-latest', 'Antigravity 1.5 Pro (Cloud)') },
-        { t: 'Model: Gemma 2', i: '⚡', a: () => selModel('gemma2:2b', 'Gemma 2 (Fast&Fun)') },
-        { t: 'Model: Mistral', i: '🌊', a: () => selModel('dolphin-mistral', 'Mistral (Uncensored)') }
+        { t: 'Model: Antigravity Pro', i: '💎', a: () => { if(window.selModel) window.selModel('gemini-1.5-pro-latest', 'Antigravity Pro (Cloud)'); } },
+        { t: 'Model: Gemma 2', i: '⚡', a: () => { if(window.selModel) window.selModel('gemma2:2b', 'Gemma 2 (Fast&Fun)'); } },
+        { t: 'Model: Llama 3.2', i: '🦙', a: () => { if(window.selModel) window.selModel('llama3.2', 'Llama 3.2 (Super Light)'); } }
     ];
     models.forEach(m => {
         if (m.t.toLowerCase().includes(q.toLowerCase())) palResults.push(m);

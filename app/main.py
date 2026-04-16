@@ -92,7 +92,8 @@ async def serve_ui(request: Request):
 async def get_status():
     import requests
     try:
-        requests.get("http://localhost:11434", timeout=0.5)
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        requests.get(ollama_url, timeout=0.5)
         return {"running": True}
     except:
         return {"running": False}

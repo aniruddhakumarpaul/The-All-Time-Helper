@@ -4,6 +4,7 @@ import random
 from pydantic import BaseModel
 from typing import Optional
 from app.database import get_db
+from app.repository import UserRepository
 from app.security import get_password_hash, verify_password, create_access_token
 import time
 
@@ -57,9 +58,7 @@ class VerifyRequest(BaseModel):
 
 @router.post("/signup")
 def signup(req: SignupRequest, db: sqlite3.Connection = Depends(get_db)):
-    c = db.cursor()
-    c.execute("SELECT email FROM users WHERE email=?", (req.email,))
-    if c.fetchone():
+    if UserRepository.get_user_by_email(db, req.email):
         return {"success": False, "error": "User exists"}
     
     hashed_pwd = get_password_hash(req.pwd)
@@ -67,9 +66,7 @@ def signup(req: SignupRequest, db: sqlite3.Connection = Depends(get_db)):
     expiry = time.time() + 300 # 5 minutes
     
     try:
-        c.execute("INSERT INTO users (email, hashed_password, verified, otp, otp_expiry, name) VALUES (?, ?, 0, ?, ?, ?)",
-                  (req.email, hashed_pwd, otp, expiry, req.name))
-        db.commit()
+        UserRepository.create_user(db, req.email, hashed_pwd, req.name, otp, expiry)
     except sqlite3.IntegrityError:
         return {"success": False, "error": "Database error"}
         
@@ -78,9 +75,7 @@ def signup(req: SignupRequest, db: sqlite3.Connection = Depends(get_db)):
 
 @router.post("/login")
 def login(req: LoginRequest, db: sqlite3.Connection = Depends(get_db)):
-    c = db.cursor()
-    c.execute("SELECT hashed_password, verified, name FROM users WHERE email=?", (req.email,))
-    user = c.fetchone()
+    user = UserRepository.get_user_by_email(db, req.email)
     
     if not user or not verify_password(req.pwd, user['hashed_password']):
         return {"success": False, "error": "Bad login"}
@@ -88,8 +83,7 @@ def login(req: LoginRequest, db: sqlite3.Connection = Depends(get_db)):
     if user['verified'] == 0:
         otp = str(random.randint(100000, 999999))
         expiry = time.time() + 300
-        c.execute("UPDATE users SET otp=?, otp_expiry=? WHERE email=?", (otp, expiry, req.email))
-        db.commit()
+        UserRepository.update_otp(db, req.email, otp, expiry)
         send_otp_email(req.email, otp)
         return {"success": True, "unverified": True}
         
@@ -99,18 +93,15 @@ def login(req: LoginRequest, db: sqlite3.Connection = Depends(get_db)):
 
 @router.post("/verify")
 def verify(req: VerifyRequest, db: sqlite3.Connection = Depends(get_db)):
-    c = db.cursor()
-    c.execute("SELECT name, otp_expiry FROM users WHERE email=? AND otp=?", (req.email, req.otp))
-    user = c.fetchone()
+    user = UserRepository.get_user_by_email(db, req.email)
     
-    if not user:
+    if not user or user['otp'] != req.otp:
         return {"success": False, "error": "Bad OTP"}
         
     if time.time() > user['otp_expiry']:
         return {"success": False, "error": "OTP Expired. Please log in again to request a new one."}
         
-    c.execute("UPDATE users SET verified=1 WHERE email=?", (req.email,))
-    db.commit()
+    UserRepository.verify_user(db, req.email)
     
     # Generate JWT after verification
     token = create_access_token(data={"sub": req.email})

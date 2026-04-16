@@ -22,3 +22,33 @@ To: test@example.com
 Subject: Audit Test
 Body: This is a test.
 -----------------------
+
+--- SIMULATED EMAIL ---
+To: mentalhealthsupport@example.com
+Subject: Mental Health Guidance Needed
+Body: I am having issues with my mental health need guidance
+-----------------------
+
+--- SIMULATED EMAIL ---
+To: user@example.com
+Subject: Mental Health Guidance
+Body: I am having issues with my mental health and need guidance. I would appreciate any support or resources you can provide.
+-----------------------
+
+--- SIMULATED EMAIL ---
+To: user@example.com
+Subject: Mental Health Guidance
+Body: I am having issues with my mental health and need guidance. I would appreciate any support or resources you can provide.
+-----------------------
+
+--- SIMULATED EMAIL ---
+To: user@example.com
+Subject: Hi
+Body: Hello, how are you?
+-----------------------
+
+--- SIMULATED EMAIL ---
+To: user@example.com
+Subject: Hi, how can I assist you today?
+Body: Hello, how are you?
+-----------------------

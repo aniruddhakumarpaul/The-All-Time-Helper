@@ -2,21 +2,15 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 import sqlite3
 import json
-import base64
-import requests
 import traceback
 import time
 from pydantic import BaseModel
 from typing import List, Optional, Any
 from app.database import get_db
+from app.repository import ChatRepository
 from app.security import get_current_user
 
-import os
-from openai import OpenAI
-
 router = APIRouter()
-
-OLLAMA_URL = "http://localhost:11434/api/chat"
 
 class ChatRequest(BaseModel):
     prompt: str
@@ -28,43 +22,15 @@ class ChatRequest(BaseModel):
 
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
-    c = db.cursor()
-    c.execute("SELECT id, title, messages_json FROM chats WHERE user_email=? ORDER BY updated_at ASC", (current_user,))
-    rows = c.fetchall()
-    chats_array = []
-    for r in rows:
-        ms = []
-        if r['messages_json']:
-            try:
-                ms = json.loads(r['messages_json'])
-            except:
-                pass
-        chats_array.append({
-            "id": r['id'],
-            "title": r['title'],
-            "ms": ms
-        })
+    chats_array = ChatRepository.get_chats_for_user(db, current_user)
     return {"success": True, "chats": chats_array}
 
 @router.post("/sync_chats")
 def sync_chats(chats: List[dict], current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
-    print(f"DEBUG: sync_chats called for {current_user}")
-    print(f"DEBUG: Received {len(chats)} chats")
-    c = db.cursor()
     try:
-        c.execute("DELETE FROM chats WHERE user_email=?", (current_user,))
-        for chat in chats:
-            cid = chat.get('id')
-            title = chat.get('title', 'New Chat')
-            ms = chat.get('ms', [])
-            print(f"DEBUG: Syncing chat {cid} with {len(ms)} messages")
-            c.execute("INSERT INTO chats (id, user_email, title, messages_json, updated_at) VALUES (?, ?, ?, ?, ?)",
-                      (cid, current_user, title, json.dumps(ms), time.time()))
-        db.commit()
-        print("DEBUG: Sync committed successfully")
+        ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
     except Exception as e:
-        print(f"ERROR: Sync failed: {e}")
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
@@ -79,14 +45,22 @@ async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_curren
     prompt = req.prompt
     img = req.img
     history = req.history
+    sys_config = req.sys
     
     # New Unified Agentic Flow (Supports both Cloud & Local with Tools)
     try:
         async def agent_stream():
             try:
-                # Run the Agentic Brain in a separate thread to avoid blocking
-                # Now passing target_model to allow swapping the 'Brain'
-                result = await asyncio.to_thread(ask_the_helper, prompt, img, target_model)
+                # Run the Agentic Brain in a separate thread to avoid blocking the event loop
+                # We wrap it in a task so we can yield heartbeats while waiting
+                task = asyncio.create_task(asyncio.to_thread(ask_the_helper, prompt, img, target_model, sys_config, history))
+                
+                # HEARTBEAT LOOP: Yield a space every 5s to keep the connection alive
+                while not task.done():
+                    yield b" \n" 
+                    await asyncio.sleep(5)
+                
+                result = await task
                 # Yield in the NDJSON format the frontend expects
                 yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
             except Exception as e:
