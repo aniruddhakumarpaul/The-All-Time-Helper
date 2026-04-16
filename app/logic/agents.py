@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import base64
+from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process, LLM
 from app.logic.tools import (
     search_tool,
@@ -12,18 +13,29 @@ from app.logic.tools import (
 )
 from app.logic.logger import log_agent_step
 
-# BUG FIX: LLM is now initialized lazily inside run_helper_agent()
-# Previously it was created at module load time (line 24), which meant
-# that if GROQ_API_KEY was not yet in the environment when the module
-# was imported, the key would be None and all requests would silently fail.
-def get_llm():
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY environment variable is not set. Please check your .env file.")
+# Ensure environment variables are loaded
+load_dotenv()
+
+def get_llm(model_id="agentic-pro"):
+    """Factory to get the right LLM brain based on the user's selection."""
+    
+    # CASE 1: Cloud Agentic Pro (Groq)
+    if not model_id or model_id == "agentic-pro":
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("GROQ_API_KEY missing - required for Agentic Pro.")
+        return LLM(
+            model="groq/llama-3.3-70b-versatile",
+            temperature=0.3,
+            api_key=api_key
+        )
+    
+    # CASE 2: Local Ollama Model
+    # Expecting model_id like 'gemma2:2b', 'llama3', etc.
     return LLM(
-        model="groq/llama-3.3-70b-versatile",
-        temperature=0.3,
-        api_key=api_key
+        model=f"ollama/{model_id}",
+        base_url="http://localhost:11434",
+        temperature=0.3
     )
 
 # --- AGENT DEFINITIONS (created fresh per-request to use current env vars) ---
@@ -114,11 +126,11 @@ def process_image(img_base64: str):
         return f"Vision analysis unavailable: {str(e)}"
 
 
-def run_helper_agent(user_prompt: str, img_data: str = None):
+def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro"):
     """Orchestrates the specialized agents to answer the user prompt."""
 
     # BUG FIX: Get a fresh LLM instance per request so env vars are always current
-    llm = get_llm()
+    llm = get_llm(target_model)
     developer, secretary, mystic, manager = _build_agents(llm)
 
     context = user_prompt
@@ -179,5 +191,5 @@ def run_helper_agent(user_prompt: str, img_data: str = None):
 
 
 # Exportable function for the router
-def ask_the_helper(prompt: str, img_data: str = None):
-    return run_helper_agent(prompt, img_data)
+def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro"):
+    return run_helper_agent(prompt, img_data, target_model)

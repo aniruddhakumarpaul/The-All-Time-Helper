@@ -7,7 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const BOT_DATA = "/static/img/bot.png";
         let user = null; 
         let chats = [];
-        let activeId = null; let abortC = null; let currentImg = null;
+        let activeId = null; window.activeId = null; // Exposed globally for inline handlers
+        let abortC = null; let currentImg = null;
         let selectedModel = 'agentic-pro';
         let currentBlobUrl = null;
         let chatToDelete = null;
@@ -403,7 +404,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 style="display:none;"
                                 onclick="window.openImageModal('${safeHref}')"
                                 onload="
-                                    document.getElementById('load-${uniqueId}').style.display='none';
+                                    const lEl = document.getElementById('load-${uniqueId}');
+                                    if(lEl) lEl.style.display='none';
                                     this.style.display='block';
                                 "
                                 onerror="
@@ -633,9 +635,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const p = document.getElementById('prompt').value.trim();
             if(!p && !currentImg) return;
             if(!activeId) activeId = Date.now().toString();
-            
             let chat = chats.find(c => c.id === activeId);
             if(!chat) { chat = {id: activeId, title: p.substring(0,35), ms: []}; chats.push(chat); }
+            window.activeId = activeId;
 
             document.getElementById('welcome').style.display = 'none';
             document.getElementById('chat-area').style.display = 'block';
@@ -647,7 +649,13 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('prompt').value = '';
             document.getElementById('stop-btn').style.display = 'flex';
             
-            const bTxt = addMsg('b', '...', null, chat.ms.length); bTxt.innerText = '';
+            let initialContent = '...';
+            const isLocal = selectedModel !== 'agentic-pro' && !selectedModel.includes('gemini');
+            if (isLocal) {
+                initialContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
+            }
+            const bTxt = addMsg('b', initialContent, null, chat.ms.length); 
+            if (initialContent === '...') bTxt.innerText = '';
             updateBotVisuals();
             abortC = new AbortController();
             
@@ -731,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch(e) { bTxt.innerText += " [Stopped]"; }
             finally { 
                 document.getElementById('stop-btn').style.display = 'none'; 
-                abortC = null; currentImg = null; renderHist(); 
+                abortC = null; currentImg = null; window.activeId = activeId; renderHist(); 
             }
         }
 
@@ -827,14 +835,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const promptIn = document.getElementById('prompt');
         const sendBtn = document.getElementById('main-send-btn');
-        if (promptIn && sendBtn) {
+        if (promptIn) {
+            // Auto Resize
             promptIn.addEventListener('input', () => {
+                autoRes(promptIn);
                 if (promptIn.value.trim().length > 0) {
-                    sendBtn.classList.add('pulsing');
+                    if (sendBtn) sendBtn.classList.add('pulsing');
                 } else {
-                    sendBtn.classList.remove('pulsing');
+                    if (sendBtn) sendBtn.classList.remove('pulsing');
                 }
             });
+            // Key Handling
+            promptIn.addEventListener('keydown', handleChatKey);
         }
 
         // Mobile Sidebar & Dropdown Dismissal
@@ -869,6 +881,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 modelMenu.style.display = 'none';
             }
         });
+        // Image Modal Logic
+        function openImageModal(src) {
+            const modal = document.getElementById('image-modal');
+            const img = document.getElementById('modal-img');
+            if (modal && img) {
+                img.src = src;
+                modal.style.display = 'flex';
+                setTimeout(() => modal.classList.add('active'), 10);
+                history.pushState({ view: 'image' }, "");
+            }
+        }
+        function closeImageModal() {
+            const modal = document.getElementById('image-modal');
+            if (modal) {
+                modal.classList.remove('active');
+                setTimeout(() => modal.style.display = 'none', 300);
+            }
+        }
+
 // NOTE: setAtmosphere, openImageModal, closeImageModal are defined
 // inside the DOMContentLoaded block above and exported to window there.
 // Duplicate outer definitions removed to prevent initialization conflicts.
@@ -995,6 +1026,11 @@ window.addEventListener('touchend', () => {
     // which meant the X button (which has class 'close-settings') worked but
     // calling closeSettings() directly from openSettings() button logic did not.
     window.closeSettings = closeSettings;
-    // openImageModal and closeImageModal are already exported at lines 844/854 above.
+    window.handleChatKey = handleChatKey;
+    window.autoRes = autoRes;
+    window.stopAI = stopAI;
+    window.openImageModal = openImageModal;
+    window.closeImageModal = closeImageModal;
+    // exportChat is already exported at line 286. 
 
 });

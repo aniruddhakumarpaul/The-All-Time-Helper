@@ -16,3 +16,9 @@ To: test@example.com
 Subject: Audit Test
 Body: This is a test.
 -----------------------
+
+--- SIMULATED EMAIL ---
+To: test@example.com
+Subject: Audit Test
+Body: This is a test.
+-----------------------
