@@ -74,25 +74,66 @@ import asyncio
 
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_current_user)):
+    # Decision Engine: Choose between Pro (Agentic) and Local (Ollama)
+    target_model = req.model
     prompt = req.prompt
     img = req.img
+    history = req.history
     
-    # We use the new Agent Engine for all requests now to provide the 'Pro' experience
-    try:
-        # We use asyncio.to_thread to run the synchronous CrewAI kickoff without blocking the main event loop
-        async def agent_stream():
+    # CASE 1: AGENTIC PRO (Groq Swarm)
+    if target_model == "agentic-pro":
+        try:
+            async def agent_stream():
+                try:
+                    # Run the Agentic Brain in a separate thread to avoid blocking
+                    result = await asyncio.to_thread(ask_the_helper, prompt, img)
+                    # Yield in the NDJSON format the frontend expects
+                    yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
+                except Exception as e:
+                    traceback.print_exc()
+                    yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(e)}"}, "done": True}).encode() + b'\n'
+            
+            return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": str(e)}
+
+    # CASE 2: LOCAL OLLAMA MODELS (Gemma, Llama, Dolphin, etc.)
+    else:
+        async def ollama_stream():
             try:
-                # Run the Agentic Brain in a separate thread
-                result = await asyncio.to_thread(ask_the_helper, prompt, img)
+                # Prepare payload for Ollama
+                # We extract messages from history and add the latest prompt
+                messages = []
+                # History is structured as [{"r": "u/b", "c": "text", "i": "base64"}]
+                for h in history:
+                    role = "user" if h.get("r") == "u" else "assistant"
+                    msg = {"role": role, "content": h.get("c", "")}
+                    if h.get("i"):
+                        msg["images"] = [h["i"]]
+                    messages.append(msg)
                 
-                # Format as Ollama-style NDJSON for the existing UI
-                yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
+                # Add the current prompt if it's not already the last one (safety check)
+                if not history or history[-1].get("c") != prompt:
+                    current_msg = {"role": "user", "content": prompt}
+                    if img:
+                        current_msg["images"] = [img]
+                    messages.append(current_msg)
+
+                payload = {
+                    "model": target_model,
+                    "messages": messages,
+                    "stream": True
+                }
+                
+                # Call Ollama
+                with requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120) as r:
+                    for line in r.iter_lines():
+                        if line:
+                            yield line + b'\n'
+                            
             except Exception as e:
                 traceback.print_exc()
-                yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(e)}"}, "done": True}).encode() + b'\n'
-        
-        return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
-    
-    except Exception as e:
-        traceback.print_exc()
-        return {"error": str(e)}
+                yield json.dumps({"message": {"content": f"⚠️ **Local LLM Error:** {str(e)}\n\n*Check if Ollama is running.*"}, "done": True}).encode() + b'\n'
+
+        return StreamingResponse(ollama_stream(), media_type="application/x-ndjson")
