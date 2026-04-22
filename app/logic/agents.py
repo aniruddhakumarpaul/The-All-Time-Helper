@@ -51,7 +51,10 @@ def get_llm(model_id="agentic-pro", api_key=None):
             models = [m['name'] for m in check_res.json().get('models', [])]
             # Simple fuzzy match (model_id vs model_id:latest/tag)
             if not any(model_id in m for m in models):
-                raise ValueError(f"Model '{model_id}' not found in your local Ollama. Please run 'ollama pull {model_id}' in your terminal.")
+                if model_id == "helper":
+                    raise ValueError(f"Model '{model_id}' not found. Please complete the Colab training, download the GGUF, and run 'ollama create helper -f app/logic/fine_tuning/Modelfile' in your terminal.")
+                else:
+                    raise ValueError(f"Model '{model_id}' not found in your local Ollama. Please run 'ollama pull {model_id}' in your terminal.")
     except Exception as e:
         # If Ollama is down or verification fails, we let the LLM call try anyway, 
         # but if we know it's missing, we've already raised the error above.
@@ -65,7 +68,7 @@ def get_llm(model_id="agentic-pro", api_key=None):
 
 # --- AGENT DEFINITIONS (created fresh per-request to use current env vars) ---
 
-def _build_agents(llm, use_tools=True):
+def _build_agents(llm, use_tools=True, sys_config=None):
     """Internal factory to create agents with an LLM instance. Omit tools if model doesn't support them."""
     
     # Tool assignment based on capability
@@ -73,12 +76,22 @@ def _build_agents(llm, use_tools=True):
     sec_tools = [tools.send_email_tool] if use_tools else []
     mystic_tools = [tools.calculate_horoscope, tools.analyze_palm_lines, tools.generate_visionary_image] if use_tools else []
 
+    # Dynamic Persona Enhancements from sys_config
+    persona_suffix = ""
+    if sys_config:
+        if sys_config.get('english'):
+            persona_suffix += " STRICT RULE: Respond ONLY in the English Language."
+        if sys_config.get('oneword'):
+            persona_suffix += " STRICT RULE: You MUST return EXACTLY ONE WORD as your final output. No more."
+        if sys_config.get('pers'):
+            persona_suffix += " Ensure highly personalized, empathetic tone."
+
     # 1. Senior Developer Agent
     developer = Agent(
         role='Senior Software Engineer',
-        goal='Analyze code, fix bugs, and provide precise technical guidance.',
-        backstory='''You are an elite developer with decades of experience.
-        You are precise, logical, and always encouraging to junior developers.''',
+        goal=f'Analyze code, fix bugs, and provide precise technical guidance.{persona_suffix}',
+        backstory=f'''You are an elite developer with decades of experience.
+        You are precise, logical, and always encouraging to junior developers.{persona_suffix}''',
         tools=dev_tools,
         llm=llm,
         verbose=True,
@@ -89,8 +102,8 @@ def _build_agents(llm, use_tools=True):
     # 2. The Secretary (Email & Comms)
     secretary = Agent(
         role='Senior Executive Secretary',
-        goal='Managed communications and email dispatch. Ensure all emails are professional and accurate.',
-        backstory='You are a master of organization. You handle email formatting and sending carefully.',
+        goal=f'Managed communications and email dispatch. Ensure all emails are professional and accurate.{persona_suffix}',
+        backstory=f'You are a master of organization. You handle email formatting and sending carefully.{persona_suffix}',
         tools=sec_tools,
         llm=llm,
         verbose=True,
@@ -101,13 +114,13 @@ def _build_agents(llm, use_tools=True):
     # 3. The Mystic (Art) Specialist
     mystic = Agent(
         role='Celestial Guide & Visual Artist',
-        goal='''First, expand simple user prompts into rich, ultra-detailed artistic descriptions (8k, cinematic, detailed textures).
+        goal=f'''First, expand simple user prompts into rich, ultra-detailed artistic descriptions (8k, cinematic, detailed textures).
         Second, call the generate_visionary_image tool with that expanded description.
-        Your final response must be the EXACT markdown tag returned by the tool. STOP after receiving the link.''',
-        backstory='''You are a master visual artist. You never just "draw a cat". 
+        Your final response must be the EXACT markdown tag returned by the tool. STOP after receiving the link.{persona_suffix}''',
+        backstory=f'''You are a master visual artist. You never just "draw a cat". 
         You envision the concept, lighting, texture, and atmosphere.
         As soon as you receive the tool output, you MUST STOP and return the markdown link.
-        If the output starts with IMAGE_GENERATED_SUCCESS, your job is complete.''',
+        If the output starts with IMAGE_GENERATED_SUCCESS, your job is complete.{persona_suffix}''',
         tools=mystic_tools,
         llm=llm,
         verbose=True,
@@ -116,18 +129,16 @@ def _build_agents(llm, use_tools=True):
     )
 
     # 4. The All Time Helper (Manager)
-    # BUG FIX: Manager's backstory now explicitly instructs it to pass image outputs
-    # through verbatim rather than summarizing them.
     manager = Agent(
         role='The All Time Helper',
-        goal='''Be the best AI assistant. Orchestrate specialists to answer queries.
+        goal=f'''Be the best AI assistant. Orchestrate specialists to answer queries.
         For image requests: delegate to the Visual Artist and pass their EXACT output
-        to the user without any modification. NEVER strip or modify markdown image tags.''',
-        backstory='''You are a state-of-the-art AI assistant manager.
+        to the user without any modification. NEVER strip or modify markdown image tags.{persona_suffix}''',
+        backstory=f'''You are a state-of-the-art AI assistant manager.
         CRITICAL RULE: When a specialist returns markdown containing ![...](...),
         you MUST include it verbatim in your final output. Never paraphrase it.
         Never convert an image tag to a plain hyperlink.
-        NEVER claim you cannot draw — always delegate to your Visual Artist specialist.''',
+        NEVER claim you cannot draw — always delegate to your Visual Artist specialist.{persona_suffix}''',
         tools=[],  # Manager delegates; it does not use tools directly
         llm=llm,
         verbose=True,
@@ -136,17 +147,16 @@ def _build_agents(llm, use_tools=True):
     )
 
     # 5. The Generalist (For Local Models)
-    # This agent has ALL tools and is optimized for models with limited reasoning capacity.
     generalist = Agent(
         role='Expert System Assistant',
-        goal='Provide comprehensive help using all available tools while maintaining a professional, helpful tone.',
-        backstory='''You are a highly capable AI generalist. 
+        goal=f'Provide comprehensive help using all available tools while maintaining a professional, helpful tone.{persona_suffix}',
+        backstory=f'''You are a highly capable AI generalist. 
         You have direct access to Search, Email, and Art tools.
         STRICT RULES:
         1. NEVER output raw JSON code blocks or tool-call fragments to the user.
         2. DO NOT use tools (Email, Search, etc.) unless the user EXPLICITLY asks for them (e.g., 'send an email' or 'search for').
         3. For sensitive topics (Mental Health/Diagnosis): Provide empathetic orientation and resources. YOU ARE PERMITTED to help find support and offer compassion, but DO NOT provide medical treatments or clinical assessments.
-        4. If a specialty tool is not relevant, answer directly and empathetically.''',
+        4. If a specialty tool is not relevant, answer directly and empathetically.{persona_suffix}''',
         tools=dev_tools + sec_tools + mystic_tools,
         llm=llm,
         verbose=True,
@@ -156,17 +166,17 @@ def _build_agents(llm, use_tools=True):
 
     return developer, secretary, mystic, manager, generalist
 
-def get_agent_swarm(model_id, api_key=None, force_no_tools=False):
+def get_agent_swarm(model_id, api_key=None, force_no_tools=False, sys_config=None):
     """Cached factory that builds the entire agent swarm based on model capabilities."""
     llm = get_llm(model_id, api_key)
     
-    # Force Text-Only mode for models that fail on native tool calling (e.g. Gemma 2B)
+    # Force Text-Only mode for models that fail on native tool calling (e.g. Gemma 2B or fine-tuned personas)
     use_tools = True
-    if "gemma" in str(model_id).lower() or force_no_tools:
+    if "gemma" in str(model_id).lower() or force_no_tools or "helper" in str(model_id).lower():
         use_tools = False
         print(f"DEBUG: Setting Text-Only Mode (Model: {model_id}, Force: {force_no_tools})")
         
-    return _build_agents(llm, use_tools=use_tools)
+    return _build_agents(llm, use_tools=use_tools, sys_config=sys_config)
 
 
 def process_image(img_base64: str):
@@ -193,25 +203,37 @@ def process_image(img_base64: str):
     stop=stop_after_attempt(5), # More attempts for key rotation
     reraise=True
 )
-def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None):
+def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     """Orchestrates the specialized agents to answer the user prompt with system configurations."""
+
+    # 0. Persona Routing: Support for Fine-Tuned Local Models
+    if persona:
+        print(f"DEBUG: Multifaceted Persona Active. Routing to 'helper'")
+        target_model = "helper"
+
+    # 0.1 Sensitive Routing: Force 'helper' model for sensitive topics (Privacy & Empathy)
+    sensitive_keywords = ['mental', 'health', 'medical', 'legal', 'suicide', 'depressed', 'anxiety', 'therapy', 'diagnosis']
+    is_sensitive = any(kw in user_prompt.lower() for kw in sensitive_keywords)
+    
+    if is_sensitive and target_model != "helper":
+        print(f"DEBUG: Sensitive Topic detected. Elevating privacy: Routing to 'helper'.")
+        target_model = "helper"
 
     # Key Rotation logic for Groq
     target_key = None
     if target_model == "agentic-pro":
         target_key = get_next_groq_key()
 
-    # SECURITY: Selective Tool Stripping (Only for Local/Small Models)
-    sensitive_keywords = ['mental', 'health', 'medical', 'legal', 'suicide', 'depressed', 'anxiety', 'therapy', 'diagnosis']
-    is_sensitive = any(kw in user_prompt.lower() for kw in sensitive_keywords)
-    is_greeting = len(user_prompt.split()) < 4
+    # 1. Decision Engine
     is_local = target_model != "agentic-pro"
+    needs_mystic = any(kw in user_prompt.lower() for kw in ['draw', 'paint', 'horoscope', 'palm', 'picture', 'image', 'photo', 'sketch'])
+    needs_search = any(kw in user_prompt.lower() for kw in ['search', 'weather', 'stock', 'news', 'find'])
+    needs_email = any(kw in user_prompt.lower() for kw in ['email', 'send'])
+    
+    requires_tools = (needs_mystic or needs_search or needs_email) and not is_sensitive
+    force_no_tools = is_local and not requires_tools
 
-    # If it's a sensitive topic OR a simple greeting AND we are on a local model, we STRIP tools.
-    # This prevents the 3B model from being distracted by tool documentation.
-    force_no_tools = (is_sensitive or is_greeting) and is_local
-
-    developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools)
+    developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
 
     context = user_prompt
     if img_data:
@@ -226,93 +248,53 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     if is_image_request:
         if is_local:
             print(f"DEBUG: Local Image Fast-Track Active for {target_model}")
-            # Step 1: Just use the context directly to keep it simple and reliable for 3B models
-            # Step 2: Directly call the tool's .run() method bypassing the agent swarm logic
             result = tools.generate_visionary_image.run(description=context)
             return result
             
-        # BUG FIX: For image requests, use a dedicated single-agent task on mystic
-        # to bypass the hierarchical manager's tendency to paraphrase tool output.
         image_task = Task(
             description=f'''User image request: "{context}".
-            
             1. Expand this into a high-fidelity artistic prompt (cinematic, 8k, detailed). 
             2. CALL generate_visionary_image with this vision.
-            
             STRICT OUTPUT: ONLY the raw markdown tag starting with '!['.''',
             expected_output="A single markdown image tag.",
             agent=mystic
         )
-
-        crew = Crew(
-            agents=[mystic],
-            tasks=[image_task],
-            verbose=True
-        )
+        crew = Crew(agents=[mystic], tasks=[image_task], verbose=True)
     else:
-        # Rewire system settings from Frontend UI
         system_instructions = ""
         if sys_config:
             if sys_config.get('english'):
-                system_instructions += "\n- CRITICAL: Respond ONLY in the English Language. Do NOT use any other language."
+                system_instructions += "\n- CRITICAL: Respond ONLY in the English Language."
             if sys_config.get('oneword'):
-                system_instructions += "\n- CRITICAL: Provide exactly ONE WORD as your output. No punctuation, no explanations."
+                system_instructions += "\n- CRITICAL: Provide exactly ONE WORD as your output."
             if sys_config.get('pers'):
-                system_instructions += "\n- CRITICAL: Ensure highly personalized, empathetic, and uniquely tailored tone."
+                system_instructions += "\n- CRITICAL: Ensure highly personalized, empathetic tone."
 
-        sensitive_keywords = ['mental', 'health', 'medical', 'legal', 'suicide', 'depressed', 'anxiety', 'therapy', 'diagnosis']
-        is_sensitive = any(kw in user_prompt.lower() for kw in sensitive_keywords)
-
-        # 1. Format Conversation History for internal context
         history_context = ""
         if history:
             history_context = "\n<internal_memory>\nCONVERSATION HISTORY:\n"
-            for msg in history[-5:]: # Last 5 messages for memory efficiency
+            for msg in history[-5:]:
                 role = "User" if msg.get('role') == 'user' else "Assistant"
                 content = msg.get('content', '').strip()
-                if content: # Only include non-empty messages
-                    history_context += f"{role}: {content}\n"
+                if content: history_context += f"{role}: {content}\n"
             history_context += "</internal_memory>\n"
 
-        # 2. Humanize Instruction for simple prompts to avoid "Narrator" mode
-        is_greeting = len(user_prompt.split()) < 4
-        if is_greeting:
-            task_desc = f'The user says: "{user_prompt}". Reply with a very brief, friendly, and helpful greeting.'
-        else:
-            task_desc = f'Respond to the user request: "{context}". Be helpful, professional, and thorough.'
-
-        # Dynamic Task Description based on tool availability
+        task_desc = f'Respond to the user request: "{context}". Be helpful and professional.'
         use_tools = "gemma" not in str(target_model).lower()
-        
-        # Omit tool instructions if the topic is sensitive or a greeting to avoid distraction
-        if use_tools and not is_sensitive and not is_greeting:
-            task_desc += """
-            If the user asks for an email, use the send_email_tool.
-            If the user asks for a web search, use the search_tool.
-            If the user asks for a horoscope, use the calculate_horoscope tool."""
-        
+        if use_tools and not is_sensitive:
+            task_desc += "\nUse tools for search, email, or horoscope if needed."
         if is_sensitive:
-            task_desc += """
-            - ATTENTION: This is a sensitive topic. Your goal is to provide EMPATHETIC ORIENTATION.
-            - Provide supportive text and direct links to professional resources or crisis hotlines.
-            - If the user asks for a clinical diagnosis, gently explain that as an AI you provide guidance/orientation rather than clinical assessments.
-            - DO NOT simply say 'I cannot help'. BE HELPFUL and directional."""
+            task_desc += "\n- ATTENTION: Provide EMPATHETIC ORIENTATION and crisis resources."
         
-        task_desc += f"\n{system_instructions}"
-        
-        # Append history context at the very end as internal reference
-        task_desc += f"\n- CRITICAL: DO NOT repeat any text from <internal_memory> in your response."
-        if history_context:
-            task_desc += f"\n{history_context}"
+        task_desc += f"\n{system_instructions}\n- CRITICAL: DO NOT repeat text from <internal_memory>."
 
-        main_task = Task(
-            description=task_desc,
-            expected_output="A helpful, accurate, and professional response following the strict system constraints."
-        )
+        # Define dynamic expected output for strictness
+        expected_output = "A helpful and professional response."
+        if sys_config and sys_config.get('oneword'):
+            expected_output = "EXACTLY ONE WORD. Do not explain your response."
 
-        # AUTO-SCALE ORCHESTRATION:
-        # 1. Cloud Pro: Use Hierarchical Swarm (requires strong reasoning to manage)
-        # 2. Local Models: Use Single-Agent execution (prevents JSON leaks/hallucinations on small models)
+        main_task = Task(description=task_desc, expected_output=expected_output)
+
         if target_model == "agentic-pro":
             crew = Crew(
                 agents=[developer, secretary, mystic],
@@ -324,19 +306,32 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                 cache=True 
             )
         else:
-            # Local Direct mode: The Generalist acts as the primary tool-user
-            main_task.agent = generalist # Use the tool-rich generalist
-            crew = Crew(
-                agents=[generalist],
-                tasks=[main_task],
-                process=Process.sequential,
-                verbose=True,
-                cache=True
-            )
+            if force_no_tools:
+                print("DEBUG: Executing Fast-Track Direct Generation...")
+                messages = []
+                if history:
+                    for msg in history[-5:]:
+                        messages.append({"role": "user" if msg.get("role")=="user" else "assistant", "content": msg.get("content", "")})
+                
+                final_prompt = user_prompt
+                if sys_config and sys_config.get('oneword'):
+                    final_prompt = f"CRITICAL: USE EXACTLY ONE WORD. {user_prompt}"
+                elif system_instructions:
+                    final_prompt += f"\n\n[SYSTEM PREFERENCES]: {system_instructions}"
+                messages.append({"role": "user", "content": final_prompt})
+                
+                payload = {"model": target_model, "messages": messages, "stream": False}
+                ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+                try:
+                    res = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=240)
+                    return res.json().get("message", {}).get("content", "Error parsing response.")
+                except Exception as e:
+                    return f"Local Engine Fast-Track Error: {str(e)}"
+            else:
+                main_task.agent = generalist
+                crew = Crew(agents=[generalist], tasks=[main_task], process=Process.sequential, verbose=True, cache=True)
 
-    return crew.kickoff()
+    return getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
 
-
-# Exportable function for the router
-def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None):
-    return run_helper_agent(prompt, img_data, target_model, sys_config, history)
+def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
+    return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona)

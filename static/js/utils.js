@@ -93,15 +93,23 @@
                                 "
                                 onerror="
                                     this.retryCount = (this.retryCount || 0) + 1;
-                                    if (this.retryCount <= 10) {
+                                    const loadEl = document.getElementById('load-${uniqueId}');
+                                    if (this.retryCount <= 12) {
                                         const s = this;
-                                        const delay = Math.min(5000 * this.retryCount, 30000);
-                                        const loadEl = document.getElementById('load-${uniqueId}');
-                                        if(loadEl) loadEl.querySelector('span').textContent = '🎨 Generating... (' + this.retryCount + '/10)';
-                                        setTimeout(() => { s.src = '${safeHref}' + (('${safeHref}'.includes('?')) ? '&' : '?') + '_r=' + s.retryCount; }, delay);
+                                        // Adaptive backoff: shorter initial pings, then longer waits for cold-starts
+                                        const delay = this.retryCount <= 3 ? 4000 : 8000;
+                                        
+                                        if(loadEl) {
+                                            const statusSpan = loadEl.querySelector('span');
+                                            if(statusSpan) statusSpan.textContent = '🎨 Generating... (' + this.retryCount + '/12)';
+                                        }
+                                        
+                                        setTimeout(() => { 
+                                            // Append retry param to force refresh, but keep seed consistent in base URL
+                                            s.src = '${safeHref}' + (('${safeHref}'.includes('?')) ? '&' : '?') + '_r=' + s.retryCount; 
+                                        }, delay);
                                     } else {
-                                        const loadEl = document.getElementById('load-${uniqueId}');
-                                        if(loadEl) loadEl.innerHTML = '<div style=\\'padding:16px;color:var(--text-sub)\\'>⚠️ Image timed out. <a href=\\'${safeHref}\\' target=\\'_blank\\' style=\\'color:var(--accent-blue)\\'>Open in new tab →</a></div>';
+                                        if(loadEl) loadEl.innerHTML = '<div style=\\'padding:16px;color:var(--text-sub)\\'>⚠️ Generation took too long. <a href=\\'${safeHref}\\' target=\\'_blank\\' style=\\'color:var(--accent-blue)\\'>View directly →</a></div>';
                                     }
                                 "
 

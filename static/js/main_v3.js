@@ -1,11 +1,12 @@
 document.addEventListener('DOMContentLoaded', () => {
-    console.log("DEBUG: All Time Helper Script Initializing...");
-    // Global Bot State
+    try {
+        console.log("DEBUG: All Time Helper Script Initializing...");
+        // Global Bot State
         window.botState = 'idle';
         const LOGO_DATA = "/static/img/logo.png";
         const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";
         const BOT_DATA = "/static/img/bot.png";
-        let user = null; 
+        let user = null;
         let chats = [];
         let activeId = null; window.activeId = null; // Exposed globally for inline handlers
         let abortC = null; let currentImg = null;
@@ -14,7 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
         let chatToDelete = null;
         let isRenaming = false;
         let currentSearch = '';
-        
+        let tiltSettleTimer = null;
+
         // --- Core Helpers (Hoisted to Top) ---
         function smartFocus(id) {
             if (window.innerWidth > 850) {
@@ -24,68 +26,68 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Auth
-        function switchAuth(t) { 
-            ['login', 'signup', 'otp'].forEach(f => { document.getElementById(f+'-form').style.display = (f === t ? 'block' : 'none'); }); 
-            if(t==='login') document.getElementById('l-email').focus();
-            if(t==='signup') document.getElementById('s-name').focus();
-            if(t==='otp') document.getElementById('v-otp').focus();
+        function switchAuth(t) {
+            ['login', 'signup', 'otp'].forEach(f => { document.getElementById(f + '-form').style.display = (f === t ? 'block' : 'none'); });
+            if (t === 'login') document.getElementById('l-email').focus();
+            if (t === 'signup') document.getElementById('s-name').focus();
+            if (t === 'otp') document.getElementById('v-otp').focus();
         }
 
         function updUI() {
-            if(user) {
+            if (user) {
                 const nameStr = user.name || 'Friend';
-                
+
                 const sbGreet = document.getElementById('sidebar-greet');
-                if(sbGreet) sbGreet.innerText = 'Hello, ' + nameStr;
-                
+                if (sbGreet) sbGreet.innerText = 'Hello, ' + nameStr;
+
                 const cGreet = document.getElementById('center-greet');
-                if(cGreet) cGreet.innerHTML = `Hello, <span style="background: var(--greet-grad); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;">${nameStr}</span>`;
-                
+                if (cGreet) cGreet.innerHTML = `Hello, <span style="background: var(--greet-grad); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;">${nameStr}</span>`;
+
                 const uInfo = document.getElementById('user-info');
-                if(uInfo) uInfo.innerText = 'Signed in as ' + user.email;
+                if (uInfo) uInfo.innerText = 'Signed in as ' + user.email;
             }
         }
 
         async function handleAuth(t) {
             const btn = document.getElementById(t + '-btn');
             const originalText = btn.innerHTML;
-            
+
             let p = {};
-            if(t==='login') p = {email: document.getElementById('l-email').value, pwd: document.getElementById('l-pwd').value};
-            else if(t==='signup') p = {email: document.getElementById('s-email').value, pwd: document.getElementById('s-pwd').value, name: document.getElementById('s-name').value };
-            else if(t==='verify') p = {email: document.getElementById('s-email').value || document.getElementById('l-email').value, otp: document.getElementById('v-otp').value};
+            if (t === 'login') p = { email: document.getElementById('l-email').value, pwd: document.getElementById('l-pwd').value };
+            else if (t === 'signup') p = { email: document.getElementById('s-email').value, pwd: document.getElementById('s-pwd').value, name: document.getElementById('s-name').value };
+            else if (t === 'verify') p = { email: document.getElementById('s-email').value || document.getElementById('l-email').value, otp: document.getElementById('v-otp').value };
 
             // Loading state
             btn.disabled = true;
             btn.innerHTML = '<div class="spinner"></div>';
 
             try {
-                const res = await fetch('/'+t, { 
-                    method: 'POST', 
+                const res = await fetch('/' + t, {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '69420' },
-                    body: JSON.stringify(p) 
+                    body: JSON.stringify(p)
                 });
                 const data = await res.json();
-                if(data.success) {
-                    if(t === 'signup' || (t === 'login' && data.unverified)) switchAuth('otp');
+                if (data.success) {
+                    if (t === 'signup' || (t === 'login' && data.unverified)) switchAuth('otp');
                     else {
                         user = data.user; localStorage.setItem('helper_user_v2', JSON.stringify(user));
-                        if(data.token) localStorage.setItem('helper_token_v2', data.token);
+                        if (data.token) localStorage.setItem('helper_token_v2', data.token);
                         document.getElementById('auth-overlay').style.display = 'none';
                         loadUserChats();
                         updUI();
-                        
+
                         // Theme Onboarding 
-                        if(!localStorage.getItem('helper_theme_pref')) {
+                        if (!localStorage.getItem('helper_theme_pref')) {
                             document.getElementById('theme-modal').style.display = 'flex';
                         }
-                        
+
                         smartFocus('prompt');
                     }
                 } else alert(data.error || 'Check credentials');
-            } catch(e) { 
+            } catch (e) {
                 console.error("Auth Fail:", e);
-                alert('Connection Error: ' + e.message + '\n(Check if server is running at ' + location.origin + ')'); 
+                alert('Connection Error: ' + e.message + '\n(Check if server is running at ' + location.origin + ')');
             }
             finally {
                 btn.disabled = false;
@@ -97,26 +99,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Dropdown
         function toggleDropdown() { document.getElementById('model-menu').style.display = (document.getElementById('model-menu').style.display === 'flex' ? 'none' : 'flex'); }
-        function selModel(id, name) { 
-            selectedModel = id; 
-            document.getElementById('active-model-name').innerText = name; 
-            document.getElementById('model-menu').style.display = 'none'; 
+        function selModel(id, name) {
+            selectedModel = id;
+            document.getElementById('active-model-name').innerText = name;
+            document.getElementById('model-menu').style.display = 'none';
         }
 
         // Sidebar Toggle
-        function toggleSidebar() { 
+        function toggleSidebar() {
             const sb = document.getElementById('sidebar');
             const isOpen = sb.classList.toggle('open');
             document.body.classList.toggle('sidebar-open', isOpen);
-            
+
             if (isOpen) {
                 history.pushState({ view: 'sidebar' }, "");
             }
         }
-        
+
         // Settings
-        function openSettings() { 
-            document.getElementById('settings-modal').style.display = 'flex'; 
+        function openSettings() {
+            document.getElementById('settings-modal').style.display = 'flex';
             history.pushState({ view: 'settings' }, "");
         }
         function closeSettings() { document.getElementById('settings-modal').style.display = 'none'; document.getElementById('prompt').focus(); }
@@ -130,19 +132,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        window.toggleThemeMenu = function(e, menuId) {
-            if(e) e.stopPropagation();
+        window.toggleThemeMenu = function (e, menuId) {
+            if (e) e.stopPropagation();
             const target = menuId || 'theme-menu';
             const menu = document.getElementById(target);
-            if(!menu) return;
-            
+            if (!menu) return;
+
             const isVisible = menu.style.display === 'flex';
-            
+
             // Close all other menus and clear row elevations
             const allMenus = document.querySelectorAll('.dropdown-menu');
             allMenus.forEach(m => m.style.display = 'none');
             document.querySelectorAll('.set-row').forEach(r => r.classList.remove('row-elevated'));
-            
+
             if (!isVisible) {
                 menu.style.display = 'flex';
                 const parentRow = menu.closest('.set-row');
@@ -151,16 +153,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // --- Theme Engine v2 ---
-        window.applyThemeChoice = function(choice) {
+        window.applyThemeChoice = function (choice) {
             localStorage.setItem('helper_theme_pref', choice);
-            
+
             // Sync Icons across multiple layers (Header & Settings)
             const iconMap = { 'light': '☀️', 'dark': '🌙', 'system': '🌓' };
             const labels = { 'light': 'Light', 'dark': 'Dark', 'system': 'System' };
-            
+
             const themeBtnIcon = document.getElementById('current-theme-icon');
             if (themeBtnIcon) themeBtnIcon.innerText = iconMap[choice] || '🌓';
-            
+
             const themeSettingsIcon = document.getElementById('current-theme-icon-settings');
             if (themeSettingsIcon) themeSettingsIcon.innerText = (iconMap[choice] || '🌓') + ' ' + (labels[choice] || 'System');
 
@@ -169,7 +171,7 @@ document.addEventListener('DOMContentLoaded', () => {
             opts.forEach(o => o.classList.remove('active'));
             opts.forEach(o => {
                 const text = o.innerText.toLowerCase();
-                if(text === choice || text.includes(choice)) o.classList.add('active');
+                if (text === choice || text.includes(choice)) o.classList.add('active');
             });
 
             if (choice === 'system') {
@@ -178,13 +180,13 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 setThemeUI(choice);
             }
-            
+
             // Close UI elements and reset row elevation
             const menus = document.querySelectorAll('.dropdown-menu');
             menus.forEach(m => m.style.display = 'none');
             document.querySelectorAll('.set-row').forEach(r => r.classList.remove('row-elevated'));
-            
-            if(document.getElementById('theme-modal').style.display === 'flex') {
+
+            if (document.getElementById('theme-modal').style.display === 'flex') {
                 setTimeout(() => document.getElementById('theme-modal').style.display = 'none', 400);
             }
         }
@@ -208,10 +210,10 @@ document.addEventListener('DOMContentLoaded', () => {
             applyThemeChoice(pref);
         }
         initTheme();
-        
+
         // Final UI tweak
         document.getElementById('active-model-name').innerText = 'Agentic Swarm (Pro)';
-        
+
         // -----------------------
         function toggleSet(id) { document.getElementById(id).classList.toggle('on'); }
 
@@ -222,33 +224,33 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('welcome').style.display = 'flex';
             clearImgPreview();
             renderHist();
-            
+
             // Mobile Sidebar Fix
             if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) {
                 toggleSidebar();
             }
-            
+
             smartFocus('prompt');
         }
 
         window.renderHist = renderHist;
         function renderHist() {
             if (isRenaming) return;
-            const list = document.getElementById('history-list'); if(!list) return;
+            const list = document.getElementById('history-list'); if (!list) return;
             list.innerHTML = '';
-            
+
             // Sorting: Pinned first, then by recency
-            const sorted = chats.slice().reverse().sort((a,b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
-            
+            const sorted = chats.slice().reverse().sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+
             sorted.forEach(c => {
                 const title = (c.title || 'New Chat').toLowerCase();
                 if (currentSearch && !title.includes(currentSearch.toLowerCase())) return;
-                
+
                 const div = document.createElement('div');
                 div.className = `history-item ${c.id === activeId ? 'active-chat' : ''} ${c.pinned ? 'pinned' : ''}`;
-                
+
                 let titleContent = `<span class="chat-title-text" id="t-${c.id}">${c.title || 'New Chat'}</span>`;
-                
+
                 div.innerHTML = `
                     ${titleContent}
                     <div class="history-actions">
@@ -262,18 +264,18 @@ document.addEventListener('DOMContentLoaded', () => {
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                         </button>
                     </div>`;
-                div.onclick = (e) => { if(!e.target.closest('.del-chat-btn')) loadChat(c.id); };
+                div.onclick = (e) => { if (!e.target.closest('.del-chat-btn')) loadChat(c.id); };
                 list.appendChild(div);
             });
         }
 
         window.togglePin = (id) => {
             const chat = chats.find(c => c.id === id);
-            if(chat) {
+            if (chat) {
                 chat.pinned = !chat.pinned;
                 saveUserChats();
                 renderHist();
-                
+
                 // Gentle Animation: Scroll list to top to follow the pinned chat
                 const histList = document.getElementById('history-list');
                 if (histList) {
@@ -284,7 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         window.exportChat = () => {
             const chat = chats.find(c => c.id === activeId);
-            if(!chat || !chat.ms.length) return;
+            if (!chat || !chat.ms.length) return;
             let md = `# ${chat.title || 'Conversation'}\n\n`;
             chat.ms.forEach(m => {
                 const role = m.r === 'u' ? 'User' : 'Assistant';
@@ -315,16 +317,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const input = document.getElementById(`edit-${id}`);
             input.focus();
             input.onblur = () => saveRename(id, input.value);
-            input.onkeydown = (ev) => { 
-                if(ev.key === 'Enter') { ev.stopPropagation(); saveRename(id, input.value); } 
-                if(ev.key === 'Escape') { ev.stopPropagation(); isRenaming = false; renderHist(); }
+            input.onkeydown = (ev) => {
+                if (ev.key === 'Enter') { ev.stopPropagation(); saveRename(id, input.value); }
+                if (ev.key === 'Escape') { ev.stopPropagation(); isRenaming = false; renderHist(); }
             };
         }
 
         function saveRename(id, val) {
             if (!isRenaming) return;
             const chat = chats.find(c => c.id === id);
-            if(chat && val.trim()) { chat.title = val.trim(); saveUserChats(); }
+            if (chat && val.trim()) { chat.title = val.trim(); saveUserChats(); }
             isRenaming = false;
             renderHist();
         }
@@ -337,12 +339,12 @@ document.addEventListener('DOMContentLoaded', () => {
             clearImgPreview();
             chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx));
             renderHist();
-            
+
             // Auto-close sidebar on mobile after selection
             if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) {
                 toggleSidebar();
             }
-            
+
             smartFocus('prompt');
         }
 
@@ -353,11 +355,11 @@ document.addEventListener('DOMContentLoaded', () => {
         function addMsg(r, c, i, idx) {
             const div = document.createElement('div');
             div.className = `msg ${r}-msg`;
-            
+
             const name = user ? user.name : 'User';
             const initial = name.charAt(0).toUpperCase();
-            
-            const avatarHtml = r === 'u' 
+
+            const avatarHtml = r === 'u'
                 ? `<div class="av u-av"><span class="initial-letter">${initial}</span><span class="full-name">${name}</span></div>`
                 : `<div class="av b-av" id="bot-av-${idx}">
                     <svg class="orb-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -377,10 +379,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="bot-bubble" id="bot-bubble-${idx}">I am great!</div>
                    </div>`;
 
-            const content = r === 'b' ? renderMarkdown(c) : c.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            
+            const content = r === 'b' ? renderMarkdown(c) : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
             let tools = '';
-            if(r === 'u' && idx !== undefined) {
+            if (r === 'u' && idx !== undefined) {
                 tools = `<div class="msg-tools">
                             <div class="tool-icon" onclick="startEditPrompt(${idx}, this)" title="Edit Prompt">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
@@ -404,7 +406,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     ${tools}
                 </div>
             `;
-            
+
             document.getElementById('chat-area').appendChild(div);
             div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
             document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
@@ -418,7 +420,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const txtDiv = document.getElementById(`msg-text-${idx}`);
             if (!txtDiv) { console.error("DEBUG: txtDiv not found"); return; }
             const oldText = msg.c;
-            
+
             txtDiv.innerHTML = `
                 <textarea class="edit-area" style="width:100%; min-height:80px; background:rgba(255,255,255,0.05); color:white; border:1px solid var(--accent-blue); border-radius:12px; padding:10px; outline:none; margin-top:10px;">${oldText}</textarea>
                 <div style="display:flex; gap:10px; margin-top:10px;">
@@ -430,7 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async function submitEdit(idx, container) {
             const newText = container.querySelector('textarea').value.trim();
-            if(!newText) return;
+            if (!newText) return;
             triggerBotReaction(newText);
             let chat = chats.find(c => c.id === activeId);
             // Slice history to remove everything AFTER this prompt
@@ -460,20 +462,56 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         }
 
-        function popBot(idx) {}
-        function hitBot(idx) {}
+        function popBot(idx) {
+            const logo = document.getElementById('main-logo-img');
+            if (logo) {
+                logo.classList.add('logo-pop');
+                setTimeout(() => logo.classList.remove('logo-pop'), 600);
+            }
+        }
+        function hitBot(idx) {
+            const logo = document.getElementById('main-logo-img');
+            if (logo) {
+                logo.classList.add('logo-jiggle');
+                setTimeout(() => logo.classList.remove('logo-jiggle'), 500);
+            }
+        }
 
-        function trackCursor(e) {}
+        function trackCursor(e) {
+            const logo = document.getElementById('main-logo-img');
+            if (!logo || window.innerWidth <= 850) return;
+
+            // Clear any existing settle timer
+            if (tiltSettleTimer) clearTimeout(tiltSettleTimer);
+
+            const rect = logo.getBoundingClientRect();
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+
+            const mouseX = e.clientX;
+            const mouseY = e.clientY;
+
+            const angleX = (centerY - mouseY) / 30;
+            const angleY = (mouseX - centerX) / 30;
+
+            // Apply Tilt
+            logo.style.transform = `perspective(500px) rotateX(${angleX}deg) rotateY(${angleY}deg)`;
+
+            // Set Idle Settle Timer (4 Seconds)
+            tiltSettleTimer = setTimeout(() => {
+                logo.style.transform = `perspective(500px) rotateX(0) rotateY(0)`;
+            }, 2000);
+        }
 
         function previewImg(i) {
             if (i.files && i.files[0]) {
                 const file = i.files[0];
                 const reader = new FileReader();
-                reader.onload = (e) => { 
+                reader.onload = (e) => {
                     currentImg = e.target.result.split(',')[1];
                     if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
                     currentBlobUrl = URL.createObjectURL(file);
-                    
+
                     const area = document.getElementById('img-preview-area');
                     area.style.display = 'flex';
                     area.innerHTML = `
@@ -499,7 +537,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         function showDeleteConfirm(id, e) {
-            if(e) e.stopPropagation();
+            if (e) e.stopPropagation();
             chatToDelete = id;
             document.getElementById('delete-confirm-modal').style.display = 'flex';
             document.getElementById('confirm-del-btn').onclick = () => {
@@ -518,32 +556,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async function send() {
             const p = document.getElementById('prompt').value.trim();
-            if(!p && !currentImg) return;
-            if(!activeId) activeId = Date.now().toString();
+            if (!p && !currentImg) return;
+            if (!activeId) activeId = Date.now().toString();
             let chat = chats.find(c => c.id === activeId);
-            if(!chat) { chat = {id: activeId, title: p.substring(0,35), ms: []}; chats.push(chat); }
+            if (!chat) { chat = { id: activeId, title: p.substring(0, 35), ms: [] }; chats.push(chat); }
             window.activeId = activeId;
 
             document.getElementById('welcome').style.display = 'none';
             document.getElementById('chat-area').style.display = 'block';
-            
+
             addMsg('u', p, currentImg, chat.ms.length);
-            chat.ms.push({r: 'u', c: p, i: currentImg});
+            chat.ms.push({ r: 'u', c: p, i: currentImg });
             triggerBotReaction(p);
             clearImgPreview();
             document.getElementById('prompt').value = '';
             document.getElementById('stop-btn').style.display = 'flex';
-            
+
             let initialContent = '...';
             const isLocal = selectedModel !== 'agentic-pro' && !selectedModel.includes('gemini');
             if (isLocal) {
                 initialContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
             }
-            const bTxt = addMsg('b', initialContent, null, chat.ms.length); 
+            const bTxt = addMsg('b', initialContent, null, chat.ms.length);
             if (initialContent === '...') bTxt.innerText = '';
             updateBotVisuals();
             abortC = new AbortController();
-            
+
             try {
                 const token = localStorage.getItem('helper_token_v2') || '';
                 const res = await fetch('/chat', {
@@ -554,11 +592,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         'ngrok-skip-browser-warning': '69420'
                     },
                     body: JSON.stringify({
-                        prompt: p, 
-                        history: chat.ms, 
+                        prompt: p,
+                        history: chat.ms,
                         model: selectedModel,
                         img: currentImg,
                         name: user.name,
+                        persona: document.getElementById('persona-toggle').checked,
                         sys: {
                             english: document.getElementById('t-eng').classList.contains('on'),
                             oneword: document.getElementById('t-word').classList.contains('on'),
@@ -567,7 +606,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }),
                     signal: abortC.signal
                 });
-                
+
                 if (res.status === 401) {
                     signOut();
                     return;
@@ -576,48 +615,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!res.ok) {
                     const errorText = `System Error ${res.status}: The backend is currently overloaded or experiencing rate limits. Please try again in a few seconds.`;
                     bTxt.innerText = errorText;
-                    chat.ms.push({r: 'b', c: errorText});
+                    chat.ms.push({ r: 'b', c: errorText });
                     saveChats();
                     return;
                 }
 
-                const reader = res.body.getReader(); 
+                const reader = res.body.getReader();
                 let fullTxt = '';
                 let buffer = '';
                 const decoder = new TextDecoder("utf-8");
 
-                while(true) {
-                    const {done, value} = await reader.read(); 
-                    if(done) break;
-                    
-                    buffer += decoder.decode(value, {stream: true});
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
                     buffer = lines.pop(); // Retain the final incomplete chunk in the buffer
-                    
+
                     lines.forEach(line => {
                         const trimmedLine = line.trim();
-                        if(trimmedLine && !trimmedLine.startsWith('<')) { 
+                        if (trimmedLine && !trimmedLine.startsWith('<')) {
                             try {
                                 const j = JSON.parse(trimmedLine);
-                                if(j.message && j.message.content) { 
+                                if (j.message && j.message.content) {
                                     fullTxt += j.message.content;
                                     bTxt.innerHTML = renderMarkdown(fullTxt);
                                 }
-                            } catch(e) {
-                                console.warn("Dropped malformed line:", e);
-                            } 
+                            } catch (e) {
+                                // Silent skip for heartbeats (empty lines) or minor streaming noise
+                                if (trimmedLine.length > 5) {
+                                    console.warn("Dropped malformed line:", e, "Line:", trimmedLine);
+                                }
+                            }
                         }
                     });
                 }
-                
+
                 // Process any remaining buffered payload
                 if (buffer.trim()) {
                     try {
                         const j = JSON.parse(buffer);
-                        if(j.message && j.message.content) { fullTxt += j.message.content; }
-                    } catch(e) {}
+                        if (j.message && j.message.content) { fullTxt += j.message.content; }
+                    } catch (e) { }
                 }
-                
+
                 // Smart Title Generation: Update title if it's currently a short placeholder
                 if (chat.title && chat.title.trim().length <= 5 && fullTxt.trim().length > 10) {
                     const firstLine = fullTxt.split('\n')[0];
@@ -625,24 +667,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (newTitle) chat.title = newTitle;
                 }
 
-                chat.ms.push({r: 'b', c: fullTxt});
+                chat.ms.push({ r: 'b', c: fullTxt });
                 // Final render: apply Markdown + syntax highlighting after streaming completes
                 bTxt.innerHTML = renderMarkdown(fullTxt);
                 bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
                 saveUserChats();
-            } catch(e) { bTxt.innerText += " [Stopped]"; }
-            finally { 
-                document.getElementById('stop-btn').style.display = 'none'; 
-                abortC = null; currentImg = null; window.activeId = activeId; renderHist(); 
+            } catch (e) { bTxt.innerText += " [Stopped]"; }
+            finally {
+                document.getElementById('stop-btn').style.display = 'none';
+                abortC = null; currentImg = null; window.activeId = activeId; renderHist();
             }
         }
 
-        function stopAI() { if(abortC) abortC.abort(); }
+        function stopAI() { if (abortC) abortC.abort(); }
 
         async function loadUserChats() {
-            if(!user || !user.email) return;
+            if (!user || !user.email) return;
             const key = 'helper_chats_v2_' + user.email;
-            
+
             // 1. Load initial state from LocalStorage immediately
             let localStr = localStorage.getItem(key);
             if (!localStr && localStorage.getItem('helper_chats_v2')) {
@@ -651,7 +693,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem(key, localStr);
                 localStorage.removeItem('helper_chats_v2');
             }
-            
+
             if (localStr) {
                 chats = JSON.parse(localStr);
                 renderHist();
@@ -660,57 +702,59 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // 2. Refresh from Cloud
             const token = localStorage.getItem('helper_token_v2');
-            if(token) {
+            if (token) {
                 try {
                     console.log("DEBUG: Fetching chats from cloud...");
                     const res = await fetch('/get_chats', { headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' } });
                     const data = await res.json();
-                    if(data.success && data.chats) {
+                    if (data.success && data.chats) {
                         console.log("DEBUG: Cloud sync returned chats:", data.chats.length);
                         // Significant safeguard: Only overwrite if cloud has data OR local is empty
-                        if(data.chats.length > 0 || chats.length === 0) {
+                        if (data.chats.length > 0 || chats.length === 0) {
                             chats = data.chats;
                             localStorage.setItem(key, JSON.stringify(chats));
                             renderHist();
                         }
                     }
-                } catch(e) { console.error("Cloud fetch failed:", e); }
+                } catch (e) { console.error("Cloud fetch failed:", e); }
             } else {
                 renderHist();
             }
         }
 
         async function saveUserChats() {
-            if(!user || !user.email) return;
+            if (!user) return;
             const key = 'helper_chats_v2_' + user.email;
+
+            // Sync to Local Storage (as transient quick-load cache)
             localStorage.setItem(key, JSON.stringify(chats));
-            
+
+            // Sync to Cloud (Primary Source of Truth)
             const token = localStorage.getItem('helper_token_v2');
-            if(token) {
+            if (token) {
                 try {
-                    console.log("DEBUG: Syncing chats to cloud...", chats.length);
                     const res = await fetch('/sync_chats', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' },
                         body: JSON.stringify(chats)
                     });
                     const data = await res.json();
-                    if(!data.success) console.error("Cloud sync failed server-side:", data.error);
-                } catch(e) { console.error("Cloud sync failed:", e); }
+                    if (!data.success) console.error("Cloud sync failed server-side:", data.error);
+                } catch (e) { console.error("Cloud sync failed:", e); }
             }
         }
 
         const savedUser = localStorage.getItem('helper_user_v2');
-        if(savedUser) { 
+        if (savedUser) {
             user = JSON.parse(savedUser); document.getElementById('auth-overlay').style.display = 'none';
             loadUserChats();
             updUI();
-            
+
             // Show Onboarding for existing users who haven't picked yet
-            if(!localStorage.getItem('helper_theme_pref')) {
+            if (!localStorage.getItem('helper_theme_pref')) {
                 document.getElementById('theme-modal').style.display = 'flex';
             }
-            
+
             smartFocus('prompt');
         } else {
             document.getElementById('l-email').focus();
@@ -719,13 +763,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Liquid-Glass Interactions
         function jiggleLogo() {
-            const logo = document.getElementById('main-logo-img');
-            if (logo) {
-                logo.classList.remove('logo-jiggle'); // reset if already jiggling
-                void logo.offsetWidth; // trigger reflow
-                logo.classList.add('logo-jiggle');
-            }
+            hitBot();
         }
+
+        // Add Cursor Tracking to Sidebar Logo
+        document.addEventListener('mousemove', trackCursor);
+        document.addEventListener('mouseleave', () => {
+            const logo = document.getElementById('main-logo-img');
+            if (logo) logo.style.transform = 'perspective(500px) rotateX(0) rotateY(0)';
+        });
 
         const promptIn = document.getElementById('prompt');
         const sendBtn = document.getElementById('main-send-btn');
@@ -761,16 +807,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             // 2. Close Theme Menus if clicking outside
-            const isClickInsideTheme = (themeBtn && themeBtn.contains(e.target)) || 
-                                     (themeSettingsBtn && themeSettingsBtn.contains(e.target)) ||
-                                     (themeMenu && themeMenu.contains(e.target));
+            const isClickInsideTheme = (themeBtn && themeBtn.contains(e.target)) ||
+                (themeSettingsBtn && themeSettingsBtn.contains(e.target)) ||
+                (themeMenu && themeMenu.contains(e.target));
             if (!isClickInsideTheme && themeMenu && themeMenu.style.display === 'flex') {
                 themeMenu.style.display = 'none';
             }
 
             // 3. Close Model Menu if clicking outside
-            const isClickInsideModel = (modelToggle && modelToggle.contains(e.target)) || 
-                                     (modelMenu && modelMenu.contains(e.target));
+            const isClickInsideModel = (modelToggle && modelToggle.contains(e.target)) ||
+                (modelMenu && modelMenu.contains(e.target));
             if (!isClickInsideModel && modelMenu && modelMenu.style.display === 'flex') {
                 modelMenu.style.display = 'none';
             }
@@ -794,139 +840,144 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-// NOTE: setAtmosphere, openImageModal, closeImageModal are defined
-// inside the DOMContentLoaded block above and exported to window there.
-// Duplicate outer definitions removed to prevent initialization conflicts.
+        // NOTE: setAtmosphere, openImageModal, closeImageModal are defined
+        // inside the DOMContentLoaded block above and exported to window there.
+        // Duplicate outer definitions removed to prevent initialization conflicts.
 
-// --- Mobile hardware back button & Global Shortcuts ---
-window.addEventListener('popstate', (e) => {
-    // 1. Close Lightbox
-    const lb = document.getElementById('image-modal');
-    if (lb && lb.classList.contains('active')) {
-        closeImageModal();
-        return;
+        // --- Mobile hardware back button & Global Shortcuts ---
+        window.addEventListener('popstate', (e) => {
+            // 1. Close Lightbox
+            const lb = document.getElementById('image-modal');
+            if (lb && lb.classList.contains('active')) {
+                closeImageModal();
+                return;
+            }
+            // 2. Close Settings
+            const set = document.getElementById('settings-modal');
+            if (set && set.style.display === 'flex') {
+                closeSettings();
+                return;
+            }
+            // 3. Close Sidebar
+            const sb = document.getElementById('sidebar');
+            if (sb && sb.classList.contains('open')) {
+                toggleSidebar();
+                return;
+            }
+            // 4. Close confirmation
+            const conf = document.getElementById('delete-confirm-modal');
+            if (conf && conf.style.display === 'flex') {
+                conf.style.display = 'none';
+                return;
+            }
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                // Priority close on ESC
+                const lb = document.getElementById('image-modal');
+                if (lb && lb.classList.contains('active')) { closeImageModal(); return; }
+
+                const set = document.getElementById('settings-modal');
+                if (set && set.style.display === 'flex') { closeSettings(); return; }
+
+                const conf = document.getElementById('delete-confirm-modal');
+                if (conf && conf.style.display === 'flex') { conf.style.display = 'none'; return; }
+
+                const sb = document.getElementById('sidebar');
+                if (sb && sb.classList.contains('open')) { toggleSidebar(); return; }
+            }
+        });
+
+        // --- Pull to Refresh Gesture ---
+        let touchStartY = 0;
+        let touchDiffY = 0;
+        const REFRESH_THRESHOLD = 120;
+        const NOTCH_ZONE = 60; // Pull must start in the top 60px
+
+        window.addEventListener('touchstart', (e) => {
+            const startY = e.touches[0].pageY;
+            if ((window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0) && startY < NOTCH_ZONE) {
+                touchStartY = startY;
+            } else {
+                touchStartY = 999999; // Disarm if outside zone
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchmove', (e) => {
+            const currentY = e.touches[0].pageY;
+            touchDiffY = currentY - touchStartY;
+
+            if (touchDiffY > 0 && (window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0)) {
+                const indicator = document.getElementById('pull-indicator');
+                if (indicator) {
+                    const pullProgress = Math.min(touchDiffY, REFRESH_THRESHOLD * 1.5);
+                    indicator.style.top = (pullProgress - 60) + 'px';
+                    indicator.style.opacity = Math.min(pullProgress / REFRESH_THRESHOLD, 1);
+                }
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchend', () => {
+            if (touchDiffY > REFRESH_THRESHOLD) {
+                // Trigger Refresh
+                location.reload();
+            } else {
+                // Reset Indicator
+                const indicator = document.getElementById('pull-indicator');
+                if (indicator) {
+                    indicator.style.top = '-60px';
+                    indicator.style.opacity = '0';
+                }
+            }
+            touchDiffY = 0;
+        });
+
+        const logoImg = document.getElementById('main-logo-img');
+        if (logoImg) logoImg.addEventListener('click', () => {
+            jiggleLogo();
+            // Removed defunct setAtmosphere ghost call to prevent console errors.
+        });
+
+        // --- Global Function Mapping for HTML onclick ---
+        window.handleAuth = handleAuth;
+        window.switchAuth = switchAuth;
+        window.signOut = signOut;
+        window.toggleDropdown = toggleDropdown;
+        window.selModel = selModel;
+        window.send = send;
+        window.startNewChat = startNewChat;
+        window.loadChat = loadChat;
+        window.showDeleteConfirm = showDeleteConfirm;
+        window.closeDeleteConfirm = closeDeleteConfirm;
+        window.clearImgPreview = clearImgPreview;
+        window.previewImg = previewImg;
+        window.toggleSidebar = toggleSidebar;
+        window.triggerBotReaction = triggerBotReaction;
+        window.copyCode = copyCode;
+        window.downloadCode = downloadCode;
+        window.startEditPrompt = startEditPrompt;
+        window.submitEdit = submitEdit;
+        window.openSettings = openSettings;
+        // BUG FIX: Restored correct closeSettings.
+        // The previous version only closed the modal when clicking the backdrop itself,
+        // which meant the X button (which has class 'close-settings') worked but
+        // calling closeSettings() directly from openSettings() button logic did not.
+        window.closeSettings = closeSettings;
+        window.handleChatKey = handleChatKey;
+        window.autoRes = function (el) {
+            if (!el) return;
+            el.style.height = 'auto';
+            el.style.height = (el.scrollHeight) + 'px';
+        };
+        window.stopAI = stopAI;
+        window.openImageModal = openImageModal;
+        window.closeImageModal = closeImageModal;
+        window.toggleSet = toggleSet;
+        window.filterHist = filterHist;
+        window.startRename = startRename;
+        // exportChat is already exported at line 286. 
+    } catch (e) {
+        console.error("Critical Runtime Error in Dashboard:", e);
     }
-    // 2. Close Settings
-    const set = document.getElementById('settings-modal');
-    if (set && set.style.display === 'flex') {
-        closeSettings();
-        return;
-    }
-    // 3. Close Sidebar
-    const sb = document.getElementById('sidebar');
-    if (sb && sb.classList.contains('open')) {
-        toggleSidebar();
-        return;
-    }
-    // 4. Close confirmation
-    const conf = document.getElementById('delete-confirm-modal');
-    if (conf && conf.style.display === 'flex') {
-        conf.style.display = 'none';
-        return;
-    }
-});
-
-window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-        // Priority close on ESC
-        const lb = document.getElementById('image-modal');
-        if (lb && lb.classList.contains('active')) { closeImageModal(); return; }
-        
-        const set = document.getElementById('settings-modal');
-        if (set && set.style.display === 'flex') { closeSettings(); return; }
-        
-        const conf = document.getElementById('delete-confirm-modal');
-        if (conf && conf.style.display === 'flex') { conf.style.display = 'none'; return; }
-        
-        const sb = document.getElementById('sidebar');
-        if (sb && sb.classList.contains('open')) { toggleSidebar(); return; }
-    }
-});
-
-// --- Pull to Refresh Gesture ---
-let touchStartY = 0;
-let touchDiffY = 0;
-const REFRESH_THRESHOLD = 120;
-const NOTCH_ZONE = 60; // Pull must start in the top 60px
-
-window.addEventListener('touchstart', (e) => {
-    const startY = e.touches[0].pageY;
-    if ((window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0) && startY < NOTCH_ZONE) {
-        touchStartY = startY;
-    } else {
-        touchStartY = 999999; // Disarm if outside zone
-    }
-}, { passive: true });
-
-window.addEventListener('touchmove', (e) => {
-    const currentY = e.touches[0].pageY;
-    touchDiffY = currentY - touchStartY;
-    
-    if (touchDiffY > 0 && (window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0)) {
-        const indicator = document.getElementById('pull-indicator');
-        if (indicator) {
-            const pullProgress = Math.min(touchDiffY, REFRESH_THRESHOLD * 1.5);
-            indicator.style.top = (pullProgress - 60) + 'px';
-            indicator.style.opacity = Math.min(pullProgress / REFRESH_THRESHOLD, 1);
-        }
-    }
-}, { passive: true });
-
-window.addEventListener('touchend', () => {
-    if (touchDiffY > REFRESH_THRESHOLD) {
-        // Trigger Refresh
-        location.reload();
-    } else {
-        // Reset Indicator
-        const indicator = document.getElementById('pull-indicator');
-        if (indicator) {
-            indicator.style.top = '-60px';
-            indicator.style.opacity = '0';
-        }
-    }
-    touchDiffY = 0;
-});
-
-    const logoImg = document.getElementById('main-logo-img');
-    if(logoImg) logoImg.addEventListener('click', () => {
-        jiggleLogo();
-        // Removed defunct setAtmosphere ghost call to prevent console errors.
-    });
-
-    // --- Global Function Mapping for HTML onclick ---
-    window.handleAuth = handleAuth;
-    window.switchAuth = switchAuth;
-    window.signOut = signOut;
-    window.toggleDropdown = toggleDropdown;
-    window.selModel = selModel;
-    window.send = send;
-    window.startNewChat = startNewChat;
-    window.loadChat = loadChat;
-    window.showDeleteConfirm = showDeleteConfirm;
-    window.closeDeleteConfirm = closeDeleteConfirm;
-    window.clearImgPreview = clearImgPreview;
-    window.previewImg = previewImg;
-    window.toggleSidebar = toggleSidebar;
-    window.triggerBotReaction = triggerBotReaction;
-    window.copyCode = copyCode;
-    window.downloadCode = downloadCode;
-    window.startEditPrompt = startEditPrompt;
-    window.submitEdit = submitEdit;
-    window.openSettings = openSettings;
-    // BUG FIX: Restored correct closeSettings.
-    // The previous version only closed the modal when clicking the backdrop itself,
-    // which meant the X button (which has class 'close-settings') worked but
-    // calling closeSettings() directly from openSettings() button logic did not.
-    window.closeSettings = closeSettings;
-    window.handleChatKey = handleChatKey;
-    window.autoRes = function(el) {
-        if (!el) return;
-        el.style.height = 'auto';
-        el.style.height = (el.scrollHeight) + 'px';
-    };
-    window.stopAI = stopAI;
-    window.openImageModal = openImageModal;
-    window.closeImageModal = closeImageModal;
-    // exportChat is already exported at line 286. 
-
 });

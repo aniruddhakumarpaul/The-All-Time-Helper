@@ -6,14 +6,26 @@ let palIdx = 0;
 let palResults = [];
 
 window.addEventListener('keydown', (e) => {
+    // 1. Unified Escape Handler
+    if (e.key === 'Escape') {
+        closePalette();
+        if (window.closeSettings) window.closeSettings();
+        if (window.closeImageModal) window.closeImageModal();
+        if (window.closeDeleteConfirm) window.closeDeleteConfirm();
+    }
+
+    // 2. Open Palette
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
         openPalette();
     }
-    if (e.key === 'Escape') closePalette();
     
+    // 3. Palette Navigation
     const palette = document.getElementById('cmd-palette');
-    if (palette.style.display === 'flex') {
+    // Using computed style to ensure visibility detection is robust
+    const isPalVisible = palette && window.getComputedStyle(palette).display === 'flex';
+    
+    if (isPalVisible) {
         if (e.key === 'ArrowDown') { e.preventDefault(); palIdx = Math.min(palIdx + 1, palResults.length - 1); renderPal(); }
         if (e.key === 'ArrowUp') { e.preventDefault(); palIdx = Math.max(palIdx - 1, 0); renderPal(); }
         if (e.key === 'Enter') { e.preventDefault(); selectPal(); }
@@ -55,7 +67,7 @@ function updPal(q) {
     const models = [
         { t: 'Model: Antigravity Pro', i: '💎', a: () => { if(window.selModel) window.selModel('gemini-1.5-pro-latest', 'Antigravity Pro (Cloud)'); } },
         { t: 'Model: Gemma 2', i: '⚡', a: () => { if(window.selModel) window.selModel('gemma2:2b', 'Gemma 2 (Fast&Fun)'); } },
-        { t: 'Model: Llama 3.2', i: '🦙', a: () => { if(window.selModel) window.selModel('llama3.2', 'Llama 3.2 (Super Light)'); } }
+        { t: 'Model: Llama (Sensitive)', i: '🦙', a: () => { if(window.selModel) window.selModel('helper', 'Llama (Sensitive)'); } }
     ];
     models.forEach(m => {
         if (m.t.toLowerCase().includes(q.toLowerCase())) palResults.push(m);

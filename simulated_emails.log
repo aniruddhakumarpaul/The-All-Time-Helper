@@ -52,3 +52,12 @@ To: user@example.com
 Subject: Hi, how can I assist you today?
 Body: Hello, how are you?
 -----------------------
+
+--- SIMULATED EMAIL ---
+To: your email address
+Subject: Personal Assistant Inquiry
+Body: Hello,
+I am interested in creating a basic personal assistant with RAG.
+Can you provide guidance on how to get started?
+Thank you,
+-----------------------

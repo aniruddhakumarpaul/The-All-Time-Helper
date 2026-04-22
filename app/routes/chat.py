@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
     img: Optional[str] = None
     name: str = "Human"
     sys: dict = {}
+    persona: bool = False
 
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
@@ -53,11 +54,11 @@ async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_curren
             try:
                 # Run the Agentic Brain in a separate thread to avoid blocking the event loop
                 # We wrap it in a task so we can yield heartbeats while waiting
-                task = asyncio.create_task(asyncio.to_thread(ask_the_helper, prompt, img, target_model, sys_config, history))
+                task = asyncio.create_task(asyncio.to_thread(ask_the_helper, prompt, img, target_model, sys_config, history, req.persona))
                 
-                # HEARTBEAT LOOP: Yield a space every 5s to keep the connection alive
+                # HEARTBEAT LOOP: Yield a newline every 5s to keep the connection alive
                 while not task.done():
-                    yield b" \n" 
+                    yield b"\n" 
                     await asyncio.sleep(5)
                 
                 result = await task

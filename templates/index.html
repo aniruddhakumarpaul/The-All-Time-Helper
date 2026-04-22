@@ -112,6 +112,23 @@
                 </svg>
                 Settings
             </div>
+
+            <!-- Persona Switch -->
+            <div class="persona-switch-item" style="padding: 15px; margin-top: 5px; background: rgba(255,107,157,0.05); border-radius: 12px; border: 1px solid rgba(255,107,157,0.1); display: flex; align-items: center; justify-content: space-between; cursor: pointer;" onclick="const t = document.getElementById('persona-toggle'); t.checked = !t.checked;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="spark-icon" style="color: #ff6b9d;">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M19.07 4.93l-2.83 2.83"></path>
+                        </svg>
+                    </div>
+                    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-main);">Personal Persona</div>
+                </div>
+                <label class="switch" onclick="event.stopPropagation()">
+                    <input type="checkbox" id="persona-toggle">
+                    <span class="slider round"></span>
+                </label>
+            </div>
+
             <div class="sys-status">
                 <div class="status-header">
                     <div class="status-dot"></div>
@@ -164,7 +181,7 @@
                                 (Fast&Fun)</div>
                             <div class="model-opt" onclick="selModel('dolphin-mistral', 'Mistral (Uncensored)')">Dolphin
                                 Mistral (Uncensored)</div>
-                            <div class="model-opt" onclick="selModel('llama3.2', 'Llama 3.2 (Super Light)')">Llama 3.2 (Super Light)
+                            <div class="model-opt" onclick="selModel('helper', 'Llama (Sensitive)')">Llama (Sensitive)
                             </div>
                             <div class="model-opt" onclick="selModel('phi3', 'Phi 3 (code)')">Phi 3 (code)</div>
                             <div class="model-opt" onclick="selModel('moondream', 'Moondream (Vision)')">Moondream
@@ -197,7 +214,10 @@
                         </svg>
                     </button>
 
-                    <textarea id="prompt" rows="1" placeholder="HEY! Human, Type Here..."></textarea>
+                    <textarea id="prompt" 
+                  placeholder="Ask me anything..." 
+                  onkeydown="handleChatKey(event)"
+                  rows="1"></textarea>
 
                     <button id="main-send-btn" class="action-btn send-btn" onclick="send()">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"

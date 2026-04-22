@@ -21,6 +21,13 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run Pre-Flight Diagnostics
+    try:
+        from app.diagnostics import run_startup_diagnostics
+        run_startup_diagnostics()
+    except Exception as e:
+        print(f"[!] Diagnostics Error: {e}")
+        
     # Startup logic
     try:
         from pyngrok import ngrok
