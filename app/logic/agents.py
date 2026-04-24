@@ -72,9 +72,10 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     """Internal factory to create agents with an LLM instance. Omit tools if model doesn't support them."""
     
     # Tool assignment based on capability
-    dev_tools = [tools.search_tool] if use_tools else []
+    dev_tools = [tools.search_tool, tools.recall_memory, tools.archive_insight] if use_tools else []
     sec_tools = [tools.send_email_tool] if use_tools else []
     mystic_tools = [tools.calculate_horoscope, tools.analyze_palm_lines, tools.generate_visionary_image] if use_tools else []
+    mem_tools = [tools.recall_memory, tools.archive_insight] if use_tools else []
 
     # Dynamic Persona Enhancements from sys_config
     persona_suffix = ""
@@ -139,7 +140,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
         you MUST include it verbatim in your final output. Never paraphrase it.
         Never convert an image tag to a plain hyperlink.
         NEVER claim you cannot draw — always delegate to your Visual Artist specialist.{persona_suffix}''',
-        tools=[],  # Manager delegates; it does not use tools directly
+        tools=mem_tools,  # Manager uses memory to orchestrate context
         llm=llm,
         verbose=True,
         allow_delegation=True,
@@ -157,7 +158,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
         2. DO NOT use tools (Email, Search, etc.) unless the user EXPLICITLY asks for them (e.g., 'send an email' or 'search for').
         3. For sensitive topics (Mental Health/Diagnosis): Provide empathetic orientation and resources. YOU ARE PERMITTED to help find support and offer compassion, but DO NOT provide medical treatments or clinical assessments.
         4. If a specialty tool is not relevant, answer directly and empathetically.{persona_suffix}''',
-        tools=dev_tools + sec_tools + mystic_tools,
+        tools=dev_tools + sec_tools + mystic_tools + mem_tools,
         llm=llm,
         verbose=True,
         allow_delegation=False,
@@ -331,7 +332,19 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                 main_task.agent = generalist
                 crew = Crew(agents=[generalist], tasks=[main_task], process=Process.sequential, verbose=True, cache=True)
 
-    return getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
+    result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
+
+    # --- POST-PROCESSING HARDENING: One-Word Mode ---
+    if sys_config and sys_config.get('oneword'):
+        # Extract the first word and strip punctuation
+        words = str(result).split()
+        if words:
+            # We take the first non-empty word and clean it
+            one_word = words[0].strip('.,!?;:"\'()[]{}')
+            print(f"DEBUG: One-Word Mode Enforcement Active. Original: '{result}' -> Final: '{one_word}'")
+            return one_word
+
+    return result
 
 def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona)

@@ -3,6 +3,7 @@ import smtplib
 from email.mime.text import MIMEText
 from crewai.tools import tool
 from duckduckgo_search import DDGS
+from app.logic.memory import query_memory, log_insight
 
 # 1. Custom DuckDuckGo Search Tool
 @tool("search_tool")
@@ -114,3 +115,31 @@ def generate_visionary_image(description: str) -> str:
     # 4. Return ONLY the raw markdown tag.
     return f"![{clean_desc}]({image_url})"
 
+
+# 6. Neural Memory Tools
+@tool("recall_memory")
+def recall_memory(query: str) -> str:
+    """Semantically searches the project's 'neural memory' for code snippets, architectural decisions, and previous activity.
+    Use this to understand how a feature is implemented or what was decided in the past without reading all files."""
+    try:
+        results = query_memory(query)
+        if not results:
+            return "No relevant memories found for this query."
+        
+        output = []
+        for r in results:
+            source = r['metadata'].get('file', 'Unknown')
+            output.append(f"--- Memory from {source} ---\n{r['content']}\n")
+        return "\n".join(output)
+    except Exception as e:
+        return f"Memory Retrieval Error: {str(e)}"
+
+@tool("archive_insight")
+def archive_insight(title: str, body: str) -> str:
+    """Permanently saves an architectural decision, user preference, or project milestone to the 'neural memory'.
+    Use this to ensure critical context is preserved for future sessions."""
+    try:
+        log_insight(title, body)
+        return f"Successfully archived insight: '{title}' to Neural Memory."
+    except Exception as e:
+        return f"Memory Archive Error: {str(e)}"

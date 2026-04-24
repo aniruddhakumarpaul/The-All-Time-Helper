@@ -497,7 +497,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Apply Tilt
             logo.style.transform = `perspective(500px) rotateX(${angleX}deg) rotateY(${angleY}deg)`;
 
-            // Set Idle Settle Timer (4 Seconds)
+            // Set Idle Settle Timer (2 Seconds)
             tiltSettleTimer = setTimeout(() => {
                 logo.style.transform = `perspective(500px) rotateX(0) rotateY(0)`;
             }, 2000);
