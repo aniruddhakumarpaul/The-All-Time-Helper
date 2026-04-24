@@ -96,8 +96,8 @@
                                     const loadEl = document.getElementById('load-${uniqueId}');
                                     if (this.retryCount <= 12) {
                                         const s = this;
-                                        // Adaptive backoff: shorter initial pings, then longer waits for cold-starts
-                                        const delay = this.retryCount <= 3 ? 4000 : 8000;
+                                        // Adaptive backoff: give the GPU more time initially (6s), then standard waits
+                                        const delay = this.retryCount <= 3 ? 6000 : 8000;
                                         
                                         if(loadEl) {
                                             const statusSpan = loadEl.querySelector('span');

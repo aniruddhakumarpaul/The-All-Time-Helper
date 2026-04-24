@@ -9,6 +9,7 @@ from crewai import Agent, Task, Crew, Process, LLM
 from typing import List, Optional, Any
 from app.logic import tools
 from app.logic.logger import log_agent_step
+from app.logic.memory import query_memory, log_insight
 
 # Ensure environment variables are loaded
 load_dotenv()
@@ -193,19 +194,35 @@ def process_image(img_base64: str):
             "images": [img_base64]
         }
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=15)
+        # Increased timeout for local vision models (they can be slow to load)
+        response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=45, verify=False)
         return response.json().get("response", "I can see an image but cannot discern details.")
     except Exception as e:
-        return f"Vision analysis unavailable: {str(e)}"
+        return f"Vision analysis unavailable (Hardware Lag): {str(e)}"
 
 
-@retry(
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    stop=stop_after_attempt(5), # More attempts for key rotation
-    reraise=True
-)
 def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     """Orchestrates the specialized agents to answer the user prompt with system configurations."""
+    
+    # --- ULTRA-FAST IMAGE TRACK (BYPASS EVERYTHING) ---
+    is_image_request = any(kw in user_prompt.lower() for kw in [
+        'draw', 'paint', 'picture', 'image', 'photo', 'scenery', 'sketch',
+        'illustration', 'generate image', 'create image', 'show me', 'visualize'
+    ])
+    is_local = target_model != "agentic-pro"
+
+    if is_image_request and is_local:
+        print(f"DEBUG: Ultra-Fast Local Image Track Active")
+        import urllib.parse
+        import time
+        clean_desc = user_prompt.lower()
+        for kw in ['draw me a ', 'draw me ', 'draw a ', 'draw ', 'paint me a ', 'paint me ', 'paint a ', 'paint ', 'show me a ', 'show me ', 'create an image of ', 'generate an image of ']:
+            clean_desc = clean_desc.replace(kw, '')
+        clean_desc = clean_desc.strip().capitalize()
+        encoded = urllib.parse.quote(clean_desc)
+        seed = (abs(hash(clean_desc)) + int(time.time())) % 1000000
+        image_url = f"https://image.pollinations.ai/prompt/{encoded}?model=turbo&width=1024&height=1024&nologo=true&seed={seed}"
+        return f"![{clean_desc}]({image_url})"
 
     # 0. Persona Routing: Support for Fine-Tuned Local Models
     if persona:
@@ -226,7 +243,6 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         target_key = get_next_groq_key()
 
     # 1. Decision Engine
-    is_local = target_model != "agentic-pro"
     needs_mystic = any(kw in user_prompt.lower() for kw in ['draw', 'paint', 'horoscope', 'palm', 'picture', 'image', 'photo', 'sketch'])
     needs_search = any(kw in user_prompt.lower() for kw in ['search', 'weather', 'stock', 'news', 'find'])
     needs_email = any(kw in user_prompt.lower() for kw in ['email', 'send'])
@@ -234,24 +250,27 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     requires_tools = (needs_mystic or needs_search or needs_email) and not is_sensitive
     force_no_tools = is_local and not requires_tools
 
-    developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
+    # DEFERRED AGENT BUILDING: We only build the swarm if we actually need it for text tasks or cloud images.
+    # developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
+
 
     context = user_prompt
-    if img_data:
+    # Only analyze the image if it's actually referred to or if we are in vision mode
+    image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about']
+    is_referring_to_image = any(kw in user_prompt.lower() for kw in image_reference_keywords)
+
+    if img_data and is_referring_to_image:
+        print("DEBUG: Image reference detected. Analyzing with Moondream...")
         image_description = process_image(img_data)
         context = f"User provided an image. Image Description: {image_description}\n\nUser Question: {user_prompt}"
+    elif img_data:
+        print("DEBUG: Image present but no direct reference in prompt. Skipping Moondream for speed.")
 
-    is_image_request = any(kw in user_prompt.lower() for kw in [
-        'draw', 'paint', 'picture', 'image', 'photo', 'scenery', 'sketch',
-        'illustration', 'generate image', 'create image', 'show me', 'visualize'
-    ])
 
     if is_image_request:
-        if is_local:
-            print(f"DEBUG: Local Image Fast-Track Active for {target_model}")
-            result = tools.generate_visionary_image.run(description=context)
-            return result
-            
+        # Cloud images still proceed here to use the agent swarm
+        # Build only the mystic agent for cloud images
+        _, _, mystic, _, _ = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
         image_task = Task(
             description=f'''User image request: "{context}".
             1. Expand this into a high-fidelity artistic prompt (cinematic, 8k, detailed). 
@@ -261,6 +280,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             agent=mystic
         )
         crew = Crew(agents=[mystic], tasks=[image_task], verbose=True)
+        result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
     else:
         system_instructions = ""
         if sys_config:
@@ -296,46 +316,119 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
 
         main_task = Task(description=task_desc, expected_output=expected_output)
 
+        # --- EXECUTION PATHWAY ---
+        result = None
+        crew = None
+
+        # --- NEURAL MEMORY RETRIEVAL (RAG) ---
+        # Before answering, we "think" about what we know from previous sessions
+        semantic_memories = query_memory(user_prompt, n_results=3)
+        memory_block = ""
+        if semantic_memories:
+            memory_block = "\n<neural_context>\n"
+            for m in semantic_memories:
+                memory_block += f"- {m['content']}\n"
+            memory_block += "</neural_context>\n"
+
+        # --- EXECUTION PATHWAY: CREW-LESS TEXT PROCESSING ---
+        result = None
+        
+        # 1. Cloud Engine (Agentic Pro / Groq)
         if target_model == "agentic-pro":
-            crew = Crew(
-                agents=[developer, secretary, mystic],
-                tasks=[main_task],
-                manager_agent=manager,
-                process=Process.hierarchical,
-                step_callback=log_agent_step,
-                verbose=True,
-                cache=True 
+            print(f"DEBUG: Executing Deep Context Analysis for {target_model}...")
+            # BUILD SWARM ONLY WHEN NEEDED
+            developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
+            llm_engine = get_llm(target_model, target_key)
+            
+            messages = []
+            
+            # System Role Integration: INTELLECTUAL PARTNER MODE
+            sys_msg = (
+                "You are 'The All Time Helper', a sophisticated intellectual partner. "
+                "Your goal is to have a deep, coherent conversation. Analyze the <neural_context> and history "
+                "to provide answers that are grounded in past decisions and current logic. "
+                "Avoid generic AI boilerplate. Be precise, creative, and strictly build upon previous context. "
             )
+            
+            if is_sensitive:
+                sys_msg += "TOP PRIORITY: This is a sensitive topic. Provide empathetic orientation and crisis resources. "
+            if sys_config and sys_config.get('oneword'):
+                sys_msg += "STRICT RULE: YOU MUST RESPOND WITH EXACTLY ONE WORD. "
+            elif system_instructions:
+                sys_msg += f"SYSTEM PREFERENCES: {system_instructions}"
+            
+            messages.append({"role": "system", "content": sys_msg})
+            
+            # Use the retrieved memory block to ground the LLM
+            if memory_block:
+                messages.append({"role": "system", "content": f"Relevant background info: {memory_block}"})
+
+            if history:
+                # Increased history depth to 15 for intellectual continuity
+                for msg in history[-15:]:
+                    messages.append({"role": "user" if msg.get("role")=="user" else "assistant", "content": msg.get("content", "")})
+            
+            messages.append({"role": "user", "content": context})
+            
+            try:
+                # Direct call to the underlying LiteLLM/Groq via the CrewAI LLM wrapper
+                result = llm_engine.call(messages=messages)
+                
+                # --- AUTO-ARCHIVING: Save this exchange for future deep context ---
+                if result and len(str(result)) > 50:
+                    log_insight(f"Interaction_{int(os.path.getmtime(__file__))}", f"User: {user_prompt}\nHelper: {result}")
+                    
+            except Exception as e:
+                result = f"Cloud Engine Direct Call Error: {str(e)}"
+                
+        # 2. Local Engine (Ollama)
         else:
-            if force_no_tools:
-                print("DEBUG: Executing Fast-Track Direct Generation...")
+            print(f"DEBUG: Executing Deep Local Analysis for {target_model}...")
+            
+            # If the local request specifically needs tools, we use the Agent Swarm
+            if requires_tools:
+                print(f"DEBUG: Local Tool Usage Detected. Initializing Generalist Agent...")
+                _, _, _, _, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
+                
+                local_task = Task(
+                    description=f"Handle the user request using your tools if necessary: {user_prompt}",
+                    expected_output="A helpful response using available tools.",
+                    agent=generalist
+                )
+                crew = Crew(agents=[generalist], tasks=[local_task], verbose=True)
+                result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
+            else:
+                # Direct Call for simple chat (High Performance)
                 messages = []
+                local_sys = "You are a highly capable AI assistant. Focus on deep context and avoid generic answers. "
+                if sys_config and sys_config.get('oneword'):
+                    local_sys += "ONE-WORD MODE: You MUST respond with exactly ONE WORD. "
+                elif system_instructions:
+                    local_sys += f"SYSTEM PREFERENCES: {system_instructions}"
+                
+                messages.append({"role": "system", "content": local_sys})
+                if memory_block:
+                    messages.append({"role": "system", "content": f"Context from previous sessions: {memory_block}"})
                 if history:
-                    for msg in history[-5:]:
+                    for msg in history[-10:]:
                         messages.append({"role": "user" if msg.get("role")=="user" else "assistant", "content": msg.get("content", "")})
                 
-                final_prompt = user_prompt
-                if sys_config and sys_config.get('oneword'):
-                    final_prompt = f"CRITICAL: USE EXACTLY ONE WORD. {user_prompt}"
-                elif system_instructions:
-                    final_prompt += f"\n\n[SYSTEM PREFERENCES]: {system_instructions}"
-                messages.append({"role": "user", "content": final_prompt})
+                messages.append({"role": "user", "content": context})
                 
                 payload = {"model": target_model, "messages": messages, "stream": False}
                 ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
                 try:
-                    res = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=240)
-                    return res.json().get("message", {}).get("content", "Error parsing response.")
+                    res = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=240, verify=False)
+                    result = res.json().get("message", {}).get("content", "Error parsing response.")
+                    
+                    if result and len(str(result)) > 50:
+                        log_insight(f"Local_{target_model}_{int(os.path.getmtime(__file__))}", f"Context: {user_prompt}\nAns: {result}")
+                        
                 except Exception as e:
-                    return f"Local Engine Fast-Track Error: {str(e)}"
-            else:
-                main_task.agent = generalist
-                crew = Crew(agents=[generalist], tasks=[main_task], process=Process.sequential, verbose=True, cache=True)
+                    result = f"Local Engine Direct Call Error: {str(e)}"
 
-    result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
-
-    # --- POST-PROCESSING HARDENING: One-Word Mode ---
-    if sys_config and sys_config.get('oneword'):
+    # --- GLOBAL POST-PROCESSING HARDENING ---
+    if result and sys_config and sys_config.get('oneword'):
         # Extract the first word and strip punctuation
         words = str(result).split()
         if words:
@@ -345,6 +438,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             return one_word
 
     return result
+
 
 def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona)

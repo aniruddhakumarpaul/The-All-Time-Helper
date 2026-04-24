@@ -108,7 +108,7 @@ def generate_visionary_image(description: str) -> str:
     # model=flux : High fidelity model
     # width/height : HD Resolution
     # nologo=true : Clean output
-    image_url = f"https://pollinations.ai/p/{encoded}?model=flux&width=1280&height=720&nologo=true&seed={seed}"
+    image_url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1280&height=720&nologo=true&seed={seed}"
     
     print(f"[ART ENGINE] Generated HD URL: {image_url}")
     
