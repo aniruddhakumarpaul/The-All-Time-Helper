@@ -36,6 +36,7 @@ document.addEventListener('DOMContentLoaded', () => {
         function updUI() {
             if (user) {
                 const nameStr = user.name || 'Friend';
+                const initial = nameStr.charAt(0).toUpperCase();
 
                 const sbGreet = document.getElementById('sidebar-greet');
                 if (sbGreet) sbGreet.innerText = 'Hello, ' + nameStr;
@@ -44,7 +45,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (cGreet) cGreet.innerHTML = `Hello, <span style="background: var(--greet-grad); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;">${nameStr}</span>`;
 
                 const uInfo = document.getElementById('user-info');
-                if (uInfo) uInfo.innerText = 'Signed in as ' + user.email;
+                if (uInfo) uInfo.innerText = user.email;
+
+                const avCont = document.getElementById('sidebar-av-container');
+                if (avCont) {
+                    avCont.innerHTML = `<div class="av u-av" style="width: 32px; height: 32px; font-size: 0.8rem;"><span class="initial-letter">${initial}</span><span class="full-name">${nameStr}</span></div>`;
+                }
             }
         }
 
@@ -337,7 +343,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('chat-area').style.display = 'block';
             document.getElementById('welcome').style.display = 'none';
             clearImgPreview();
-            chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx));
+            chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant'));
             renderHist();
 
             // Auto-close sidebar on mobile after selection
@@ -352,9 +358,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 
-        function addMsg(r, c, i, idx) {
+        function addMsg(r, c, i, idx, mName) {
             const div = document.createElement('div');
-            div.className = `msg ${r}-msg`;
+            div.className = `msg ${r}-msg entering`; // Added 'entering' for spring animation
+            setTimeout(() => div.classList.remove('entering'), 600);
 
             const name = user ? user.name : 'User';
             const initial = name.charAt(0).toUpperCase();
@@ -362,13 +369,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const avatarHtml = r === 'u'
                 ? `<div class="av u-av"><span class="initial-letter">${initial}</span><span class="full-name">${name}</span></div>`
                 : `<div class="av b-av" id="bot-av-${idx}">
-                    <svg class="orb-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <div class="logo-img-wrapper">
+                        <svg class="orb-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
                         <defs>
-                            <radialGradient id="orbGrad-${idx}" cx="50%" cy="50%" r="50%">
-                                <stop offset="0%" style="stop-color:#00ffff;stop-opacity:1" />
-                                <stop offset="40%" style="stop-color:#00ffff;stop-opacity:0.6" />
-                                <stop offset="100%" style="stop-color:#00ffff;stop-opacity:0" />
-                            </radialGradient>
+                            <linearGradient id="orbGrad-${idx}" x1="0%" y1="0%" x2="100%" y2="100%">
+                                <stop offset="0%" style="stop-color: var(--orb-color-1); stop-opacity: 1" />
+                                <stop offset="100%" style="stop-color: var(--orb-color-2); stop-opacity: 1" />
+                            </linearGradient>
                             <filter id="orbGlow-${idx}" x="-50%" y="-50%" width="200%" height="200%">
                                 <feGaussianBlur in="SourceGraphic" stdDeviation="5" />
                             </filter>
@@ -376,6 +383,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <circle cx="50%" cy="50%" r="40" fill="url(#orbGrad-${idx})" filter="url(#orbGlow-${idx})" />
                         <circle cx="50%" cy="50%" r="25" fill="url(#orbGrad-${idx})" />
                     </svg>
+                    </div>
                     <div class="bot-bubble" id="bot-bubble-${idx}">I am great!</div>
                    </div>`;
 
@@ -390,10 +398,18 @@ document.addEventListener('DOMContentLoaded', () => {
                          </div>`;
             }
 
+            let watermark = '';
+            if (r === 'b' && mName) {
+                watermark = `<div class="model-watermark" style="font-size: 0.7rem; color: var(--accent-blue); opacity: 0.8; margin-top: 12px; display: flex; align-items: center; gap: 6px; font-weight: 600; font-family: 'Outfit', sans-serif; letter-spacing: 0.3px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity: 0.7;"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v8M8 12h8"></path></svg>
+                    <span style="text-transform: uppercase; font-size: 0.65rem;">${mName}</span>
+                </div>`;
+            }
+
             div.innerHTML = `
                 <div class="av-wrap">
                     ${avatarHtml}
-                    <div style="font-size: 0.8rem; color: var(--text-sub); font-weight: 600; letter-spacing: 0.5px;">
+                    <div class="av-label" style="font-size: 0.8rem; color: var(--text-sub); font-weight: 600; letter-spacing: 0.5px;">
                         ${r === 'u' ? (user ? user.name : 'You') : 'THE ALL TIME HELPER'}
                     </div>
                 </div>
@@ -403,6 +419,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="chat-img-preview-container" onclick="openImageModal('data:image/png;base64,${i}')">
                             <img src="data:image/png;base64,${i}" class="chat-img-preview">
                         </div>` : ''}
+                    ${watermark}
                     ${tools}
                 </div>
             `;
@@ -410,6 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('chat-area').appendChild(div);
             div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
             document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
+            if (mName) console.log(`DEBUG: Rendered watermark for ${mName}`);
             return div.querySelector(`#msg-text-${idx}`);
         }
 
@@ -425,9 +443,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 <textarea class="edit-area" style="width:100%; min-height:80px; background:rgba(255,255,255,0.05); color:white; border:1px solid var(--accent-blue); border-radius:12px; padding:10px; outline:none; margin-top:10px;">${oldText}</textarea>
                 <div style="display:flex; gap:10px; margin-top:10px;">
                     <button class="auth-btn" style="padding:8px 15px; margin:0; font-size:0.8rem;" onclick="submitEdit(${idx}, this.parentElement.parentElement)">Save & Submit</button>
-                    <button class="auth-btn" style="padding:8px 15px; margin:0; font-size:0.8rem; background:rgba(255,255,255,0.1); color:white;" onclick="loadChat(activeId)">Cancel</button>
+                    <button class="auth-btn" style="padding:8px 15px; margin:0; font-size:0.8rem; background: rgba(255,255,255,0.08); color: #e11b1bcc;" onclick="cancelEdit(${idx})">Cancel</button>
                 </div>
             `;
+        }
+
+        function cancelEdit(idx) {
+            const chat = chats.find(c => c.id === activeId);
+            if (!chat || !chat.ms[idx]) return;
+            const msg = chat.ms[idx];
+            const txtDiv = document.getElementById(`msg-text-${idx}`);
+            if (txtDiv) {
+                txtDiv.innerHTML = msg.r === 'b' ? renderMarkdown(msg.c) : msg.c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                if (msg.r === 'b') txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+            }
         }
 
         async function submitEdit(idx, container) {
@@ -577,9 +606,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (isLocal) {
                 initialContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
             }
-            const bTxt = addMsg('b', initialContent, null, chat.ms.length);
+            const mName = document.getElementById('active-model-name').innerText;
+            const bTxt = addMsg('b', initialContent, null, chat.ms.length, mName);
             if (initialContent === '...') bTxt.innerText = '';
             updateBotVisuals();
+
+            // Mascot Neural Thinking Aura
+            const mascot = document.getElementById('mascot-container');
+            if (mascot) mascot.classList.add('thinking');
             abortC = new AbortController();
 
             try {
@@ -667,7 +701,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (newTitle) chat.title = newTitle;
                 }
 
-                chat.ms.push({ r: 'b', c: fullTxt });
+                chat.ms.push({ r: 'b', c: fullTxt, m: document.getElementById('active-model-name').innerText });
                 // Final render: apply Markdown + syntax highlighting after streaming completes
                 bTxt.innerHTML = renderMarkdown(fullTxt);
                 bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
@@ -675,6 +709,11 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) { bTxt.innerText += " [Stopped]"; }
             finally {
                 document.getElementById('stop-btn').style.display = 'none';
+                
+                // Remove Neural Thinking Aura
+                const mascot = document.getElementById('mascot-container');
+                if (mascot) mascot.classList.remove('thinking');
+
                 abortC = null; currentImg = null; window.activeId = activeId; renderHist();
             }
         }
@@ -957,6 +996,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.copyCode = copyCode;
         window.downloadCode = downloadCode;
         window.startEditPrompt = startEditPrompt;
+        window.cancelEdit = cancelEdit;
         window.submitEdit = submitEdit;
         window.openSettings = openSettings;
         // BUG FIX: Restored correct closeSettings.

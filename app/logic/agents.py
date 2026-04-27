@@ -181,7 +181,30 @@ def get_agent_swarm(model_id, api_key=None, force_no_tools=False, sys_config=Non
     return _build_agents(llm, use_tools=use_tools, sys_config=sys_config)
 
 
-def process_image(img_base64: str):
+def process_image_cloud(img_base64: str, api_key: str):
+    """Uses a cloud-based vision model for high-fidelity description."""
+    try:
+        from litellm import completion
+        if "," in img_base64:
+            img_base64 = img_base64.split(",")[1]
+            
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Analyze this image in extreme detail for a specialized agent swarm. Identify objects, text, emotions, and technical context."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+                ]
+            }
+        ]
+        # Use Groq's Llama-3-Vision or Gemini if available
+        response = completion(model="groq/llama-3.2-11b-vision-preview", messages=messages, api_key=api_key)
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"DEBUG: Cloud Vision fallback: {e}")
+        return None
+
+def process_image_local(img_base64: str):
     """Uses a local Vision model (Moondream/Ollama) to describe an image."""
     try:
         if "," in img_base64:
@@ -189,29 +212,29 @@ def process_image(img_base64: str):
 
         payload = {
             "model": "moondream",
-            "prompt": "Describe this image in detail. If it is a human hand, describe the lines on the palm (Life line, Heart line, etc).",
+            "prompt": "Analyze this image in high detail. Describe every significant element, text, and overall context for a follow-up AI query.",
             "stream": False,
             "images": [img_base64]
         }
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        # Increased timeout for local vision models (they can be slow to load)
         response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=45, verify=False)
         return response.json().get("response", "I can see an image but cannot discern details.")
     except Exception as e:
-        return f"Vision analysis unavailable (Hardware Lag): {str(e)}"
+        return f"Local Vision analysis unavailable: {str(e)}"
 
 
 def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     """Orchestrates the specialized agents to answer the user prompt with system configurations."""
     
     # --- ULTRA-FAST IMAGE TRACK (BYPASS EVERYTHING) ---
-    is_image_request = any(kw in user_prompt.lower() for kw in [
-        'draw', 'paint', 'picture', 'image', 'photo', 'scenery', 'sketch',
-        'illustration', 'generate image', 'create image', 'show me', 'visualize'
+    is_generate_request = any(kw in user_prompt.lower() for kw in [
+        'draw', 'paint', 'scenery', 'sketch', 'illustration', 
+        'generate image', 'create image', 'make a picture', 'generate a photo'
     ])
+    
+    # Bypass logic: ONLY if it's a generation request and NO IMAGE is uploaded yet
     is_local = target_model != "agentic-pro"
-
-    if is_image_request and is_local:
+    if is_generate_request and is_local and not img_data:
         print(f"DEBUG: Ultra-Fast Local Image Track Active")
         import urllib.parse
         import time
@@ -256,18 +279,62 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
 
     context = user_prompt
     # Only analyze the image if it's actually referred to or if we are in vision mode
-    image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about']
+    image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about', 'color', 'colour', 'who', 'where', 'context']
     is_referring_to_image = any(kw in user_prompt.lower() for kw in image_reference_keywords)
+    
+    # NEW: Semantic Check - if user mentions a subject from the last generated image
+    last_img_alt = ""
+    last_img_url = None
+    import re
+    if history:
+        for msg in reversed(history):
+            content = msg.get("content", "")
+            match = re.search(r'!\[(.*?)\]\((https?://.*?)\)', content)
+            if match:
+                last_img_alt = match.group(1).lower()
+                last_img_url = match.group(2)
+                break
+    
+    # If the user mentions a word from the previous image description (e.g. 'cat'), trigger vision
+    if last_img_alt:
+        alt_words = set(re.findall(r'\w+', last_img_alt))
+        prompt_words = set(re.findall(r'\w+', user_prompt.lower()))
+        if alt_words.intersection(prompt_words):
+            print(f"DEBUG: Semantic Image Reference detected (Subject: {alt_words.intersection(prompt_words)})")
+            is_referring_to_image = True
 
     if img_data and is_referring_to_image:
-        print("DEBUG: Image reference detected. Analyzing with Moondream...")
-        image_description = process_image(img_data)
-        context = f"User provided an image. Image Description: {image_description}\n\nUser Question: {user_prompt}"
+        print("DEBUG: Image reference detected. Executing Deep Vision Analysis...")
+        # Smart Vision Routing
+        if not is_local and target_key:
+            image_description = process_image_cloud(img_data, target_key) or process_image_local(img_data)
+        else:
+            image_description = process_image_local(img_data)
+            
+        context = f"--- VISUAL CONTEXT START ---\n{image_description}\n--- VISUAL CONTEXT END ---\n\nUser is asking about this image: {user_prompt}"
+        if history is not None:
+            history.append({"role": "system", "content": f"Vision Analysis Result: {image_description}"})
+    elif not img_data and is_referring_to_image and last_img_url:
+        # --- HISTORICAL VISION TRACK ---
+        print(f"DEBUG: Historical Image detected: {last_img_url}. Fetching for analysis...")
+        try:
+            res = requests.get(last_img_url, timeout=10)
+            if res.status_code == 200:
+                fetched_img_data = base64.b64encode(res.content).decode("utf-8")
+                if not is_local and target_key:
+                    image_description = process_image_cloud(fetched_img_data, target_key) or process_image_local(fetched_img_data)
+                else:
+                    image_description = process_image_local(fetched_img_data)
+                
+                context = f"--- HISTORICAL VISUAL CONTEXT START ---\n{image_description}\n--- HISTORICAL VISUAL CONTEXT END ---\n\nUser is asking about the previously generated image ({last_img_alt}): {user_prompt}"
+                history.append({"role": "system", "content": f"Historical Vision Analysis of '{last_img_alt}': {image_description}"})
+        except Exception as e:
+            print(f"DEBUG: Failed to fetch historical image: {e}")
     elif img_data:
-        print("DEBUG: Image present but no direct reference in prompt. Skipping Moondream for speed.")
+        print("DEBUG: Image present but no direct reference in prompt. Skipping Vision for speed.")
 
 
-    if is_image_request:
+    if is_generate_request and not img_data:
         # Cloud images still proceed here to use the agent swarm
         # Build only the mystic agent for cloud images
         _, _, mystic, _, _ = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)

@@ -70,13 +70,14 @@
     </div>
     <div id="sidebar">
         <div class="logo-box">
-            <img src="/static/img/logo.png" class="logo-img" id="main-logo-img" onclick="jiggleLogo()">
+            <div class="logo-container" id="mascot-container">
+                <div class="logo-img-wrapper">
+                    <img src="/static/img/logo.png" class="logo-img" id="main-logo-img" onclick="jiggleLogo()">
+                </div>
+            </div>
             <div class="logo-text">
-                <span
-                    style="background: var(--logo-grad-1); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;">THE
-                    ALL TIME</span>
-                <span
-                    style="background: var(--logo-grad-2); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;">HELPER</span>
+                <span>THE ALL TIME</span>
+                <span>HELPER</span>
             </div>
         </div>
         <button class="new-chat" onclick="startNewChat()">
@@ -87,12 +88,13 @@
             New Chat
         </button>
 
-        <div class="user-profile"
-            style="padding: 15px; margin-bottom: 20px; background: var(--item-hover); border-radius: 16px; border: 1px solid var(--glass-border);">
-            <div id="sidebar-greet" style="font-weight: 600; color: var(--text-main); font-size: 0.95rem;">Hello, User
+        <div class="user-profile" style="padding: 15px; margin-bottom: 20px; background: var(--item-hover); border-radius: 16px; border: 1px solid var(--glass-border); display: flex; align-items: center; gap: 12px;">
+            <div id="sidebar-av-container">
+                <!-- Avatar injected by JS -->
             </div>
-            <div id="user-info"
-                style="font-size: 0.75rem; color: var(--text-sub); margin-top: 4px; overflow: hidden; text-overflow: ellipsis;">
+            <div style="flex: 1; min-width: 0;">
+                <div id="sidebar-greet" style="font-weight: 600; color: var(--text-main); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Hello, User</div>
+                <div id="user-info" style="font-size: 0.7rem; color: var(--text-sub); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
             </div>
         </div>
 
@@ -244,7 +246,7 @@
                         style="background:rgba(255,255,255,0.05); padding: 5px 15px; border-radius: 10px; border: 1px solid var(--glass-border); color: var(--text-main);">
                         <span id="current-theme-icon-settings">🌓 System</span>
                     </button>
-                    <div id="theme-menu-settings" class="dropdown-menu" style="right: auto; left: 0; top: 40px;">
+                    <div id="theme-menu-settings" class="dropdown-menu" style="right: auto; left: 0; top: 40px; display: flex; flex-direction: column-reverse;">
                         <div class="menu-item" onclick="applyThemeChoice('light')">☀️ Light</div>
                         <div class="menu-item" onclick="applyThemeChoice('dark')">🌙 Dark</div>
                         <div class="menu-item" onclick="applyThemeChoice('system')">🌓 System</div>

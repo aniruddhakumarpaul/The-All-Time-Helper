@@ -28,4 +28,5 @@ Last Sync: 2026-04-16 (Performance & Resilience Hardening)
 6. **Conversation Memory**: `chat.py` now passes full thread history to agents, allowing for coherent multi-turn reasoning.
 7. **Capability-Aware Safety**: Selective "Hard Tool Stripping" for local models (Llama 3.2) on sensitive topics to prevent JSON hallucinations, while keeping Cloud Pro (70B) fully empowered.
 8. **Humanized Interaction**: Optimized prompt templates for greetings ("Hi", "Hello") to avoid the "Narrator Bug" and ensure direct, conversational responses.
-9. `main_v3.js` handles UI state properly including the "Edit Prompt" refresh logic and 503 failover.
+9. `main_v3.js` handles UI state properly including the **Surgical Edit Cancel** logic (no-reload) and 503 failover.
+10. **Neural Memory (RAG)**: `app/logic/memory.py` provides semantic context via ChromaDB, updated by `scripts/rebuild_memory.py`.

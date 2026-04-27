@@ -37,6 +37,16 @@ All agent reasonings are offloaded to **Async Threads** (`asyncio.to_thread`) to
 
 ---
 
+## 🧠 Neural Memory (RAG)
+The system utilizes a **Local Persistent Neural Memory** powered by ChromaDB to enhance context-awareness while minimizing token consumption.
+
+- **Indexing Strategy**: Source code (`.py`, `.js`, `.css`, `.html`, `.md`) is chunked and semantically indexed into the `neural_memory` collection.
+- **Retrieval Engine**: Uses local Sentence Transformers for embeddings, ensuring 100% private and offline semantic search.
+- **Workflow Integration**: Agents query the Vector DB before performing complex refactors to ensure architectural alignment.
+
+---
+
 ## 📈 Observability & Logging
 - **Action Logs**: Structured capture of `[Agent -> Selection -> Tool -> Output]`.
 - **Simulated Sink**: Audit logs for all "virtual" actions that simulate side-effects.
+- **Semantic Sync**: A periodic `rebuild_memory.py` job ensures the Vector DB matches the physical state of the codebase.
