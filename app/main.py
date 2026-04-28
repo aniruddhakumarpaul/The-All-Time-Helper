@@ -91,6 +91,36 @@ if os.path.exists(templates_dir):
 app.include_router(auth.router)
 app.include_router(chat.router)
 
+@app.get("/api/image_proxy")
+async def image_proxy(url: str):
+    """Proxies image requests to bypass CORS/Referrer blocks using 'requests'."""
+    import requests
+    from fastapi.responses import Response
+    import anyio
+    
+    try:
+        # Wrap synchronous requests in a worker thread to keep FastAPI responsive
+        def fetch():
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            }
+            return requests.get(url, headers=headers, timeout=60.0, allow_redirects=True)
+            
+        response = await anyio.to_thread.run_sync(fetch)
+        
+        if response.status_code != 200:
+            print(f"DEBUG: Proxy failed for {url} with status {response.status_code}")
+            return Response(status_code=response.status_code)
+            
+        return Response(
+            content=response.content, 
+            media_type=response.headers.get("content-type", "image/png")
+        )
+    except Exception as e:
+        print(f"DEBUG: Proxy Exception: {e}")
+        return Response(status_code=500)
+
 @app.get("/")
 async def serve_ui(request: Request):
     return templates.TemplateResponse(request, "index.html", {"request": request})

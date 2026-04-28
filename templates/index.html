@@ -12,6 +12,9 @@
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <link rel="stylesheet" href="/static/css/style_v3.css?v=130">
+    <link rel="stylesheet" href="/static/css/animations.css">
+    <meta name="referrer" content="no-referrer">
+    <meta name="referrer" content="no-referrer">
 </head>
 
 <body data-theme="dark">
@@ -233,6 +236,24 @@
         </div>
     </div>
 
+    <!-- Neural Context Retrieval Panel -->
+    <div id="neural-scrim" class="neural-scrim" onclick="closeNeuralContext()"></div>
+    <div id="neural-context-card">
+        <div class="context-header">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2.5">
+                <path d="M12 2v8m0 4v8m-10-10h8m4 0h8"/>
+                <circle cx="12" cy="12" r="3"/>
+            </svg>
+            <span class="context-title">Neural Context Link</span>
+        </div>
+        <div id="context-results" style="max-height: 400px; overflow-y: auto;">
+            <!-- Snippets injected by JS -->
+        </div>
+        <div class="context-footer">
+            <button class="auth-btn" style="padding: 10px 20px; margin: 0; font-size: 0.85rem; background: rgba(255,255,255,0.05); color: var(--text-sub);" onclick="closeNeuralContext()">Dismiss</button>
+        </div>
+    </div>
+
     <!-- Settings -->
     <div id="settings-modal" onclick="closeSettings(event)">
         <div class="modal-card" onclick="event.stopPropagation()">
@@ -274,7 +295,7 @@
                         style="color: var(--text-sub); font-size: 0.75rem; font-weight: 500; letter-spacing: 2px; text-transform: uppercase;">MADE
                         BY</span>
                     <span
-                        style="color: #ff4b4b; font-size: 0.95rem; font-weight: 800; letter-spacing: 1.5px; text-shadow: 0 0 15px rgba(255, 75, 75, 0.7), 0 0 30px rgba(255, 75, 75, 0.3);">ANIRUDDHA
+                        style="color: #ff4b4b; font-size: 0.95rem; font-weight: 800; letter-spacing: 1.5px; text-shadow: 0 0 15px rgb(255 75 75 / 55%), 0 0 30px rgb(255 75 75 / 0%);">ANIRUDDHA
                         PAUL</span>
                 </div>
                 <button class="auth-btn signout-btn" onclick="signOut()">Sign Out</button>

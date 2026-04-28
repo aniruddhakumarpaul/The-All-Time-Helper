@@ -114,8 +114,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Sidebar Toggle
         function toggleSidebar() {
             const sb = document.getElementById('sidebar');
+            const scrim = document.getElementById('sidebar-scrim');
             const isOpen = sb.classList.toggle('open');
             document.body.classList.toggle('sidebar-open', isOpen);
+
+            // GHOST FIX: Clear inline styles left by the swipe gesture
+            // This ensures that the CSS class-based transitions take over.
+            if (sb) sb.style.transform = '';
+            if (scrim) {
+                scrim.style.opacity = '';
+                scrim.style.display = '';
+            }
 
             if (isOpen) {
                 history.pushState({ view: 'sidebar' }, "");
@@ -413,7 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ${r === 'u' ? (user ? user.name : 'You') : 'THE ALL TIME HELPER'}
                     </div>
                 </div>
-                <div class="txt">
+                <div class="txt" draggable="false" ondragstart="if(!window.isGDown) { event.preventDefault(); return false; } handleDragStart(event, this.innerText)" ondragend="handleDragEnd(event)">
                     <div id="msg-text-${idx}">${content}</div>
                     ${i ? `
                         <div class="chat-img-preview-container" onclick="openImageModal('data:image/png;base64,${i}')">
@@ -462,11 +471,18 @@ document.addEventListener('DOMContentLoaded', () => {
         async function submitEdit(idx, container) {
             const newText = container.querySelector('textarea').value.trim();
             if (!newText) return;
-            triggerBotReaction(newText);
+            
             let chat = chats.find(c => c.id === activeId);
-            // Slice history to remove everything AFTER this prompt
+            if (!chat) return;
+
+            // 1. Clean the display: Truncate history to BEFORE the edited message
             chat.ms = chat.ms.slice(0, idx);
-            // Set prompt and send
+            
+            // 2. Re-load the chat area to remove the 'future' messages from view
+            loadChat(activeId);
+
+            // 3. Trigger the resubmission
+            triggerBotReaction(newText);
             document.getElementById('prompt').value = newText;
             send();
         }
@@ -608,7 +624,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const mName = document.getElementById('active-model-name').innerText;
             const bTxt = addMsg('b', initialContent, null, chat.ms.length, mName);
-            if (initialContent === '...') bTxt.innerText = '';
+            const parentMsg = bTxt.closest('.msg');
+            if (parentMsg) parentMsg.classList.add('thinking-state');
+            
+            // Add typing indicator
+            bTxt.innerHTML = `
+                <div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${initialContent}</span></div>
+                <div class="typing-indicator"><span></span><span></span><span></span></div>
+            `;
             updateBotVisuals();
 
             // Mascot Neural Thinking Aura
@@ -672,7 +695,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (trimmedLine && !trimmedLine.startsWith('<')) {
                             try {
                                 const j = JSON.parse(trimmedLine);
+                                
+                                // NEW: Handle Status Updates
+                                if (j.status) {
+                                    const statusEl = bTxt.querySelector('#status-text');
+                                    if (statusEl) statusEl.innerText = j.status;
+                                    return;
+                                }
+
                                 if (j.message && j.message.content) {
+                                    // Remove thinking state on first chunk of real content
+                                    if (fullTxt === '') {
+                                        bTxt.innerHTML = '';
+                                        const parentMsg = bTxt.closest('.msg');
+                                        if (parentMsg) parentMsg.classList.remove('thinking-state');
+                                    }
+                                    
                                     fullTxt += j.message.content;
                                     bTxt.innerHTML = renderMarkdown(fullTxt);
                                 }
@@ -708,12 +746,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveUserChats();
             } catch (e) { bTxt.innerText += " [Stopped]"; }
             finally {
-                document.getElementById('stop-btn').style.display = 'none';
-                
-                // Remove Neural Thinking Aura
-                const mascot = document.getElementById('mascot-container');
-                if (mascot) mascot.classList.remove('thinking');
+                // Check if we should keep the UI in 'Thinking' mode for images
+                const chatArea = document.getElementById('chat-area');
+                const lastMsg = chatArea.lastElementChild;
+                const hasLoadingImages = lastMsg && lastMsg.querySelectorAll('.ai-img-loading[style*="display: block"], .ai-img-loading:not([style*="display: none"])').length > 0;
 
+                if (!hasLoadingImages) {
+                    document.getElementById('stop-btn').style.display = 'none';
+                    const mascot = document.getElementById('mascot-container');
+                    if (mascot) mascot.classList.remove('thinking');
+                }
+                
                 abortC = null; currentImg = null; window.activeId = activeId; renderHist();
             }
         }
@@ -928,6 +971,134 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+
+        // --- Neural Drag & Drop Context Retrieval ---
+        function handleDragStart(e) {
+            // Store the text content of the message
+            const text = e.currentTarget.innerText;
+            e.dataTransfer.setData('text/plain', text);
+            // Visual feedback for the message bubble
+            e.currentTarget.parentElement.classList.add('dragging');
+            // Highlight the mascot as drop zone
+            const mascot = document.getElementById('mascot-container');
+            if (mascot) mascot.classList.add('mascot-drop-active');
+        }
+
+        function handleDragEnd(e) {
+            e.currentTarget.parentElement.classList.remove('dragging');
+            const mascot = document.getElementById('mascot-container');
+            if (mascot) mascot.classList.remove('mascot-drop-active');
+        }
+
+        function initMascotDrop() {
+            const mascot = document.getElementById('mascot-container');
+            if (!mascot) return;
+
+            mascot.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                mascot.classList.add('mascot-drop-active');
+            });
+
+            mascot.addEventListener('dragleave', () => {
+                mascot.classList.remove('mascot-drop-active');
+            });
+
+            mascot.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                mascot.classList.remove('mascot-drop-active');
+                const text = e.dataTransfer.getData('text/plain');
+                if (text) {
+                    retrieveContext(text);
+                }
+            });
+        }
+
+        async function retrieveContext(text) {
+            const mascot = document.getElementById('mascot-container');
+            if (mascot) mascot.classList.add('thinking');
+            
+            try {
+                const token = localStorage.getItem('helper_token_v2') || '';
+                const res = await fetch('/retrieve_context', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                        'ngrok-skip-browser-warning': '69420'
+                    },
+                    body: JSON.stringify({ text: text, n: 3 })
+                });
+
+                const data = await res.json();
+                if (data.success) {
+                    showNeuralContext(data.results, data.explanation);
+                }
+            } catch (e) {
+                console.error("Context Retrieval Error:", e);
+            } finally {
+                if (mascot) mascot.classList.remove('thinking');
+            }
+        }
+
+        function showNeuralContext(results, explanation) {
+            const card = document.getElementById('neural-context-card');
+            const container = document.getElementById('context-results');
+            const scrim = document.getElementById('neural-scrim');
+            
+            if (!card || !container || !scrim) return;
+
+            container.innerHTML = '';
+
+            // 1. Inject AI Explanation (The "Bridge")
+            if (explanation) {
+                const insightBox = document.createElement('div');
+                insightBox.className = 'neural-insight-box';
+                insightBox.innerHTML = `
+                    <div class="insight-header">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                        </svg>
+                        Neural Insight
+                    </div>
+                    <div class="insight-text">${explanation}</div>
+                `;
+                container.appendChild(insightBox);
+            }
+
+            // 2. Inject Raw Source Snippets
+            const sourceLabel = document.createElement('span');
+            sourceLabel.className = 'source-label';
+            sourceLabel.innerText = 'Technical Source Snippets';
+            container.appendChild(sourceLabel);
+
+            if (!results || results.length === 0) {
+                container.innerHTML += '<p style="text-align:center; color:var(--text-sub); padding: 20px;">No direct neural links found for this snippet.</p>';
+            } else {
+                results.forEach(res => {
+                    const div = document.createElement('div');
+                    div.className = 'context-snippet';
+                    const type = res.metadata ? (res.metadata.type || 'DOCUMENT') : 'DOCUMENT';
+                    div.innerHTML = `
+                        <span class="context-meta">${type}</span>
+                        <div style="max-height: 150px; overflow-y: auto; font-size: 0.85rem; color: var(--text-main);">${res.content}</div>
+                    `;
+                    container.appendChild(div);
+                });
+            }
+
+            card.classList.add('active');
+            scrim.classList.add('active');
+        }
+
+        function closeNeuralContext() {
+            const card = document.getElementById('neural-context-card');
+            const scrim = document.getElementById('neural-scrim');
+            if (card) card.classList.remove('active');
+            if (scrim) scrim.classList.remove('active');
+        }
+
         // --- Pull to Refresh Gesture ---
         let touchStartY = 0;
         let touchDiffY = 0;
@@ -1016,8 +1187,125 @@ document.addEventListener('DOMContentLoaded', () => {
         window.toggleSet = toggleSet;
         window.filterHist = filterHist;
         window.startRename = startRename;
+        window.closeNeuralContext = closeNeuralContext;
+        window.handleDragStart = handleDragStart;
+        window.handleDragEnd = handleDragEnd;
+        
+        initMascotDrop();
+
+        // --- Neural Grab Logic (Hold 'G' to Enable Dragging) ---
+        window.isGDown = false; // Exposed globally for inline handlers
+        function updateDraggableState(enabled) {
+            window.isGDown = enabled;
+            const msgs = document.querySelectorAll('.msg .txt');
+            msgs.forEach(m => {
+                m.setAttribute('draggable', enabled ? 'true' : 'false');
+                if (enabled) m.classList.add('grab-mode');
+                else m.classList.remove('grab-mode');
+            });
+            if (enabled) document.body.classList.add('neural-grab-active');
+            else document.body.classList.remove('neural-grab-active');
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.key.toLowerCase() === 'g' && !window.isGDown) {
+                updateDraggableState(true);
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key.toLowerCase() === 'g') {
+                updateDraggableState(false);
+            }
+        });
+
+        // Fail-safe: Reset if window loses focus
+        window.addEventListener('blur', () => {
+            updateDraggableState(false);
+        });
+
+        initSidebarSwipe();
         // exportChat is already exported at line 286. 
     } catch (e) {
         console.error("Critical Runtime Error in Dashboard:", e);
     }
 });
+
+        // --- Sidebar Swipe-to-Close (Mobile Only) ---
+        function initSidebarSwipe() {
+            const sidebar = document.getElementById('sidebar');
+            const scrim = document.getElementById('sidebar-scrim');
+            let startX = 0;
+            let currentX = 0;
+            let isDragging = false;
+            const SB_OFFSET = 300; // The translateX value when open
+
+            if (!sidebar || !scrim) return;
+
+            sidebar.addEventListener('touchstart', (e) => {
+                // Only enable swipe if sidebar is open and on mobile
+                if (!sidebar.classList.contains('open') || window.innerWidth > 992) return;
+                
+                startX = e.touches[0].clientX;
+                currentX = SB_OFFSET; // Initialize to fully open state
+                isDragging = true;
+                
+                // Disable transitions for instant follow
+                sidebar.style.transition = 'none';
+                scrim.style.transition = 'none';
+            }, { passive: true });
+
+            sidebar.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                
+                const touchX = e.touches[0].clientX;
+                const deltaX = touchX - startX;
+                
+                // We only allow dragging to the left (negative delta)
+                // Sidebar is at translateX(300) when open
+                currentX = Math.min(SB_OFFSET, Math.max(0, SB_OFFSET + deltaX));
+                
+                sidebar.style.transform = `translateX(${currentX}px)`;
+                
+                // Fade the scrim based on how much is closed (currentX/300)
+                scrim.style.opacity = currentX / SB_OFFSET;
+            }, { passive: true });
+
+            sidebar.addEventListener('touchend', () => {
+                if (!isDragging) return;
+                isDragging = false;
+                
+                // Re-enable transitions for snapping
+                sidebar.style.transition = 'transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)';
+                scrim.style.transition = 'opacity 0.4s ease';
+                
+                // If dragged more than 30%, close it
+                if (currentX < 200) {
+                    sidebar.style.transform = 'translateX(0px)';
+                    scrim.style.opacity = '0';
+                    setTimeout(() => {
+                        sidebar.classList.remove('open');
+                        document.body.classList.remove('sidebar-open');
+                        // Reset inline styles to let CSS take over
+                        sidebar.style.transform = '';
+                        sidebar.style.transition = '';
+                        scrim.style.opacity = '';
+                        scrim.style.transition = '';
+                    }, 400);
+                } else {
+                    // Snap back to open
+                    sidebar.style.transform = `translateX(${SB_OFFSET}px)`;
+                    scrim.style.opacity = '1';
+                    setTimeout(() => {
+                        sidebar.style.transition = '';
+                        scrim.style.transition = '';
+                    }, 400);
+                }
+            });
+
+            // Prevent sidebar clicks from bubbling to global close listeners
+            sidebar.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
+        }

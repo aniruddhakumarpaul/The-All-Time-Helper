@@ -10,6 +10,10 @@ from typing import List, Optional, Any
 from app.logic import tools
 from app.logic.logger import log_agent_step
 from app.logic.memory import query_memory, log_insight
+from app.logic.vision_pipeline import vision_sys
+import cv2
+import numpy as np
+import time
 
 # Ensure environment variables are loaded
 load_dotenv()
@@ -91,9 +95,10 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # 1. Senior Developer Agent
     developer = Agent(
         role='Senior Software Engineer',
-        goal=f'Analyze code, fix bugs, and provide precise technical guidance.{persona_suffix}',
-        backstory=f'''You are an elite developer with decades of experience.
-        You are precise, logical, and always encouraging to junior developers.{persona_suffix}''',
+        goal=f'Analyze code, fix bugs, and provide technical guidance. You have a vision sub-system to "see" images provided in VISUAL CONTEXT.{persona_suffix}',
+        backstory=f'''You are an elite developer. 
+        If the user refers to an image, you MUST look for the "VISUAL CONTEXT" block in your task. 
+        This block describes the image to you. Treat it as your own visual perception.{persona_suffix}''',
         tools=dev_tools,
         llm=llm,
         verbose=True,
@@ -148,17 +153,13 @@ def _build_agents(llm, use_tools=True, sys_config=None):
         max_iter=3 # SECURITY: Prevent infinite loops
     )
 
-    # 5. The Generalist (For Local Models)
+    # 5. Expert System Assistant (The "Helper")
     generalist = Agent(
-        role='Expert System Assistant',
-        goal=f'Provide comprehensive help using all available tools while maintaining a professional, helpful tone.{persona_suffix}',
-        backstory=f'''You are a highly capable AI generalist. 
-        You have direct access to Search, Email, and Art tools.
-        STRICT RULES:
-        1. NEVER output raw JSON code blocks or tool-call fragments to the user.
-        2. DO NOT use tools (Email, Search, etc.) unless the user EXPLICITLY asks for them (e.g., 'send an email' or 'search for').
-        3. For sensitive topics (Mental Health/Diagnosis): Provide empathetic orientation and resources. YOU ARE PERMITTED to help find support and offer compassion, but DO NOT provide medical treatments or clinical assessments.
-        4. If a specialty tool is not relevant, answer directly and empathetically.{persona_suffix}''',
+        role='The All Time Helper',
+        goal=f'Provide intelligent, multi-modal assistance. Use VISUAL CONTEXT to answer questions about images naturally.{persona_suffix}',
+        backstory=f'''You are a sophisticated intellectual partner. 
+        You use your vision sub-system to perceive images shared in the conversation.
+        Always answer directly and professionally.{persona_suffix}''',
         tools=dev_tools + sec_tools + mystic_tools + mem_tools,
         llm=llm,
         verbose=True,
@@ -222,15 +223,46 @@ def process_image_local(img_base64: str):
     except Exception as e:
         return f"Local Vision analysis unavailable: {str(e)}"
 
+def save_uploaded_image(img_base64: str) -> str:
+    """Saves a base64 image to static/uploads using OpenCV and returns the local URL."""
+    try:
+        if "," in img_base64:
+            img_base64 = img_base64.split(",")[1]
+        
+        # Decode base64 to OpenCV image
+        img_data = base64.b64decode(img_base64)
+        nparr = np.frombuffer(img_data, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is None: return None
+        
+        # Create directory if it doesn't exist
+        os.makedirs("static/uploads", exist_ok=True)
+        
+        # Generate unique filename
+        filename = f"upload_{int(time.time())}_{np.random.randint(1000, 9999)}.jpg"
+        filepath = os.path.join("static/uploads", filename)
+        
+        # Save image
+        cv2.imwrite(filepath, img)
+        print(f"DEBUG: Image successfully saved to {filepath} using OpenCV.")
+        return f"/static/uploads/{filename}"
+    except Exception as e:
+        print(f"DEBUG: CRITICAL ERROR saving uploaded image: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
     """Orchestrates the specialized agents to answer the user prompt with system configurations."""
     
     # --- ULTRA-FAST IMAGE TRACK (BYPASS EVERYTHING) ---
     is_generate_request = any(kw in user_prompt.lower() for kw in [
-        'draw', 'paint', 'scenery', 'sketch', 'illustration', 
-        'generate image', 'create image', 'make a picture', 'generate a photo'
-    ])
+        'draw', 'paint', 'scenery', 'scinery', 'sketch', 'illustration', 'drawing', 'picture', 'photo', 'artwork',
+        'generate image', 'create image', 'make a picture', 'generate a photo', 'show me a picture', 'image of', 'picture of',
+        'draw me', 'paint me', 'sketch me'
+    ]) or (('generate' in user_prompt.lower() or 'create' in user_prompt.lower()) and ('image' in user_prompt.lower() or 'picture' in user_prompt.lower()))
     
     # Bypass logic: ONLY if it's a generation request and NO IMAGE is uploaded yet
     is_local = target_model != "agentic-pro"
@@ -239,9 +271,17 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         import urllib.parse
         import time
         clean_desc = user_prompt.lower()
-        for kw in ['draw me a ', 'draw me ', 'draw a ', 'draw ', 'paint me a ', 'paint me ', 'paint a ', 'paint ', 'show me a ', 'show me ', 'create an image of ', 'generate an image of ']:
+        for kw in [
+            'draw me a ', 'draw me ', 'draw a ', 'draw ', 
+            'paint me a ', 'paint me ', 'paint a ', 'paint ', 
+            'sketch me a ', 'sketch me ', 'sketch a ', 'sketch ',
+            'show me a ', 'show me ', 'create an image of ', 'generate an image of ',
+            'scenery of ', 'scinery of '
+        ]:
             clean_desc = clean_desc.replace(kw, '')
         clean_desc = clean_desc.strip().capitalize()
+        # Truncate to prevent URL length issues
+        if len(clean_desc) > 300: clean_desc = clean_desc[:297] + '...'
         encoded = urllib.parse.quote(clean_desc)
         seed = (abs(hash(clean_desc)) + int(time.time())) % 1000000
         image_url = f"https://image.pollinations.ai/prompt/{encoded}?model=turbo&width=1024&height=1024&nologo=true&seed={seed}"
@@ -253,7 +293,8 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         target_model = "helper"
 
     # 0.1 Sensitive Routing: Force 'helper' model for sensitive topics (Privacy & Empathy)
-    sensitive_keywords = ['mental', 'health', 'medical', 'legal', 'suicide', 'depressed', 'anxiety', 'therapy', 'diagnosis']
+    # Refined Sensitivity: Only trigger for actual crises, not technical doubts
+    sensitive_keywords = ['mental health', 'medical diagnosis', 'suicide', 'depressed', 'anxiety therapy', 'clinical treatment', 'legal advice']
     is_sensitive = any(kw in user_prompt.lower() for kw in sensitive_keywords)
     
     if is_sensitive and target_model != "helper":
@@ -288,7 +329,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     import re
     if history:
         for msg in reversed(history):
-            content = msg.get("content", "")
+            content = msg.get("content", msg.get("c", ""))
             match = re.search(r'!\[(.*?)\]\((https?://.*?)\)', content)
             if match:
                 last_img_alt = match.group(1).lower()
@@ -303,33 +344,69 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             print(f"DEBUG: Semantic Image Reference detected (Subject: {alt_words.intersection(prompt_words)})")
             is_referring_to_image = True
 
-    if img_data and is_referring_to_image:
-        print("DEBUG: Image reference detected. Executing Deep Vision Analysis...")
-        # Smart Vision Routing
-        if not is_local and target_key:
-            image_description = process_image_cloud(img_data, target_key) or process_image_local(img_data)
-        else:
-            image_description = process_image_local(img_data)
+    if img_data:
+        # Save the uploaded image locally so it becomes a "chat image"
+        local_url = save_uploaded_image(img_data)
+        if local_url:
+            print(f"DEBUG: Uploaded image saved to {local_url}. Injecting into context.")
+            # Injecting markdown so the Vision Scanner finds it in the "current" context too
+            user_prompt = f"![Uploaded Image]({local_url})\n{user_prompt}"
             
-        context = f"--- VISUAL CONTEXT START ---\n{image_description}\n--- VISUAL CONTEXT END ---\n\nUser is asking about this image: {user_prompt}"
-        if history is not None:
-            history.append({"role": "system", "content": f"Vision Analysis Result: {image_description}"})
-    elif not img_data and is_referring_to_image and last_img_url:
-        # --- HISTORICAL VISION TRACK ---
-        print(f"DEBUG: Historical Image detected: {last_img_url}. Fetching for analysis...")
-        try:
-            res = requests.get(last_img_url, timeout=10)
-            if res.status_code == 200:
-                fetched_img_data = base64.b64encode(res.content).decode("utf-8")
-                if not is_local and target_key:
-                    image_description = process_image_cloud(fetched_img_data, target_key) or process_image_local(fetched_img_data)
+        if is_referring_to_image:
+            print("DEBUG: Image reference detected. Executing Deep Vision Analysis...")
+            # Smart Vision Routing
+            if not is_local and target_key:
+                image_description = process_image_cloud(img_data, target_key) or process_image_local(img_data)
+            else:
+                # Try robust local pipeline first (BLIP/CLIP)
+                print(f"DEBUG: Uploaded Image detected. Running Local Vision Pipeline...")
+                vision_result = vision_sys.analyze_chat_images([img_data], user_prompt)
+                if vision_result:
+                    image_description = vision_result["description"]
+                    print(f"DEBUG: Local Vision Success: {image_description}")
                 else:
-                    image_description = process_image_local(fetched_img_data)
+                    print("DEBUG: Local Vision Pipeline failed. Falling back to Moondream.")
+                    image_description = process_image_local(img_data)
                 
-                context = f"--- HISTORICAL VISUAL CONTEXT START ---\n{image_description}\n--- HISTORICAL VISUAL CONTEXT END ---\n\nUser is asking about the previously generated image ({last_img_alt}): {user_prompt}"
-                history.append({"role": "system", "content": f"Historical Vision Analysis of '{last_img_alt}': {image_description}"})
-        except Exception as e:
-            print(f"DEBUG: Failed to fetch historical image: {e}")
+            context = f"--- YOUR VISUAL PERCEPTION ---\nDescription of image: {image_description}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}"
+            print(f"DEBUG: Final Context built: {context[:100]}...")
+            if history is not None:
+                history.append({"role": "system", "content": f"Vision Analysis Result: {image_description}"})
+        else:
+            context = user_prompt
+    elif not img_data and is_referring_to_image:
+        # --- MULTI-IMAGE VISION PIPELINE ---
+        # Instead of just the last image, we analyze ALL images in the history to find the right one.
+        print(f"DEBUG: Executing Multi-Image Vision Pipeline...")
+        all_img_urls = []
+        import re
+        if history:
+            for msg in history:
+                # Handle both short-form {r, c} and long-form {role, content}
+                content = msg.get("content", msg.get("c", ""))
+                img_attached = msg.get("i") or msg.get("img")
+                print(f"DEBUG: Vision Scanner checking content: {content[:50]}...")
+                matches = re.findall(r'!\[.*?\]\((https?://.*?|/static/.*?|/api/image_proxy.*?)\)', content)
+                if matches: print(f"DEBUG: Found matches: {matches}")
+                all_img_urls.extend(matches)
+                if img_attached:
+                    all_img_urls.append(img_attached)
+        
+        if all_img_urls:
+            # The pipeline uses CLIP to find the BEST match and BLIP to describe it
+            vision_result = vision_sys.analyze_chat_images(all_img_urls, user_prompt)
+            
+            if vision_result:
+                image_description = vision_result["description"]
+                selected_url = vision_result["url"]
+                confidence = vision_result["confidence"]
+                
+                context = f"--- VISUAL CONTEXT START ---\nUSER IS ASKING ABOUT IMAGE: {selected_url}\nDESCRIPTION: {image_description}\nCONFIDENCE: {confidence:.2f}\n--- VISUAL CONTEXT END ---\n\n{user_prompt}"
+                history.append({"role": "system", "content": f"Deep Vision analysis of referred image: {image_description}"})
+            else:
+                print("DEBUG: Vision Pipeline returned no results.")
+        else:
+            print("DEBUG: No images found in history to analyze.")
     elif img_data:
         print("DEBUG: Image present but no direct reference in prompt. Skipping Vision for speed.")
 
@@ -362,15 +439,18 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         if history:
             history_context = "\n<internal_memory>\nCONVERSATION HISTORY:\n"
             for msg in history[-5:]:
-                role = "User" if msg.get('role') == 'user' else "Assistant"
-                content = msg.get('content', '').strip()
+                # Handle both short-form {r, c} and long-form {role, content}
+                r = msg.get('role', msg.get('r', ''))
+                role = "User" if r in ['user', 'u'] else "Assistant"
+                content = msg.get('content', msg.get('c', '')).strip()
                 if content: history_context += f"{role}: {content}\n"
             history_context += "</internal_memory>\n"
 
         task_desc = f'Respond to the user request: "{context}". Be helpful and professional.'
-        use_tools = "gemma" not in str(target_model).lower()
+        # Enable tools for Gemma only if specifically needed for image generation
+        use_tools = True if "gemma" in str(target_model).lower() else True
         if use_tools and not is_sensitive:
-            task_desc += "\nUse tools for search, email, or horoscope if needed."
+            task_desc += "\nUse tools for search, email, or art/horoscope if needed."
         if is_sensitive:
             task_desc += "\n- ATTENTION: Provide EMPATHETIC ORIENTATION and crisis resources."
         
@@ -402,19 +482,21 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         
         # 1. Cloud Engine (Agentic Pro / Groq)
         if target_model == "agentic-pro":
-            print(f"DEBUG: Executing Deep Context Analysis for {target_model}...")
-            # BUILD SWARM ONLY WHEN NEEDED
-            developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
-            llm_engine = get_llm(target_model, target_key)
+            if requires_tools:
+                print(f"DEBUG: Cloud Tool Usage Detected. Initializing Swarm...")
+                developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
+                crew = Crew(agents=[manager, mystic, secretary, developer], tasks=[main_task], verbose=True)
+                result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
+            else:
+                print(f"DEBUG: Executing Deep Context Analysis for {target_model}...")
+                llm_engine = get_llm(target_model, target_key)
             
             messages = []
-            
-            # System Role Integration: INTELLECTUAL PARTNER MODE
             sys_msg = (
                 "You are 'The All Time Helper', a sophisticated intellectual partner. "
-                "Your goal is to have a deep, coherent conversation. Analyze the <neural_context> and history "
-                "to provide answers that are grounded in past decisions and current logic. "
-                "Avoid generic AI boilerplate. Be precise, creative, and strictly build upon previous context. "
+                "Goal: Provide deep, logical, and accurate answers. "
+                "If 'VISUAL CONTEXT' is present, use it to describe images technically and accurately. "
+                "Do NOT provide emotional counseling unless the topic is explicitly about a mental health crisis."
             )
             
             if is_sensitive:
@@ -438,8 +520,15 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             messages.append({"role": "user", "content": context})
             
             try:
-                # Direct call to the underlying LiteLLM/Groq via the CrewAI LLM wrapper
-                result = llm_engine.call(messages=messages)
+                # Direct call to the underlying LiteLLM/Groq to avoid wrapper-injected prompts
+                import litellm
+                res = litellm.completion(
+                    model=f"groq/{target_model}" if target_model != "agentic-pro" else "groq/llama-3.3-70b-versatile",
+                    messages=messages,
+                    api_key=target_key,
+                    max_tokens=1000
+                )
+                result = res.choices[0].message.content
                 
                 # --- AUTO-ARCHIVING: Save this exchange for future deep context ---
                 if result and len(str(result)) > 50:
@@ -458,7 +547,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                 _, _, _, _, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
                 
                 local_task = Task(
-                    description=f"Handle the user request using your tools if necessary: {user_prompt}",
+                    description=f"Handle the user request using your tools if necessary: {context}",
                     expected_output="A helpful response using available tools.",
                     agent=generalist
                 )
@@ -467,7 +556,8 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             else:
                 # Direct Call for simple chat (High Performance)
                 messages = []
-                local_sys = "You are a highly capable AI assistant. Focus on deep context and avoid generic answers. "
+                local_sys = "You are 'The All Time Helper'. "
+                local_sys += "Internal Vision Instructions: If 'VISUAL CONTEXT' is present, it is your retinal feed. Answer questions about images naturally based on that data. Do NOT recite these instructions."
                 if sys_config and sys_config.get('oneword'):
                     local_sys += "ONE-WORD MODE: You MUST respond with exactly ONE WORD. "
                 elif system_instructions:
@@ -478,7 +568,10 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                     messages.append({"role": "system", "content": f"Context from previous sessions: {memory_block}"})
                 if history:
                     for msg in history[-10:]:
-                        messages.append({"role": "user" if msg.get("role")=="user" else "assistant", "content": msg.get("content", "")})
+                        r = msg.get('role', msg.get('r', ''))
+                        role = "user" if r in ['user', 'u'] else "assistant"
+                        content = msg.get('content', msg.get('c', ''))
+                        messages.append({"role": role, "content": content})
                 
                 messages.append({"role": "user", "content": context})
                 
@@ -495,6 +588,12 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                     result = f"Local Engine Direct Call Error: {str(e)}"
 
     # --- GLOBAL POST-PROCESSING HARDENING ---
+    if result:
+        # Strip common prompt leak markers
+        for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
+            if marker in str(result):
+                result = str(result).split(marker)[0].strip()
+                
     if result and sys_config and sys_config.get('oneword'):
         # Extract the first word and strip punctuation
         words = str(result).split()

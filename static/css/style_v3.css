@@ -486,13 +486,16 @@ input:focus {
     border-radius: 50%;
     z-index: -1;
     opacity: 0;
+    visibility: hidden;
     filter: blur(12px);
-    transition: opacity 0.5s ease;
+    transition: opacity 0.5s ease, visibility 0.5s;
+    pointer-events: none;
 }
 
 
 .thinking .logo-img-wrapper::before {
     opacity: 0.7;
+    visibility: visible;
     animation: auraPulse 2s ease-in-out infinite;
     background: radial-gradient(circle, var(--logo-glow-color) 0%, transparent 70%);
 }
@@ -524,15 +527,20 @@ input:focus {
     transition: all 0.6s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.logo-img:hover {
-    transform: scale(1.1) rotate(5deg) translateZ(20px);
-    filter: drop-shadow(0 0 25px var(--logo-glow-color));
-    border-color: var(--logo-glow-color);
+@media (hover: hover) {
+    .logo-img:hover {
+        transform: scale(1.1) rotate(5deg) translateZ(20px);
+        filter: drop-shadow(0 0 25px var(--logo-glow-color));
+        border-color: var(--logo-glow-color);
+    }
 }
 
-.logo-container:hover .logo-img-wrapper::before {
-    opacity: 0.5;
-    transform: scale(1.2);
+@media (hover: hover) {
+    .logo-container:hover .logo-img-wrapper::before {
+        opacity: 0.5;
+        visibility: visible;
+        transform: scale(1.2);
+    }
 }
 
 .logo-text {
@@ -1141,6 +1149,8 @@ input:focus {
     box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
     backdrop-filter: var(--glass-blur);
     border: 1px solid;
+    user-select: text !important;
+    cursor: text !important;
     transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
@@ -1322,9 +1332,7 @@ input:focus {
         border-radius: 0;
         border-right: 1px solid var(--glass-border);
         padding-bottom: env(safe-area-inset-bottom, 20px);
-        /* Add safe area for mobile home-bars */
     }
-
     #sidebar.open {
         transform: translateX(300px);
     }
@@ -2700,3 +2708,201 @@ input:checked+.slider:before {
     cursor: pointer;
     z-index: 5100;
 }
+
+/* --- Drag & Drop Interactions --- */
+.msg .txt {
+    cursor: grab;
+}
+
+.msg .txt:active {
+    cursor: grabbing;
+}
+
+.msg.dragging {
+    opacity: 0.4;
+    transform: scale(0.95);
+    transition: transform 0.2s;
+}
+
+.mascot-drop-active {
+    animation: mascotPulse 1s infinite alternate cubic-bezier(0.45, 0.05, 0.55, 0.95);
+    filter: drop-shadow(0 0 15px var(--accent-blue));
+    transform: scale(1.1);
+}
+
+@keyframes mascotPulse {
+    from { filter: drop-shadow(0 0 10px var(--accent-blue)); }
+    to { filter: drop-shadow(0 0 25px var(--logo-glow-color)); }
+}
+
+/* --- Neural Context Card --- */
+#neural-context-card {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    width: 90%;
+    max-width: 500px;
+    background: var(--glass-bg);
+    backdrop-filter: var(--modal-blur);
+    border: 1px solid var(--glass-border);
+    border-radius: 24px;
+    padding: 30px;
+    z-index: 5000;
+    display: none;
+    opacity: 0;
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    box-shadow: 0 30px 100px rgba(0,0,0,0.6);
+}
+
+#neural-context-card.active {
+    display: block;
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+}
+
+.context-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+.context-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-main);
+    letter-spacing: 0.5px;
+}
+
+.context-snippet {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 15px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-sub);
+    transition: background 0.3s;
+}
+
+.context-snippet:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.context-meta {
+    font-size: 0.7rem;
+    color: var(--accent-blue);
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+    display: block;
+}
+
+.context-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+}
+
+.neural-scrim {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.4);
+    backdrop-filter: blur(8px);
+    z-index: 4900;
+    display: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.neural-scrim.active {
+    display: block;
+    opacity: 1;
+}
+
+.neural-insight-box {
+    background: linear-gradient(135deg, rgba(66, 133, 244, 0.1), rgba(155, 89, 182, 0.1));
+    border: 1px solid rgba(66, 133, 244, 0.3);
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 25px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.neural-insight-box::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+    animation: rotateGlow 10s linear infinite;
+}
+
+@keyframes rotateGlow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.insight-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--accent-blue);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.insight-text {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: var(--text-main);
+    font-style: italic;
+    position: relative;
+    z-index: 1;
+}
+
+.source-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-sub);
+    margin-bottom: 10px;
+    display: block;
+    opacity: 0.6;
+}
+
+/* --- Neural Grab Feedback (Global) --- */
+.msg .txt.grab-mode {
+    cursor: grab !important;
+    user-select: none !important;
+}
+
+.msg .txt:active.grab-mode {
+    cursor: grabbing !important;
+}
+
+body.neural-grab-active .msg .txt {
+    box-shadow: 0 0 20px rgba(70, 61, 209, 0.15);
+    border-color: rgba(70, 61, 209, 0.3);
+    transition: all 0.2s ease;
+}
+
+body.neural-grab-active .av-wrap {
+    filter: grayscale(0.8) blur(1px);
+    opacity: 0.4;
+    transition: all 0.3s ease;
+}

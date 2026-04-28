@@ -31,9 +31,48 @@
             URL.revokeObjectURL(url);
         };
 
+        // --- GLOBAL IMAGE ERROR HANDLER (DE-COUPLED) ---
+        window.handleImgError = function(img, safeHref, uniqueId) {
+            if (!img) return;
+            img.retryCount = (img.retryCount || 0) + 1;
+            const loadEl = document.getElementById('load-' + uniqueId);
+            
+            console.log(`DEBUG: Image Error (Try ${img.retryCount}/25) for ${uniqueId}`);
+
+            if (img.retryCount <= 25) {
+                const delay = img.retryCount <= 5 ? 6000 : 8000;
+                
+                if(loadEl) {
+                    const statusSpan = loadEl.querySelector('span');
+                    if(statusSpan) {
+                        if (img.retryCount > 15) statusSpan.textContent = '🎨 Still baking pixels... (' + img.retryCount + '/25)';
+                        else if (img.retryCount > 5) statusSpan.textContent = '🎨 Rendering details... (' + img.retryCount + '/25)';
+                        else statusSpan.textContent = '🎨 Generating... (' + img.retryCount + '/25)';
+                    }
+                }
+                
+                setTimeout(() => { 
+                    if (img && !img.dataset.loaded) {
+                        const retryUrl = safeHref + (safeHref.includes('?') ? '&' : '?') + '_r=' + img.retryCount;
+                        img.src = `/api/image_proxy?url=${encodeURIComponent(retryUrl)}`; 
+                    }
+                }, delay);
+            } else {
+                if(loadEl) {
+                    loadEl.innerHTML = `<div style="padding:16px;color:var(--text-sub)">⌛ Generation is taking a while. <a href="${safeHref}" target="_blank" style="color:var(--accent-blue); font-weight: 600;">View directly →</a></div>`;
+                    
+                    const mascot = document.getElementById('mascot-container');
+                    if (mascot) mascot.classList.remove('thinking');
+                    const stopBtn = document.getElementById('stop-btn');
+                    if (stopBtn) stopBtn.style.display = 'none';
+                }
+            }
+        };
+
         window.renderMarkdown = function(text) {
             try {
                 const renderer = new marked.Renderer();
+                
                 renderer.code = function(arg1, arg2) {
                     let code = arg1;
                     let language = arg2;
@@ -59,17 +98,20 @@
                             <pre><code class="${langClass}">${escapedCode}</code></pre>
                         </div>`;
                 };
+
                 renderer.image = function(href, title, text) {
-                    if (typeof href === 'object') {
-                        const obj = href;
-                        href = obj.href || '';
-                        text = obj.text || '';
-                        title = obj.title || '';
+                    let imgHref = href;
+                    let imgText = text;
+                    if (typeof href === 'object' && href !== null) {
+                        imgHref = href.href || '';
+                        imgText = href.text || '';
                     }
-                    // Strip any previous retry param so we start clean
-                    const baseUrl = href.replace(/&_r=\d+/, '').replace(/\?_r=\d+/, '');
+
+                    const baseUrl = imgHref.replace(/&_r=\d+/, '').replace(/\?_r=\d+/, '');
+                    // Use proxy to bypass blocks
+                    const proxyUrl = `/api/image_proxy?url=${encodeURIComponent(baseUrl)}`;
                     const safeHref = baseUrl.replace(/'/g, "\\'");
-                    const safeAlt = (text || 'AI Generated Image').replace(/'/g, "\\'");
+                    const safeAlt = (imgText || 'AI Generated Image').replace(/'/g, "\\'");
                     const uniqueId = 'img-' + Math.random().toString(36).substr(2, 9);
 
                     return `
@@ -80,39 +122,34 @@
                             </div>
                             <img 
                                 id="${uniqueId}"
-                                src="${baseUrl}" 
+                                src="${proxyUrl}" 
                                 alt="${safeAlt}" 
                                 title="${title || ''}" 
                                 class="chat-rendered-img"
                                 style="display:none;"
+                                crossorigin="anonymous"
+                                referrerpolicy="no-referrer"
                                 onclick="window.openImageModal('${safeHref}')"
                                 onload="
+                                    this.dataset.loaded = 'true';
                                     const lEl = document.getElementById('load-${uniqueId}');
                                     if(lEl) lEl.style.display='none';
                                     this.style.display='block';
-                                "
-                                onerror="
-                                    this.retryCount = (this.retryCount || 0) + 1;
-                                    const loadEl = document.getElementById('load-${uniqueId}');
-                                    if (this.retryCount <= 12) {
-                                        const s = this;
-                                        // Adaptive backoff: give the GPU more time initially (6s), then standard waits
-                                        const delay = this.retryCount <= 3 ? 6000 : 8000;
-                                        
-                                        if(loadEl) {
-                                            const statusSpan = loadEl.querySelector('span');
-                                            if(statusSpan) statusSpan.textContent = '🎨 Generating... (' + this.retryCount + '/12)';
+                                    
+                                    const chatArea = document.getElementById('chat-area');
+                                    const lastMsg = chatArea.lastElementChild;
+                                    if (lastMsg && lastMsg.classList.contains('b-msg')) {
+                                        const totalImgs = lastMsg.querySelectorAll('.chat-rendered-img').length;
+                                        const loadedImgs = lastMsg.querySelectorAll('.chat-rendered-img[style*=\\'display: block\\']').length;
+                                        if (totalImgs === loadedImgs) {
+                                            const mascot = document.getElementById('mascot-container');
+                                            if (mascot) mascot.classList.remove('thinking');
+                                            const stopBtn = document.getElementById('stop-btn');
+                                            if (stopBtn) stopBtn.style.display = 'none';
                                         }
-                                        
-                                        setTimeout(() => { 
-                                            // Append retry param to force refresh, but keep seed consistent in base URL
-                                            s.src = '${safeHref}' + (('${safeHref}'.includes('?')) ? '&' : '?') + '_r=' + s.retryCount; 
-                                        }, delay);
-                                    } else {
-                                        if(loadEl) loadEl.innerHTML = '<div style=\\'padding:16px;color:var(--text-sub)\\'>⚠️ Generation took too long. <a href=\\'${safeHref}\\' target=\\'_blank\\' style=\\'color:var(--accent-blue)\\'>View directly →</a></div>';
                                     }
                                 "
-
+                                onerror="window.handleImgError(this, '${safeHref}', '${uniqueId}')"
                             >
                         </div>`;
                 };

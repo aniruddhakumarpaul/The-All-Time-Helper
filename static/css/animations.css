@@ -1,0 +1,62 @@
+/* Premium Typing & Status Indicators for The All Time Helper */
+
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    width: fit-content;
+}
+
+.typing-indicator span {
+    width: 6px;
+    height: 6px;
+    background: var(--accent-blue, #00d2ff);
+    border-radius: 50%;
+    display: inline-block;
+    animation: typing-bounce 1.4s infinite ease-in-out both;
+    box-shadow: 0 0 8px var(--accent-blue, #00d2ff);
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes typing-bounce {
+    0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
+    40% { transform: scale(1); opacity: 1; }
+}
+
+.status-msg {
+    font-size: 0.85rem;
+    color: var(--text-sub, #aaa);
+    font-family: 'Outfit', sans-serif;
+    font-style: italic;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: status-fade 2s infinite ease-in-out;
+}
+
+.status-msg svg {
+    animation: status-spin 2s linear infinite;
+    opacity: 0.7;
+}
+
+@keyframes status-fade {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+@keyframes status-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Glassmorphism for the thinking bubble */
+.b-msg.thinking-state .txt {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px dashed rgba(0, 210, 255, 0.3);
+    backdrop-filter: blur(10px);
+}
