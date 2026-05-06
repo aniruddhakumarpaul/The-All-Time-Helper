@@ -11,10 +11,16 @@
     <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <link rel="stylesheet" href="/static/css/style_v3.css?v=130">
+    <link rel="stylesheet" href="/static/css/style_v3.css?v=144">
     <link rel="stylesheet" href="/static/css/animations.css">
     <meta name="referrer" content="no-referrer">
-    <meta name="referrer" content="no-referrer">
+    <script>
+        (function () {
+            if (localStorage.getItem('helper_user_v2')) {
+                document.documentElement.classList.add('is-authenticated');
+            }
+        })();
+    </script>
 </head>
 
 <body data-theme="dark">
@@ -30,7 +36,7 @@
     <!-- Auth Screen -->
     <div id="auth-overlay">
         <div class="auth-card" id="login-form">
-            <h2 style="margin-bottom: 30px; font-weight: 500;">Welcome User</h2>
+            <h2 style="margin-bottom: 30px; font-weight: 500;">Welcome Human</h2>
             <input type="email" id="l-email" placeholder="Email Address"
                 onkeydown="if(event.key==='Enter') document.getElementById('l-pwd').focus()">
             <input type="password" id="l-pwd" placeholder="Password"
@@ -91,13 +97,18 @@
             New Chat
         </button>
 
-        <div class="user-profile" style="padding: 15px; margin-bottom: 20px; background: var(--item-hover); border-radius: 16px; border: 1px solid var(--glass-border); display: flex; align-items: center; gap: 12px;">
+        <div class="user-profile"
+            style="padding: 15px; margin-bottom: 20px; background: var(--item-hover); border-radius: 16px; border: 1px solid var(--glass-border); display: flex; align-items: center; gap: 12px;">
             <div id="sidebar-av-container">
                 <!-- Avatar injected by JS -->
             </div>
             <div style="flex: 1; min-width: 0;">
-                <div id="sidebar-greet" style="font-weight: 600; color: var(--text-main); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Hello, User</div>
-                <div id="user-info" style="font-size: 0.7rem; color: var(--text-sub); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></div>
+                <div id="sidebar-greet"
+                    style="font-weight: 600; color: var(--text-main); font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    Hello, Human</div>
+                <div id="user-info"
+                    style="font-size: 0.7rem; color: var(--text-sub); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                </div>
             </div>
         </div>
 
@@ -119,10 +130,12 @@
             </div>
 
             <!-- Persona Switch -->
-            <div class="persona-switch-item" style="padding: 15px; margin-top: 5px; background: rgba(255,107,157,0.05); border-radius: 12px; border: 1px solid rgba(255,107,157,0.1); display: flex; align-items: center; justify-content: space-between; cursor: pointer;" onclick="const t = document.getElementById('persona-toggle'); t.checked = !t.checked;">
+            <div class="persona-switch-item"
+                onclick="const t = document.getElementById('persona-toggle'); t.checked = !t.checked; t.dispatchEvent(new Event('change'));">
                 <div style="display: flex; align-items: center; gap: 10px;">
                     <div class="spark-icon" style="color: #ff6b9d;">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
                             <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M19.07 4.93l-2.83 2.83"></path>
                         </svg>
                     </div>
@@ -134,14 +147,6 @@
                 </label>
             </div>
 
-            <div class="sys-status">
-                <div class="status-header">
-                    <div class="status-dot"></div>
-                    System Operational
-                </div>
-                <div class="status-sub" id="status-line">Antigravity (Fast) | Llama 3.1 (Pro) | Mistral (Uncensored)
-                </div>
-            </div>
         </div>
     </div>
     <div id="sidebar-scrim" onclick="toggleSidebar()"></div>
@@ -161,27 +166,25 @@
                 <div class="pill-bar">
                     <div class="model-select-wrapper">
                         <div id="model-toggle" onclick="toggleDropdown()">
-                            <span id="active-model-name">Gemma 2 (Fast)</span>
+                            <span id="active-model-name">Gemma 4</span>
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                 stroke-width="2">
                                 <path d="M6 9l6 6 6-6"></path>
                             </svg>
                         </div>
                         <div class="model-dropdown" id="model-menu">
-                            <div
-                                style="padding: 10px 15px; font-size: 0.75rem; color: var(--text-sub); border-bottom: 1px solid var(--glass-border);">
-                                Cloud (Lightning Fast)</div>
+                            <div class="dropdown-header">Cloud (Lightning Fast)</div>
                             <div class="model-opt"
                                 onclick="selModel('gemini-1.5-flash-latest', 'Antigravity Flash (Cloud)')">Antigravity
                                 Flash</div>
                             <div class="model-opt"
                                 onclick="selModel('gemini-1.5-pro-latest', 'Antigravity Pro (Cloud)')">Antigravity Pro
+                                </div>
+                            <div class="model-opt" onclick="selModel('agentic-pro', 'Agentic Swarm (Supervisor)')">
+                                Agentic Swarm (Pro)
                             </div>
-                            <div class="model-opt" onclick="selModel('agentic-pro', 'Agentic Swarm (Supervisor)')">Agentic Swarm (Pro)
-                            </div>
-                            <div
-                                style="padding: 10px 15px; font-size: 0.75rem; color: var(--text-sub); border-bottom: 1px solid var(--glass-border); border-top: 1px solid var(--glass-border);">
-                                Local (Private)</div>
+                            <div class="dropdown-header" style="border-top: 1px solid var(--glass-border);">Local (Private)</div>
+                            <div class="model-opt" onclick="selModel('gemma4:e2b', 'Gemma 4')">Gemma 4</div>
                             <div class="model-opt" onclick="selModel('gemma2:2b', 'Gemma 2 (Fast&Fun)')">Gemma 2
                                 (Fast&Fun)</div>
                             <div class="model-opt" onclick="selModel('dolphin-mistral', 'Mistral (Uncensored)')">Dolphin
@@ -219,10 +222,8 @@
                         </svg>
                     </button>
 
-                    <textarea id="prompt" 
-                  placeholder="Ask me anything..." 
-                  onkeydown="handleChatKey(event)"
-                  rows="1"></textarea>
+                    <textarea id="prompt" placeholder="Ask me anything..." onkeydown="handleChatKey(event)"
+                        rows="1"></textarea>
 
                     <button id="main-send-btn" class="action-btn send-btn" onclick="send()">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -241,8 +242,8 @@
     <div id="neural-context-card">
         <div class="context-header">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2.5">
-                <path d="M12 2v8m0 4v8m-10-10h8m4 0h8"/>
-                <circle cx="12" cy="12" r="3"/>
+                <path d="M12 2v8m0 4v8m-10-10h8m4 0h8" />
+                <circle cx="12" cy="12" r="3" />
             </svg>
             <span class="context-title">Neural Context Link</span>
         </div>
@@ -250,7 +251,9 @@
             <!-- Snippets injected by JS -->
         </div>
         <div class="context-footer">
-            <button class="auth-btn" style="padding: 10px 20px; margin: 0; font-size: 0.85rem; background: rgba(255,255,255,0.05); color: var(--text-sub);" onclick="closeNeuralContext()">Dismiss</button>
+            <button class="auth-btn"
+                style="padding: 10px 20px; margin: 0; font-size: 0.85rem; background: rgba(255,255,255,0.05); color: var(--text-sub);"
+                onclick="closeNeuralContext()">Dismiss</button>
         </div>
     </div>
 
@@ -267,7 +270,8 @@
                         style="background:rgba(255,255,255,0.05); padding: 5px 15px; border-radius: 10px; border: 1px solid var(--glass-border); color: var(--text-main);">
                         <span id="current-theme-icon-settings">🌓 System</span>
                     </button>
-                    <div id="theme-menu-settings" class="dropdown-menu" style="right: auto; left: 0; top: 40px; display: flex; flex-direction: column-reverse;">
+                    <div id="theme-menu-settings" class="dropdown-menu"
+                        style="right: auto; left: -25px; top: 40px; display: flex; flex-direction: column-reverse;">
                         <div class="menu-item" onclick="applyThemeChoice('light')">☀️ Light</div>
                         <div class="menu-item" onclick="applyThemeChoice('dark')">🌙 Dark</div>
                         <div class="menu-item" onclick="applyThemeChoice('system')">🌓 System</div>
@@ -363,13 +367,13 @@
     <!-- Image Lightbox Modal -->
     <div id="image-modal" class="image-lightbox" style="display: none;" onclick="closeImageModal()">
         <span class="lightbox-close">&times;</span>
-        <img id="lightbox-img" src="" alt="Full view">
+        <img id="modal-img" src="" alt="Full view">
     </div>
 
-    <script src="/static/js/particles.js?v=130"></script>
-    <script src="/static/js/palette.js?v=130"></script>
+    <script src="/static/js/particles.js?v=142"></script>
+    <script src="/static/js/palette.js?v=142"></script>
     <script src="/static/js/utils.js?v=1"></script>
-    <script src="/static/js/main_v3.js?v=132"></script>
+    <script src="/static/js/main_v3.js?v=145"></script>
 </body>
 
 </html>

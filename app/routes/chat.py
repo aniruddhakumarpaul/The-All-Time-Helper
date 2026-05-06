@@ -4,22 +4,33 @@ import sqlite3
 import json
 import traceback
 import time
+import re
+import cv2
+import numpy as np
 from pydantic import BaseModel
 from typing import List, Optional, Any
 from app.database import get_db
 from app.repository import ChatRepository
 from app.security import get_current_user
+from app.logic.memory import query_memory, user_context, admin_auth_context
+from app.logic.neural_explainer import explain_neural_context
+from app.logic.agents import ask_the_helper
+from app.logger import logger
+import asyncio
+import threading
+import queue
 
 router = APIRouter()
 
 class ChatRequest(BaseModel):
     prompt: str
     history: List[dict] = []
-    model: str = "gemma2:2b"
+    model: str = "gemma4:e2b"
     img: Optional[str] = None
     name: str = "Human"
     sys: dict = {}
     persona: bool = False
+    isMasked: bool = False
 
 class RetrieveRequest(BaseModel):
     text: str
@@ -39,11 +50,10 @@ def sync_chats(chats: List[dict], current_user: str = Depends(get_current_user),
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-from app.logic.memory import query_memory
-from app.logic.neural_explainer import explain_neural_context
-
 @router.post("/retrieve_context")
 def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_current_user)):
+    # Set context for isolation
+    token = user_context.set(current_user)
     try:
         results = query_memory(req.text, n_results=req.n)
         
@@ -60,12 +70,8 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-from app.logic.agents import ask_the_helper
-
-import asyncio
-
 @router.post("/chat")
-async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_current_user)):
+async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
     # Decision Engine: Choose between Pro (Agentic) and Local (Ollama)
     target_model = req.model
     prompt = req.prompt
@@ -73,9 +79,41 @@ async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_curren
     history = req.history
     sys_config = req.sys
     
+    # NEW: Handle Admin Key securely via ContextVar, NOT in the LLM prompt
+    # FIX #3: Also pass key explicitly to avoid ContextVar thread-propagation issues
+    admin_key_value = None
+    if req.isMasked:
+        admin_key_value = req.prompt.strip()
+        # Securely store the key for the tool to access natively
+        admin_auth_context.set(admin_key_value)
+        # The LLM gets a generic message to proceed without seeing the key
+        prompt = "ADMIN_KEY_PROVIDED: [SECRET]. Please proceed with the previous task using this key."
+    else:
+        # Ensure context is cleared for regular messages
+        admin_auth_context.set(None)
+    
     # New Unified Agentic Flow (Supports both Cloud & Local with Tools)
+    abort_event = threading.Event()
+
+    async def listen_for_disconnect():
+        try:
+            while not abort_event.is_set():
+                if await request.is_disconnected():
+                    abort_event.set()
+                    logger.warning("[Chat] Client Disconnected. Killing Agent Thread.")
+                    break
+                await asyncio.sleep(2)
+        except Exception: pass
+
     try:
         async def agent_stream():
+            # Set User context for the generator thread
+            token = user_context.set(current_user)
+            # FIX #3: Propagate admin key into the thread explicitly
+            if admin_key_value:
+                admin_auth_context.set(admin_key_value)
+            # Start disconnect listener
+            listener_task = asyncio.create_task(listen_for_disconnect())
             try:
                 # Immediate feedback for the user
                 yield json.dumps({"status": "Initializing Neural Core..."}).encode() + b'\n'
@@ -86,20 +124,79 @@ async def chat_endpoint(req: ChatRequest, current_user: str = Depends(get_curren
                 else:
                     yield json.dumps({"status": "Scanning Semantic Memory..."}).encode() + b'\n'
 
-                # Run the Agentic Brain in a separate thread
-                task = asyncio.create_task(asyncio.to_thread(ask_the_helper, prompt, img, target_model, sys_config, history, req.persona))
+                # Track if streaming occurred to prevent duplicate final yields
+                streaming_occurred = []
+
+                # Status & Chunk Queue for thread communication
+                status_queue = queue.Queue()
+
+                def status_callback(msg):
+                    logger.debug(f"[Chat] Status Update -> {msg}")
+                    status_queue.put({"type": "status", "data": msg})
+
+                def chunk_callback(token):
+                    streaming_occurred.append(True)
+                    status_queue.put({"type": "chunk", "data": token})
+
+                # FIX #3: Capture admin key for thread-safe propagation
+                _admin_key_for_thread = admin_key_value
+
+                def thread_target():
+                    # Propagate ContextVars into worker thread
+                    user_context.set(current_user)
+                    if _admin_key_for_thread:
+                        admin_auth_context.set(_admin_key_for_thread)
+                    return ask_the_helper(
+                        prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
+                        status_callback=status_callback, chunk_callback=chunk_callback
+                    )
+
+                # Run the Agentic Brain in a separate thread with the abort signal
+                task = asyncio.create_task(asyncio.to_thread(thread_target))
+
                 
-                # HEARTBEAT LOOP: Yield a newline or status every 5s to keep the connection alive
+                # HEARTBEAT LOOP: Yield status/chunks from queue
                 while not task.done():
-                    yield b"\n" 
-                    await asyncio.sleep(5)
+                    if abort_event.is_set():
+                        break
+                    
+                    # Drain the queue
+                    while not status_queue.empty():
+                        item = status_queue.get()
+                        if item["type"] == "status":
+                            yield json.dumps({"status": item["data"]}).encode() + b'\n'
+                        elif item["type"] == "chunk":
+                            # Use 'message' key for character streaming
+                            logger.debug(f"DEBUG: Yielding chunk to stream: '{item['data']}'")
+                            yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
+                        await asyncio.sleep(0.01)
+
+                    # Heartbeat to keep connection alive and force flush
+                    yield json.dumps({"hb": int(time.time())}).encode() + b'\n'
+                    await asyncio.sleep(0.1) 
                 
                 result = await task
-                # Yield in the NDJSON format the frontend expects
-                yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
+                # Final check for any last status/chunks
+                while not status_queue.empty():
+                    item = status_queue.get()
+                    if item["type"] == "status": yield json.dumps({"status": item["data"]}).encode() + b'\n'
+                    elif item["type"] == "chunk": yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
+
+                if abort_event.is_set():
+                    yield json.dumps({"message": {"content": "⚠️ *Request Cancelled.*"}, "done": True}).encode() + b'\n'
+                else:
+                    # Only yield the final result block if it's a tool output or if NO streaming happened
+                    is_tool_res = result and result.strip() in ["SUCCESS", "ERROR", "AUTH_REQUIRED"]
+                    if is_tool_res or not streaming_occurred:
+                        yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
+                
+                yield json.dumps({"done": True}).encode() + b'\n'
             except Exception as e:
-                traceback.print_exc()
+                logger.error(f"Agent Error: {str(e)}")
                 yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(e)}"}, "done": True}).encode() + b'\n'
+            finally:
+                abort_event.set() # Ensure listener stops
+                listener_task.cancel()
         
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as e:

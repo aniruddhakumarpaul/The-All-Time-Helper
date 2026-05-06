@@ -9,3 +9,15 @@ fastapi
 python-dotenv
 openai
 requests
+# FIX #9: Previously missing dependencies
+uvicorn
+bcrypt
+PyJWT
+pyngrok
+litellm
+opencv-python
+numpy
+tenacity
+jinja2
+anyio
+python-multipart

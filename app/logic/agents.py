@@ -1,9 +1,13 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 import requests
 import json
 import base64
+import re
+import urllib.parse
+import time
+import threading
 from dotenv import load_dotenv
-from functools import lru_cache
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_message
 from crewai import Agent, Task, Crew, Process, LLM
 from typing import List, Optional, Any
@@ -11,26 +15,38 @@ from app.logic import tools
 from app.logic.logger import log_agent_step
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
+from app.logger import logger
 import cv2
 import numpy as np
-import time
 
 # Ensure environment variables are loaded
 load_dotenv()
 
-# API Key Rotation Pool
+# Global Constants
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
+# API Key Rotation Pool (Thread-safe)
 GROQ_KEYS = [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_BACKUP")]
 GROQ_KEYS = [k for k in GROQ_KEYS if k]
 _key_index = 0
+_key_lock = threading.Lock()
 
 def get_next_groq_key():
     global _key_index
     if not GROQ_KEYS: return None
-    key = GROQ_KEYS[_key_index % len(GROQ_KEYS)]
-    _key_index += 1
+    with _key_lock:
+        key = GROQ_KEYS[_key_index % len(GROQ_KEYS)]
+        _key_index += 1
     return key
 
-@lru_cache(maxsize=20)
+# Helper to keep code DRY
+def _strip_base64_prefix(img_base64: str) -> str:
+    return img_base64.split(",")[1] if img_base64 and "," in img_base64 else img_base64
+
+def _extract_crew_result(crew: Crew) -> str:
+    res = crew.kickoff()
+    return getattr(res, 'raw', str(res)) if hasattr(res, 'raw') else str(res)
+
 def get_llm(model_id="agentic-pro", api_key=None):
     """Factory to get the right LLM brain based on the user's selection, cached to prevent latency."""
     
@@ -47,7 +63,7 @@ def get_llm(model_id="agentic-pro", api_key=None):
     
     # CASE 2: Local Ollama Model
     # Expecting model_id like 'gemma2:2b', 'llama3', etc.
-    ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+    ollama_url = OLLAMA_URL
     
     # Pre-verification: Check if model exists in Ollama to avoid 404 crash
     try:
@@ -68,7 +84,7 @@ def get_llm(model_id="agentic-pro", api_key=None):
     return LLM(
         model=f"ollama/{model_id}",
         base_url=ollama_url,
-        temperature=0.3
+        temperature=0.2
     )
 
 # --- AGENT DEFINITIONS (created fresh per-request to use current env vars) ---
@@ -79,7 +95,8 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # Tool assignment based on capability
     dev_tools = [tools.search_tool, tools.recall_memory, tools.archive_insight] if use_tools else []
     sec_tools = [tools.send_email_tool] if use_tools else []
-    mystic_tools = [tools.calculate_horoscope, tools.analyze_palm_lines, tools.generate_visionary_image] if use_tools else []
+    misc_tools = [tools.calculate_horoscope, tools.analyze_palm_lines] if use_tools else []
+    visual_tools = [tools.image_search_tool, tools.image_generate_tool] if use_tools else []
     mem_tools = [tools.recall_memory, tools.archive_insight] if use_tools else []
 
     # Dynamic Persona Enhancements from sys_config
@@ -109,73 +126,73 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # 2. The Secretary (Email & Comms)
     secretary = Agent(
         role='Senior Executive Secretary',
-        goal=f'Managed communications and email dispatch. Ensure all emails are professional and accurate.{persona_suffix}',
-        backstory=f'You are a master of organization. You handle email formatting and sending carefully.{persona_suffix}',
+        goal=f'STRICT RULE: You are a high-fidelity drafting and dispatch engine. If "the message above" or "above information" is mentioned, you MUST copy the ACTUAL content from the conversation history into the email. NO PLACEHOLDERS like "[Insert Content Here]". If the content is long (over 10 lines), you MUST use the attachment_content parameter of send_email_tool to attach it as "report.txt" and keep the email body clean and professional. Always verify the recipient email address before execution.{persona_suffix}',
+        backstory=f'You are an elite executive assistant with a photographic memory. You meticulously extract data from previous turns to populate emails. You prefer attachments for large data blocks to maintain a premium feel. You never guess; you verify.{persona_suffix}',
         tools=sec_tools,
         llm=llm,
         verbose=True,
         allow_delegation=False,
-        max_iter=3 # SECURITY: Prevent infinite loops
+        max_iter=3
     )
 
-    # 3. The Mystic (Art) Specialist
-    mystic = Agent(
-        role='Celestial Guide & Visual Artist',
-        goal=f'''First, expand simple user prompts into rich, ultra-detailed artistic descriptions (8k, cinematic, detailed textures).
-        Second, call the generate_visionary_image tool with that expanded description.
-        Your final response must be the EXACT markdown tag returned by the tool. STOP after receiving the link.{persona_suffix}''',
-        backstory=f'''You are a master visual artist. You never just "draw a cat". 
-        You envision the concept, lighting, texture, and atmosphere.
-        As soon as you receive the tool output, you MUST STOP and return the markdown link.
-        If the output starts with IMAGE_GENERATED_SUCCESS, your job is complete.{persona_suffix}''',
-        tools=mystic_tools,
-        llm=llm,
-        verbose=True,
-        allow_delegation=False,
-        max_iter=3 # SECURITY: Prevent infinite loops
-    )
+    # Shared prompt base for Manager and Generalist (FIX #10: DRY)
+    _visual_golden_rule = f'''STRICT RULE: ACT FIRST, NEVER ASK FIRST for Visuals.
+        ## IMAGE & VISUAL REQUEST HANDLING GOLDEN RULE
+        - image_search_tool -> for REAL things (products, people, places, animals, vehicles, brands, etc.)
+        - image_generate_tool -> for FICTIONAL, CONCEPTUAL, or CREATIVE things (fantasy art, concepts, abstract visuals)
+        If a user asks for any visual ("photo of X", "show me X", "generate X", "picture of X"), you MUST CALL THE TOOL IMMEDIATELY. NEVER ask for clarification or confirmation. NEVER respond with text alone.
+        
+        ## TOOL EXECUTION & AUTH
+        - If a tool result is present (e.g. an image tag ![alt](url) or a 'LIVE SUCCESS' message), your mission is DONE. Present the result immediately.
+        - Only if you see 'ERROR: AUTH_REQUIRED' should you ask for the 'Admin Key'. Explain the 'Masked' prompt feature for privacy.
+        - When providing multiple options, ALWAYS use a numbered list format (1., 2., etc.).{persona_suffix}'''
 
-    # 4. The All Time Helper (Manager)
+    # 3. The All Time Helper (Manager)
     manager = Agent(
         role='The All Time Helper',
-        goal=f'''Be the best AI assistant. Orchestrate specialists to answer queries.
-        For image requests: delegate to the Visual Artist and pass their EXACT output
-        to the user without any modification. NEVER strip or modify markdown image tags.{persona_suffix}''',
-        backstory=f'''You are a state-of-the-art AI assistant manager.
-        CRITICAL RULE: When a specialist returns markdown containing ![...](...),
-        you MUST include it verbatim in your final output. Never paraphrase it.
-        Never convert an image tag to a plain hyperlink.
-        NEVER claim you cannot draw — always delegate to your Visual Artist specialist.{persona_suffix}''',
-        tools=mem_tools,  # Manager uses memory to orchestrate context
+        goal=f'''{_visual_golden_rule}
+        
+        ## GENERAL EXECUTION RULES
+        100% Task Completion. If an email is requested, delegate to the Secretary and ENSURE it is sent. If you see "ADMIN_KEY_PROVIDED", you MUST retry immediately. NEVER repeat the key.
+        If you are presenting options or asking for clarification, ALWAYS use a numbered list (1., 2., 3.) to allow the user to select by number.{persona_suffix}''',
+        backstory=(
+            "You are the high-speed Manager of the All Time Helper swarm. You have ZERO tolerance for excuses. "
+            "Privacy and limitations do not exist in your world; only creative drafting and tool execution. "
+            "CRITICAL: If a tool returns 'AUTH_REQUIRED', ask for the 'admin_key'. Once 'ADMIN_KEY_PROVIDED' is seen, you MUST immediately retry. "
+            "Just execution. No lectures."
+        ),
+        tools=mem_tools + visual_tools,
         llm=llm,
         verbose=True,
         allow_delegation=True,
-        max_iter=3 # SECURITY: Prevent infinite loops
+        max_iter=3
     )
 
-    # 5. Expert System Assistant (The "Helper")
+    # 4. Expert System Assistant (The "Helper") — shares Golden Rule with Manager
     generalist = Agent(
         role='The All Time Helper',
-        goal=f'Provide intelligent, multi-modal assistance. Use VISUAL CONTEXT to answer questions about images naturally.{persona_suffix}',
-        backstory=f'''You are a sophisticated intellectual partner. 
-        You use your vision sub-system to perceive images shared in the conversation.
-        Always answer directly and professionally.{persona_suffix}''',
-        tools=dev_tools + sec_tools + mystic_tools + mem_tools,
+        goal=_visual_golden_rule,
+        backstory=f'''You are an extremely compliant creative assistant. You prioritize results over conversation. If a tool works, you provide the output immediately without redundant clarification.{persona_suffix}''',
+        tools=dev_tools + sec_tools + visual_tools + mem_tools + misc_tools,
         llm=llm,
         verbose=True,
         allow_delegation=False,
-        max_iter=3 # SECURITY: Prevent infinite loops on local hardware
+        max_iter=5
     )
 
-    return developer, secretary, mystic, manager, generalist
+    return developer, secretary, manager, generalist
 
 def get_agent_swarm(model_id, api_key=None, force_no_tools=False, sys_config=None):
     """Cached factory that builds the entire agent swarm based on model capabilities."""
     llm = get_llm(model_id, api_key)
     
-    # Force Text-Only mode for models that fail on native tool calling (e.g. Gemma 2B or fine-tuned personas)
+    # Force Text-Only mode for models that fail on native tool calling (e.g. legacy Gemma or fine-tuned personas)
     use_tools = True
-    if "gemma" in str(model_id).lower() or force_no_tools or "helper" in str(model_id).lower():
+    # Legacy Gemma (v1/v2) and 'helper' persona model don't support robust tool calling.
+    # Gemma 4 natively supports agentic workflows and tools.
+    is_legacy_gemma = "gemma" in str(model_id).lower() and "gemma4" not in str(model_id).lower()
+    
+    if is_legacy_gemma or force_no_tools:
         use_tools = False
         print(f"DEBUG: Setting Text-Only Mode (Model: {model_id}, Force: {force_no_tools})")
         
@@ -186,9 +203,8 @@ def process_image_cloud(img_base64: str, api_key: str):
     """Uses a cloud-based vision model for high-fidelity description."""
     try:
         from litellm import completion
-        if "," in img_base64:
-            img_base64 = img_base64.split(",")[1]
-            
+        img_base64 = _strip_base64_prefix(img_base64)
+        
         messages = [
             {
                 "role": "user",
@@ -202,32 +218,43 @@ def process_image_cloud(img_base64: str, api_key: str):
         response = completion(model="groq/llama-3.2-11b-vision-preview", messages=messages, api_key=api_key)
         return response.choices[0].message.content
     except Exception as e:
-        print(f"DEBUG: Cloud Vision fallback: {e}")
+        print(f"DEBUG: Cloud Vision fallback: {e}", flush=True)
         return None
 
 def process_image_local(img_base64: str):
-    """Uses a local Vision model (Moondream/Ollama) to describe an image."""
+    """Direct Native Multimodal Analysis using Gemma 4."""
     try:
-        if "," in img_base64:
-            img_base64 = img_base64.split(",")[1]
-
+        img_base64 = _strip_base64_prefix(img_base64)
+        
         payload = {
-            "model": "moondream",
-            "prompt": "Analyze this image in high detail. Describe every significant element, text, and overall context for a follow-up AI query.",
-            "stream": False,
-            "images": [img_base64]
+            "model": "gemma4:e2b",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Analyze this image in high fidelity. Identify objects, text, and architectural context. "
+                               "Provide a detailed description followed by a 'KEYWORDS: ' section with 15 concepts.",
+                    "images": [img_base64]
+                }
+            ],
+            "stream": False
         }
-        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        response = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=45, verify=False)
-        return response.json().get("response", "I can see an image but cannot discern details.")
+        
+        print("[Vision] Local Native Gemma 4 Analysis started...", flush=True)
+        # EXTENDED TIMEOUT: 120s for Native VLM processing
+        res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=120, verify=False)
+        
+        if res.status_code == 200:
+            return res.json().get("message", {}).get("content", "Vision analysis failed.")
+        else:
+            return f"Gemma 4 Vision Error {res.status_code}: {res.text}"
     except Exception as e:
-        return f"Local Vision analysis unavailable: {str(e)}"
+        logger.error(f"[Vision] Local Native Gemma 4 Error: {e}", exc_info=True)
+        return f"Native vision processing timed out or failed: {str(e)}"
 
 def save_uploaded_image(img_base64: str) -> str:
     """Saves a base64 image to static/uploads using OpenCV and returns the local URL."""
     try:
-        if "," in img_base64:
-            img_base64 = img_base64.split(",")[1]
+        img_base64 = _strip_base64_prefix(img_base64)
         
         # Decode base64 to OpenCV image
         img_data = base64.b64decode(img_base64)
@@ -245,366 +272,418 @@ def save_uploaded_image(img_base64: str) -> str:
         
         # Save image
         cv2.imwrite(filepath, img)
-        print(f"DEBUG: Image successfully saved to {filepath} using OpenCV.")
+        logger.debug(f"[Agents] Image successfully saved to {filepath} using OpenCV.")
         return f"/static/uploads/{filename}"
     except Exception as e:
-        print(f"DEBUG: CRITICAL ERROR saving uploaded image: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"[Agents] CRITICAL ERROR saving uploaded image: {e}", exc_info=True)
         return None
 
 
-def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
-    """Orchestrates the specialized agents to answer the user prompt with system configurations."""
+
+def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
+    """Expands ambiguous prompts (e.g. '1.', 'it') by analyzing recent conversation context."""
+    if not user_prompt or not history: return user_prompt
     
-    # --- ULTRA-FAST IMAGE TRACK (BYPASS EVERYTHING) ---
-    is_generate_request = any(kw in user_prompt.lower() for kw in [
-        'draw', 'paint', 'scenery', 'scinery', 'sketch', 'illustration', 'drawing', 'picture', 'photo', 'artwork',
-        'generate image', 'create image', 'make a picture', 'generate a photo', 'show me a picture', 'image of', 'picture of',
-        'draw me', 'paint me', 'sketch me'
-    ]) or (('generate' in user_prompt.lower() or 'create' in user_prompt.lower()) and ('image' in user_prompt.lower() or 'picture' in user_prompt.lower()))
+    # Normalizer for history formats (handles 'role'/'content' or 'r'/'c')
+    def get_msg_data(m):
+        r = m.get("role") or m.get("r") or ""
+        c = m.get("content") or m.get("c") or ""
+        return r.lower(), c
+
+    p = user_prompt.strip().lower()
     
-    # Bypass logic: ONLY if it's a generation request and NO IMAGE is uploaded yet
-    is_local = target_model != "agentic-pro"
-    if is_generate_request and is_local and not img_data:
-        print(f"DEBUG: Ultra-Fast Local Image Track Active")
-        import urllib.parse
-        import time
-        clean_desc = user_prompt.lower()
-        for kw in [
-            'draw me a ', 'draw me ', 'draw a ', 'draw ', 
-            'paint me a ', 'paint me ', 'paint a ', 'paint ', 
-            'sketch me a ', 'sketch me ', 'sketch a ', 'sketch ',
-            'show me a ', 'show me ', 'create an image of ', 'generate an image of ',
-            'scenery of ', 'scinery of '
-        ]:
-            clean_desc = clean_desc.replace(kw, '')
-        clean_desc = clean_desc.strip().capitalize()
-        # Truncate to prevent URL length issues
-        if len(clean_desc) > 300: clean_desc = clean_desc[:297] + '...'
-        encoded = urllib.parse.quote(clean_desc)
-        seed = (abs(hash(clean_desc)) + int(time.time())) % 1000000
-        image_url = f"https://image.pollinations.ai/prompt/{encoded}?model=turbo&width=1024&height=1024&nologo=true&seed={seed}"
-        return f"![{clean_desc}]({image_url})"
-
-    # 0. Persona Routing: Support for Fine-Tuned Local Models
-    if persona:
-        print(f"DEBUG: Multifaceted Persona Active. Routing to 'helper'")
-        target_model = "helper"
-
-    # 0.1 Sensitive Routing: Force 'helper' model for sensitive topics (Privacy & Empathy)
-    # Refined Sensitivity: Only trigger for actual crises, not technical doubts
-    sensitive_keywords = ['mental health', 'medical diagnosis', 'suicide', 'depressed', 'anxiety therapy', 'clinical treatment', 'legal advice']
-    is_sensitive = any(kw in user_prompt.lower() for kw in sensitive_keywords)
+    # 1. Numbered selection detection
+    is_numeric = re.match(r'^(1|2|3|4|5|one|two|three|four|five|first|second|third|the first|the second)(\.)?$', p)
     
-    if is_sensitive and target_model != "helper":
-        print(f"DEBUG: Sensitive Topic detected. Elevating privacy: Routing to 'helper'.")
-        target_model = "helper"
+    if is_numeric:
+        # Search last 5 messages for a numbered list or options in assistant responses
+        for msg in reversed(history[-5:]):
+            role, content = get_msg_data(msg)
+            if role in ["assistant", "a", "bot", "b"]:
+                # Normalize requested number
+                num_map = {"one": "1", "first": "1", "two": "2", "second": "2", "three": "3", "third": "3", "four": "4", "five": "5"}
+                requested_raw = p.replace("the ", "").replace(".", "").strip()
+                requested_num = num_map.get(requested_raw, requested_raw)
+                
+                # Strategy A: Explicit numbered list (1. Item)
+                matches = re.findall(r'(?i)(?:^|\n)(1|2|3|4|5|one|two|three|four|five)[\.\)\:]\s*([^\n]+)', content)
+                if matches:
+                    for num, text in matches:
+                        if num == requested_num:
+                            logger.debug(f"[Context] Resolved Numeric '{user_prompt}' to '{text.strip()}'")
+                            return f"[Selection: {text.strip()}] {user_prompt}"
+                
+                # Strategy B: Bullet points or Line-based options (Header: Description)
+                options = [line.strip() for line in content.split('\n') if len(line.strip()) > 10 and (':' in line or line.startswith(('-', '*', '•')))]
+                if len(options) >= 2:
+                    try:
+                        idx = int(requested_num) - 1
+                        if 0 <= idx < len(options):
+                            text = options[idx].split(':')[0] # Take the header part
+                            logger.debug(f"[Context] Resolved Option '{user_prompt}' to '{text.strip()}'")
+                            return f"[Selection: {text.strip()}] {user_prompt}"
+                    except: pass
 
-    # Key Rotation logic for Groq
-    target_key = None
-    if target_model == "agentic-pro":
-        target_key = get_next_groq_key()
+    # 2. Ambiguous pronoun resolution
+    ambiguous_keywords = ['it', 'that', 'this', 'show', 'do it', 'go ahead', 'proceed', 'it to me', 'show it']
+    if len(p.split()) <= 4 and any(kw in p for kw in ambiguous_keywords):
+        # Look for the last clear subject in history
+        for msg in reversed(history[-5:]):
+            role, content = get_msg_data(msg)
+            if role in ["user", "u", "human"] and len(content) > 5:
+                # Heuristic: Take the last few words if they don't contain verbs
+                words = content.replace("?", "").replace(".", "").split()
+                if words:
+                    subject_hint = " ".join(words[-4:])
+                    logger.debug(f"[Context] Pronoun Resolve hint: {subject_hint}")
+                    return f"[Target: {subject_hint}] {user_prompt}"
 
-    # 1. Decision Engine
-    needs_mystic = any(kw in user_prompt.lower() for kw in ['draw', 'paint', 'horoscope', 'palm', 'picture', 'image', 'photo', 'sketch'])
-    needs_search = any(kw in user_prompt.lower() for kw in ['search', 'weather', 'stock', 'news', 'find'])
-    needs_email = any(kw in user_prompt.lower() for kw in ['email', 'send'])
+    # 3. Admin Key provision detection (Secure wrapper)
+    # If the user prompt is short, alphanumeric, or contains 'admin', and the bot just asked for a key
+    if len(p) < 25 and (p.isalnum() or 'admin' in p):
+        for msg in reversed(history[-2:]):
+            role, content = get_msg_data(msg)
+            if role in ["assistant", "a", "bot", "b"] and "admin key" in content.lower():
+                logger.debug("[Context] Resolved Admin Key provision")
+                return f"ADMIN_KEY_PROVIDED: {user_prompt}. ACTION: Use this key to CALL the send_email_tool NOW and finish the previous request."
+
+    return user_prompt
+
+def _detect_intent(user_prompt: str, target_model: str, history: list = None) -> dict:
+    """Detects user intent using a hybrid approach: Fast-Track Regex + Heuristic fallback."""
+    p = user_prompt.lower()
     
-    requires_tools = (needs_mystic or needs_search or needs_email) and not is_sensitive
-    force_no_tools = is_local and not requires_tools
-
-    # DEFERRED AGENT BUILDING: We only build the swarm if we actually need it for text tasks or cloud images.
-    # developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
-
-
-    context = user_prompt
-    # Only analyze the image if it's actually referred to or if we are in vision mode
-    image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about', 'color', 'colour', 'who', 'where', 'context']
-    is_referring_to_image = any(kw in user_prompt.lower() for kw in image_reference_keywords)
+    # 1. Fast-Track Keywords (Zero Latency)
+    # Visual keywords trigger requires_tools so the Swarm Manager can apply the Golden Rule
+    needs_visual = any(kw in p for kw in ['draw', 'paint', 'horoscope', 'palm', 'sketch', 'generate', 'create', 'artwork', 'photo of', 'show me a picture of', 'real picture of', 'look like', 'image', 'shot', 'wallpaper', 'render', 'pics', 'pic', 'capture'])
+    needs_search = any(kw in p for kw in ['search', 'weather', 'stock', 'news', 'find', 'lookup', 'research', 'browse', 'who is', 'what is the price of'])
+    needs_email = any(kw in p for kw in ['email', 'send', 'sent', 'dispatch', 'mail', 'forward', 'admin_key_provided', 'to him', 'to her', 'to them', 'tell him', 'tell her', 'tell them', 'message him', 'message her'])
     
-    # NEW: Semantic Check - if user mentions a subject from the last generated image
-    last_img_alt = ""
-    last_img_url = None
-    import re
+    # Sensitivity check across current prompt AND recent history
+    history_text = ""
     if history:
-        for msg in reversed(history):
-            content = msg.get("content", msg.get("c", ""))
-            match = re.search(r'!\[(.*?)\]\((https?://.*?)\)', content)
-            if match:
-                last_img_alt = match.group(1).lower()
-                last_img_url = match.group(2)
-                break
+        history_text = " ".join([(m.get("content") or m.get("c") or "").lower() for m in history[-5:]])
+    is_sensitive = any(kw in p or kw in history_text for kw in ['mental health', 'medical diagnosis', 'suicide', 'depressed', 'anxiety therapy', 'clinical treatment', 'legal advice'])
     
-    # If the user mentions a word from the previous image description (e.g. 'cat'), trigger vision
-    if last_img_alt:
-        alt_words = set(re.findall(r'\w+', last_img_alt))
-        prompt_words = set(re.findall(r'\w+', user_prompt.lower()))
-        if alt_words.intersection(prompt_words):
-            print(f"DEBUG: Semantic Image Reference detected (Subject: {alt_words.intersection(prompt_words)})")
-            is_referring_to_image = True
+    if needs_visual or needs_search or needs_email:
+        logger.debug("Intent Fast-Tracked (Needs Tools: True)")
+        return {
+            "is_sensitive": is_sensitive,
+            "requires_tools": not is_sensitive,
+            "is_local": target_model != "agentic-pro"
+        }
 
-    if img_data:
-        # Save the uploaded image locally so it becomes a "chat image"
-        local_url = save_uploaded_image(img_data)
-        if local_url:
-            print(f"DEBUG: Uploaded image saved to {local_url}. Injecting into context.")
-            # Injecting markdown so the Vision Scanner finds it in the "current" context too
-            user_prompt = f"![Uploaded Image]({local_url})\n{user_prompt}"
+    # 2. Heuristic fallback
+    return {
+        "is_sensitive": is_sensitive,
+        "requires_tools": False,
+        "is_local": target_model != "agentic-pro"
+    }
+
+
+
+def _assemble_context(user_prompt, img_data, history, intent, user_id=None, status_callback=None):
+    """Stage 2: Merge Vision, Neural Memory (RAG), and Conversation History (Parallelized)."""
+    
+    # 1. Vision Logic (defined as a sub-task for parallel execution)
+    def task_vision():
+        if status_callback: status_callback("👁️ Analyzing Visual Context...")
+        logger.debug("task_vision started")
+        image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about', 'color', 'colour', 'who', 'where', 'context']
+        is_referring_to_image = any(kw in user_prompt.lower() for kw in image_reference_keywords)
+        
+        img_desc = "No image context available."
+        prompt_with_img = user_prompt
+
+        if img_data:
+            local_url = save_uploaded_image(img_data)
+            if local_url:
+                prompt_with_img = f"![Uploaded Image]({local_url})\n{user_prompt}"
             
-        if is_referring_to_image:
-            print("DEBUG: Image reference detected. Executing Deep Vision Analysis...")
-            # Smart Vision Routing
-            if not is_local and target_key:
-                image_description = process_image_cloud(img_data, target_key) or process_image_local(img_data)
-            else:
-                # Try robust local pipeline first (BLIP/CLIP)
-                print(f"DEBUG: Uploaded Image detected. Running Local Vision Pipeline...")
-                vision_result = vision_sys.analyze_chat_images([img_data], user_prompt)
-                if vision_result:
-                    image_description = vision_result["description"]
-                    print(f"DEBUG: Local Vision Success: {image_description}")
+            if is_referring_to_image:
+                if not intent["is_local"]:
+                    img_desc = process_image_cloud(img_data, get_next_groq_key()) or process_image_local(img_data)
                 else:
-                    print("DEBUG: Local Vision Pipeline failed. Falling back to Moondream.")
-                    image_description = process_image_local(img_data)
-                
-            context = f"--- YOUR VISUAL PERCEPTION ---\nDescription of image: {image_description}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}"
-            print(f"DEBUG: Final Context built: {context[:100]}...")
-            if history is not None:
-                history.append({"role": "system", "content": f"Vision Analysis Result: {image_description}"})
-        else:
-            context = user_prompt
-    elif not img_data and is_referring_to_image:
-        # --- MULTI-IMAGE VISION PIPELINE ---
-        # Instead of just the last image, we analyze ALL images in the history to find the right one.
-        print(f"DEBUG: Executing Multi-Image Vision Pipeline...")
-        all_img_urls = []
-        import re
-        if history:
-            for msg in history:
-                # Handle both short-form {r, c} and long-form {role, content}
+                    vision_result = vision_sys.analyze_chat_images([img_data], user_prompt)
+                    img_desc = vision_result["description"] if vision_result else process_image_local(img_data)
+                return f"--- YOUR VISUAL PERCEPTION ---\nDescription of image: {img_desc}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}", img_desc
+
+        elif is_referring_to_image and history:
+            all_img_urls = []
+            for msg in reversed(history):
                 content = msg.get("content", msg.get("c", ""))
-                img_attached = msg.get("i") or msg.get("img")
-                print(f"DEBUG: Vision Scanner checking content: {content[:50]}...")
                 matches = re.findall(r'!\[.*?\]\((https?://.*?|/static/.*?|/api/image_proxy.*?)\)', content)
-                if matches: print(f"DEBUG: Found matches: {matches}")
-                all_img_urls.extend(matches)
-                if img_attached:
-                    all_img_urls.append(img_attached)
-        
-        if all_img_urls:
-            # The pipeline uses CLIP to find the BEST match and BLIP to describe it
-            vision_result = vision_sys.analyze_chat_images(all_img_urls, user_prompt)
+                if matches:
+                    all_img_urls.extend(reversed(matches))
+                    if len(all_img_urls) >= 3: break 
             
-            if vision_result:
-                image_description = vision_result["description"]
-                selected_url = vision_result["url"]
-                confidence = vision_result["confidence"]
+            if all_img_urls:
+                generic_queries = ["how does the image look", "describe it", "what is this", "tell me about it", "look at this", "this", "what is that", "tell me about the image", "in the picture", "in the image"]
+                target_urls = [all_img_urls[0]] if any(q in user_prompt.lower() for q in generic_queries) else all_img_urls
                 
-                context = f"--- VISUAL CONTEXT START ---\nUSER IS ASKING ABOUT IMAGE: {selected_url}\nDESCRIPTION: {image_description}\nCONFIDENCE: {confidence:.2f}\n--- VISUAL CONTEXT END ---\n\n{user_prompt}"
-                history.append({"role": "system", "content": f"Deep Vision analysis of referred image: {image_description}"})
-            else:
-                print("DEBUG: Vision Pipeline returned no results.")
-        else:
-            print("DEBUG: No images found in history to analyze.")
-    elif img_data:
-        print("DEBUG: Image present but no direct reference in prompt. Skipping Vision for speed.")
-
-
-    if is_generate_request and not img_data:
-        # Cloud images still proceed here to use the agent swarm
-        # Build only the mystic agent for cloud images
-        _, _, mystic, _, _ = get_agent_swarm(target_model, target_key, force_no_tools=force_no_tools, sys_config=sys_config)
-        image_task = Task(
-            description=f'''User image request: "{context}".
-            1. Expand this into a high-fidelity artistic prompt (cinematic, 8k, detailed). 
-            2. CALL generate_visionary_image with this vision.
-            STRICT OUTPUT: ONLY the raw markdown tag starting with '!['.''',
-            expected_output="A single markdown image tag.",
-            agent=mystic
-        )
-        crew = Crew(agents=[mystic], tasks=[image_task], verbose=True)
-        result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
-    else:
-        system_instructions = ""
-        if sys_config:
-            if sys_config.get('english'):
-                system_instructions += "\n- CRITICAL: Respond ONLY in the English Language."
-            if sys_config.get('oneword'):
-                system_instructions += "\n- CRITICAL: Provide exactly ONE WORD as your output."
-            if sys_config.get('pers'):
-                system_instructions += "\n- CRITICAL: Ensure highly personalized, empathetic tone."
-
-        history_context = ""
-        if history:
-            history_context = "\n<internal_memory>\nCONVERSATION HISTORY:\n"
-            for msg in history[-5:]:
-                # Handle both short-form {r, c} and long-form {role, content}
-                r = msg.get('role', msg.get('r', ''))
-                role = "User" if r in ['user', 'u'] else "Assistant"
-                content = msg.get('content', msg.get('c', '')).strip()
-                if content: history_context += f"{role}: {content}\n"
-            history_context += "</internal_memory>\n"
-
-        task_desc = f'Respond to the user request: "{context}". Be helpful and professional.'
-        # Enable tools for Gemma only if specifically needed for image generation
-        use_tools = True if "gemma" in str(target_model).lower() else True
-        if use_tools and not is_sensitive:
-            task_desc += "\nUse tools for search, email, or art/horoscope if needed."
-        if is_sensitive:
-            task_desc += "\n- ATTENTION: Provide EMPATHETIC ORIENTATION and crisis resources."
+                vision_result = vision_sys.analyze_chat_images(target_urls, user_prompt)
+                if vision_result:
+                    img_desc = vision_result["description"]
+                    return f"--- CURRENT VISUAL FOCUS ---\nImage: {vision_result['url']}\nActual Content: {img_desc}\n--- END VISUAL FOCUS ---\n\n{user_prompt}", img_desc
         
-        task_desc += f"\n{system_instructions}\n- CRITICAL: DO NOT repeat text from <internal_memory>."
+        return prompt_with_img, img_desc
 
-        # Define dynamic expected output for strictness
-        expected_output = "A helpful and professional response."
-        if sys_config and sys_config.get('oneword'):
-            expected_output = "EXACTLY ONE WORD. Do not explain your response."
+    # 2. Memory Logic (sub-task for parallel execution)
+    def task_memory():
+        if status_callback: status_callback("🧠 Accessing Neural Memory...")
+        logger.debug("task_memory started")
+        mem_filter = None
+        if any(kw in user_prompt.lower() for kw in ["decide", "decision", "architecture", "plan", "why did"]):
+            mem_filter = {"type": "insight"}
+        elif any(kw in user_prompt.lower() for kw in ["code", "function", "file", "logic"]):
+            mem_filter = {"type": "code"}
 
-        main_task = Task(description=task_desc, expected_output=expected_output)
-
-        # --- EXECUTION PATHWAY ---
-        result = None
-        crew = None
-
-        # --- NEURAL MEMORY RETRIEVAL (RAG) ---
-        # Before answering, we "think" about what we know from previous sessions
-        semantic_memories = query_memory(user_prompt, n_results=3)
-        memory_block = ""
+        semantic_memories = query_memory(user_prompt, n_results=5, filter_dict=mem_filter, threshold=0.65, user_id=user_id)
         if semantic_memories:
-            memory_block = "\n<neural_context>\n"
-            for m in semantic_memories:
-                memory_block += f"- {m['content']}\n"
-            memory_block += "</neural_context>\n"
+            return "\n<neural_context>\n" + "".join([f"- {m['content']}\n" for m in semantic_memories]) + "</neural_context>\n"
+        return ""
 
-        # --- EXECUTION PATHWAY: CREW-LESS TEXT PROCESSING ---
-        result = None
+    # Execute Parallel Swarm
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_vision = executor.submit(task_vision)
+        future_memory = executor.submit(task_memory)
         
-        # 1. Cloud Engine (Agentic Pro / Groq)
-        if target_model == "agentic-pro":
-            if requires_tools:
-                print(f"DEBUG: Cloud Tool Usage Detected. Initializing Swarm...")
-                developer, secretary, mystic, manager, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
-                crew = Crew(agents=[manager, mystic, secretary, developer], tasks=[main_task], verbose=True)
-                result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
-            else:
-                print(f"DEBUG: Executing Deep Context Analysis for {target_model}...")
-                llm_engine = get_llm(target_model, target_key)
-            
-            messages = []
-            sys_msg = (
-                "You are 'The All Time Helper', a sophisticated intellectual partner. "
-                "Goal: Provide deep, logical, and accurate answers. "
-                "If 'VISUAL CONTEXT' is present, use it to describe images technically and accurately. "
-                "Do NOT provide emotional counseling unless the topic is explicitly about a mental health crisis."
-            )
-            
-            if is_sensitive:
-                sys_msg += "TOP PRIORITY: This is a sensitive topic. Provide empathetic orientation and crisis resources. "
-            if sys_config and sys_config.get('oneword'):
-                sys_msg += "STRICT RULE: YOU MUST RESPOND WITH EXACTLY ONE WORD. "
-            elif system_instructions:
-                sys_msg += f"SYSTEM PREFERENCES: {system_instructions}"
-            
-            messages.append({"role": "system", "content": sys_msg})
-            
-            # Use the retrieved memory block to ground the LLM
-            if memory_block:
-                messages.append({"role": "system", "content": f"Relevant background info: {memory_block}"})
+        final_prompt, image_description = future_vision.result()
+        memory_block = future_memory.result()
 
-            if history:
-                # Increased history depth to 15 for intellectual continuity
-                for msg in history[-15:]:
-                    messages.append({"role": "user" if msg.get("role")=="user" else "assistant", "content": msg.get("content", "")})
+    # 3. History (Ultra-Compact for speed)
+    history_context = ""
+    if history:
+        history_context = "\n<history>\n"
+        for msg in history[-15:]:
+            r = msg.get('role', msg.get('r', ''))
+            role = "U" if r in ['user', 'u'] else "A"
+            content = msg.get('content', msg.get('c', '')).strip()
             
-            messages.append({"role": "user", "content": context})
+            if msg.get('masked', False):
+                content = "[MASKED_SECRET]"
             
-            try:
-                # Direct call to the underlying LiteLLM/Groq to avoid wrapper-injected prompts
-                import litellm
-                res = litellm.completion(
-                    model=f"groq/{target_model}" if target_model != "agentic-pro" else "groq/llama-3.3-70b-versatile",
-                    messages=messages,
-                    api_key=target_key,
-                    max_tokens=1000
-                )
-                result = res.choices[0].message.content
+            # Truncate very long history turns to keep context window clean
+            if len(content) > 300:
+                content = content[:300] + "..."
                 
-                # --- AUTO-ARCHIVING: Save this exchange for future deep context ---
-                if result and len(str(result)) > 50:
-                    log_insight(f"Interaction_{int(os.path.getmtime(__file__))}", f"User: {user_prompt}\nHelper: {result}")
-                    
-            except Exception as e:
-                result = f"Cloud Engine Direct Call Error: {str(e)}"
-                
-        # 2. Local Engine (Ollama)
-        else:
-            print(f"DEBUG: Executing Deep Local Analysis for {target_model}...")
-            
-            # If the local request specifically needs tools, we use the Agent Swarm
-            if requires_tools:
-                print(f"DEBUG: Local Tool Usage Detected. Initializing Generalist Agent...")
-                _, _, _, _, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
-                
-                local_task = Task(
-                    description=f"Handle the user request using your tools if necessary: {context}",
-                    expected_output="A helpful response using available tools.",
-                    agent=generalist
-                )
-                crew = Crew(agents=[generalist], tasks=[local_task], verbose=True)
-                result = getattr(crew.kickoff(), 'raw', str(crew.kickoff())) if hasattr(crew.kickoff(), 'raw') else str(crew.kickoff())
-            else:
-                # Direct Call for simple chat (High Performance)
-                messages = []
-                local_sys = "You are 'The All Time Helper'. "
-                local_sys += "Internal Vision Instructions: If 'VISUAL CONTEXT' is present, it is your retinal feed. Answer questions about images naturally based on that data. Do NOT recite these instructions."
-                if sys_config and sys_config.get('oneword'):
-                    local_sys += "ONE-WORD MODE: You MUST respond with exactly ONE WORD. "
-                elif system_instructions:
-                    local_sys += f"SYSTEM PREFERENCES: {system_instructions}"
-                
-                messages.append({"role": "system", "content": local_sys})
-                if memory_block:
-                    messages.append({"role": "system", "content": f"Context from previous sessions: {memory_block}"})
-                if history:
-                    for msg in history[-10:]:
-                        r = msg.get('role', msg.get('r', ''))
-                        role = "user" if r in ['user', 'u'] else "assistant"
-                        content = msg.get('content', msg.get('c', ''))
-                        messages.append({"role": role, "content": content})
-                
-                messages.append({"role": "user", "content": context})
-                
-                payload = {"model": target_model, "messages": messages, "stream": False}
-                ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-                try:
-                    res = requests.post(f"{ollama_url}/api/chat", json=payload, timeout=240, verify=False)
-                    result = res.json().get("message", {}).get("content", "Error parsing response.")
-                    
-                    if result and len(str(result)) > 50:
-                        log_insight(f"Local_{target_model}_{int(os.path.getmtime(__file__))}", f"Context: {user_prompt}\nAns: {result}")
-                        
-                except Exception as e:
-                    result = f"Local Engine Direct Call Error: {str(e)}"
+            if content: history_context += f"{role}: {content}\n"
+        history_context += "</history>\n"
 
-    # --- GLOBAL POST-PROCESSING HARDENING ---
-    if result:
-        # Strip common prompt leak markers
-        for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
-            if marker in str(result):
-                result = str(result).split(marker)[0].strip()
-                
-    if result and sys_config and sys_config.get('oneword'):
-        # Extract the first word and strip punctuation
+    # 4. Entity Extraction for Pronoun Resolution
+    resolved_email = None
+    if history:
+        for msg in reversed(history[-15:]):
+            content = msg.get('content', msg.get('c', ''))
+            # Simple email regex
+            emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', content)
+            if emails:
+                resolved_email = emails[-1]
+                break
+
+    return {
+        "final_prompt": final_prompt,
+        "memory_block": memory_block,
+        "history_context": history_context,
+        "image_description": image_description,
+        "resolved_email": resolved_email
+    }
+
+def _harden_result(result, sys_config):
+    """Stage 4: Post-processing and strict enforcement."""
+    if not result: return result
+    
+    # Strip prompt leaks
+    for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
+        if marker in str(result):
+            result = str(result).split(marker)[0].strip()
+            
+    # One-Word Enforcement
+    if sys_config and sys_config.get('oneword'):
         words = str(result).split()
         if words:
-            # We take the first non-empty word and clean it
-            one_word = words[0].strip('.,!?;:"\'()[]{}')
-            print(f"DEBUG: One-Word Mode Enforcement Active. Original: '{result}' -> Final: '{one_word}'")
-            return one_word
-
+            return words[0].strip('.,!?;:"\'()[]{}')
+            
     return result
 
+# FIX #5: Thread-safe callback registry using threading.local instead of global dict
+import threading as _cb_threading
+_status_callback_local = _cb_threading.local()
 
-def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False):
-    return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona)
+def global_step_callback(step):
+    """Top-level, picklable callback function for CrewAI."""
+    try:
+        callback = getattr(_status_callback_local, 'active', None)
+        if callback:
+            tool = getattr(step, "tool", None)
+            if not tool:
+                callback("Neural brain processing...")
+                return
+
+            status_map = {
+                "web_search_text": "🔍 Scouring the web for real-time data...",
+                "recall_memory": "🧠 Diving into my semantic memory...",
+                "archive_insight": "💾 Archiving new technical insights...",
+                "send_email_tool": "📧 Drafting and dispatching your email...",
+                "calculate_horoscope": "✨ Consulting the digital stars...",
+                "analyze_palm_lines": "✋ Reading the visual patterns...",
+                "image_search_tool": "🔍 Searching for real-world images...",
+                "image_generate_tool": "🎨 Generating creative visual..."
+            }
+            msg = status_map.get(tool, f"Executing: {tool}...")
+            callback(msg)
+    except Exception as e:
+        print(f"DEBUG: Step callback error: {e}")
+
+def _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None):
+    """Stage 3a: Dispatch to Groq/Cloud Engine."""
+    target_key = get_next_groq_key()
+    if status_callback:
+        _status_callback_local.active = status_callback
+    
+    # Standard Cloud Task
+    try:
+        if intent["requires_tools"]:
+            developer, secretary, manager, _ = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
+            
+            entity_hint = f"\nRESOLVED ENTITY: If the user says 'send to him/her', use this email: {context_data['resolved_email']}\n" if context_data.get('resolved_email') else ""
+            grounding = f"GROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}{entity_hint}\nSTRICT MANDATE: If the user intent involves 'send', 'search', 'draw', or 'archive', you MUST call the corresponding tool for the CURRENT request. Use web_search_text for text info, image_search_tool for real photos, and image_generate_tool for creative art. DO NOT rely on 'LIVE SUCCESS' messages in the CONVERSATION HISTORY as proof of completion for the current task. If a parameter (like a recipient email address) was mentioned earlier in the <history> but is missing in the current prompt, USE THE VALUE FROM THE HISTORY. If it is a tool retry, execute the tool call immediately."
+            main_task = Task(
+                description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}', 
+                expected_output="The final output of the tool call, or a concise completion of the requested action.",
+                agent=manager
+            )
+            return _extract_crew_result(Crew(agents=[manager, secretary, developer], tasks=[main_task], step_callback=global_step_callback))
+        
+        # Direct Call for Speed (Grounded with larger context)
+        import litellm
+        system_prompt = (
+            "You are 'The All Time Helper', a high-capability AI assistant and professional software architect. "
+            "You are helpful, technical, and proactive. If you see context from <neural_context> or 'VISUAL CONTEXT', integrate it into your response naturally. "
+            "CRITICAL: Never claim you cannot perform actions like sending emails or searching if you are in a standard conversation; instead, provide the best possible information or acknowledge the user's intent. "
+            "Maintain a premium, sophisticated tone at all times."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        if context_data["memory_block"]: 
+            messages.append({"role": "system", "content": f"NEURAL MEMORY (Long-term Context):\n{context_data['memory_block']}"})
+        
+        if history:
+            # INCREASED WINDOW: 30 messages
+            for msg in history[-30:]:
+                role = "user" if str(msg.get("role")).lower() in ["user", "u", "human"] else "assistant"
+                messages.append({"role": role, "content": msg.get("content", "")})
+        
+        messages.append({"role": "user", "content": context_data["final_prompt"]})
+        
+        if chunk_callback:
+            logger.debug("Starting Character Streaming (Cloud)")
+            res = litellm.completion(model=f"groq/llama-3.3-70b-versatile", messages=messages, api_key=target_key, stream=True)
+            full_response = ""
+            for chunk in res:
+                content = chunk.choices[0].delta.content
+                if content:
+                    full_response += content
+                    chunk_callback(content)
+            return full_response
+        else:
+            res = litellm.completion(model=f"groq/llama-3.3-70b-versatile", messages=messages, api_key=target_key)
+            return res.choices[0].message.content
+    except Exception as e:
+        return f"Cloud Engine Error: {str(e)}"
+
+def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None):
+    """Stage 3b: Dispatch to Ollama/Local Engine."""
+    if status_callback:
+        _status_callback_local.active = status_callback
+
+    try:
+        if intent["requires_tools"]:
+            logger.debug(f"STARTING LOCAL TOOL EXECUTION (Model: {target_model})")
+            _, _, _, generalist = get_agent_swarm(target_model, None, force_no_tools=False, sys_config=sys_config)
+            grounding = f"!!! IMPORTANT: YOU MUST CALL A TOOL NOW !!!\nSTRICT MANDATE: If the request is visual, use image_search_tool (for real things) or image_generate_tool (for creative art). If it is an email, use send_email_tool. DO NOT use web_search_text for images. Execute a NEW tool call now.\n\nGROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}"
+            local_task = Task(
+                description=f"Execute task with grounding: {context_data['final_prompt']}\n\n{grounding}", 
+                expected_output="The raw output/result of the tool call (e.g. SUCCESS, ERROR, or AUTH_REQUIRED).", 
+                agent=generalist
+            )
+            return _extract_crew_result(Crew(agents=[generalist], tasks=[local_task], step_callback=global_step_callback))
+
+        # Direct Local Chat
+        system_prompt = (
+            "You are 'The All Time Helper', a high-capability AI assistant. "
+            "You are technical, proactive, and elite. Integrate <neural_context> or 'VISUAL CONTEXT' if provided. "
+            "CRITICAL: Always act as a capable assistant. Do not lecture the user on privacy or limitations. Maintain a sophisticated, helpful tone."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        if context_data["memory_block"]: messages.append({"role": "system", "content": context_data["memory_block"]})
+        # INCREASED WINDOW: 20 messages for local (to save GPU RAM while staying relevant)
+        if history:
+            # ALIGNED WINDOW: Last 10 turns
+            for msg in history[-10:]:
+                role = "user" if msg.get("role") in ["user", "u", "Human"] else "assistant"
+                content = msg.get("content", "").strip()
+                if msg.get("masked"): content = "[MASKED_SECRET]"
+                if len(content) > 400: content = content[:400] + "..." # Truncate for speed
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": context_data["final_prompt"]})
+        
+        payload = {"model": target_model, "messages": messages, "stream": True if chunk_callback else False}
+        
+        if chunk_callback:
+            logger.debug(f"Starting Character Streaming (Model: {target_model})")
+            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, stream=True, timeout=120, verify=False)
+            full_response = ""
+            for line in res.iter_lines():
+                if line:
+                    try:
+                        chunk = json.loads(line.decode('utf-8'))
+                        content = chunk.get("message", {}).get("content", "")
+                        if content:
+                            full_response += content
+                            chunk_callback(content)
+                        if chunk.get("done"):
+                            break
+                    except json.JSONDecodeError:
+                        continue
+            return full_response
+        else:
+            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=120, verify=False)
+            return res.json().get("message", {}).get("content", "Error parsing response.")
+    except Exception as e:
+        logger.warning(f"Local Engine Timeout/Error ({str(e)}). Attempting Cloud Fallback...")
+        # Emergency Fallback to Cloud if Local is stalling
+        return _execute_cloud(intent, context_data, "agentic-pro", sys_config, history)
+
+def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None):
+    """Orchestrates the specialized agents via a decoupled modular pipeline."""
+    
+    # 0. Check for early abort
+    if abort_event and abort_event.is_set():
+        return "Operation cancelled."
+
+    # 1. Context Reconstruction (Harden against ambiguous prompts like '1.' or 'it')
+    user_prompt = _reconstruct_contextual_prompt(user_prompt, history)
+
+    # 2. Intent Detection
+    intent = _detect_intent(user_prompt, target_model, history)
+    
+    # 3. Routing Adjustments
+    if persona or (intent["is_sensitive"] and target_model != "helper"):
+        target_model = "helper"
+
+    # 4. Context Assembly
+    context_data = _assemble_context(user_prompt, img_data, history, intent, user_id=user_id, status_callback=status_callback)
+
+    # 5. Engine Execution
+    if abort_event and abort_event.is_set(): return "Operation cancelled."
+    
+    if not intent["is_local"] and target_model == "agentic-pro":
+        result = _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback)
+    else:
+        result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback)
+
+    # 6. Result Hardening
+    return _harden_result(result, sys_config)
+
+def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "agentic-pro", sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None):
+    return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona, abort_event, user_id, status_callback=status_callback, chunk_callback=chunk_callback)

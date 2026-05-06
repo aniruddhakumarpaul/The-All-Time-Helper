@@ -1,5 +1,5 @@
 # THE ALL TIME HELPER - PROJECT MAP
-Last Sync: 2026-04-27 (Vision & Interaction Hardening)
+Last Sync: 2026-05-04 (UI & RAG Performance Sanitization)
 
 ## 🧠 Core Architecture
 - **Framework**: FastAPI (Python 3.12+)
@@ -28,3 +28,8 @@ Last Sync: 2026-04-27 (Vision & Interaction Hardening)
 7. **Connection Heartbeat**: `chat.py` implements a heartbeat pulse during agent execution to prevent `ERR_HTTP2_PROTOCOL_ERROR`.
 8. **Semantic Persistence**: ChromaDB updated by `scripts/rebuild_memory.py` to ensure all historical code logic is retrievable.
 9. **Responsive Resilience**: Unified state management handles 503 failovers and long-running task status gracefully.
+10. **Global Search Sync**: Exposed `chats` state to `window` object in `main_v3.js` to ensure command palette (`palette.js`) reliably filters and navigates conversation history.
+11. **RAG Precision Tuning**: Tightened semantic threshold to `0.65` in `memory.py` and optimized `neural_explainer.py` prompts to reduce latency during context retrieval.
+12. **Persona Interaction Polish**: Implemented a forced shadow reset and high-performance transition curves for the "Personal Persona" switch to ensure fluid state management.
+13. **Cross-Thread Context Integrity**: Fixed `user_id` leakage in the RAG pipeline by explicitly propagating `current_user` through `asyncio.to_thread` to the agent swarm, ensuring consistent isolation in multi-threaded retrieval.
+14. **Signature Hardening**: Resolved a `TypeError` by synchronizing `abort_event` parameters between `ask_the_helper` and `run_helper_agent` orchestrators.

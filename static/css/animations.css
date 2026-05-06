@@ -12,24 +12,29 @@
 .typing-indicator span {
     width: 6px;
     height: 6px;
-    background: var(--accent-blue, #00d2ff);
+    background: var(--accent-blue);
     border-radius: 50%;
     display: inline-block;
     animation: typing-bounce 1.4s infinite ease-in-out both;
-    box-shadow: 0 0 8px var(--accent-blue, #00d2ff);
+    box-shadow: 0 0 10px var(--accent-glow);
 }
 
 .typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
 .typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
 
+[data-theme="light"] .typing-indicator span {
+    box-shadow: 0 0 12px rgba(37, 99, 235, 0.5);
+    background: #2563eb;
+}
+
 @keyframes typing-bounce {
-    0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
-    40% { transform: scale(1); opacity: 1; }
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
+    40% { transform: scale(1.2); opacity: 1; }
 }
 
 .status-msg {
     font-size: 0.85rem;
-    color: var(--text-sub, #aaa);
+    color: var(--text-sub);
     font-family: 'Outfit', sans-serif;
     font-style: italic;
     margin-bottom: 10px;
@@ -42,6 +47,7 @@
 .status-msg svg {
     animation: status-spin 2s linear infinite;
     opacity: 0.7;
+    filter: drop-shadow(0 0 5px var(--accent-glow));
 }
 
 @keyframes status-fade {
@@ -56,7 +62,13 @@
 
 /* Glassmorphism for the thinking bubble */
 .b-msg.thinking-state .txt {
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px dashed rgba(0, 210, 255, 0.3);
-    backdrop-filter: blur(10px);
+    background: var(--bubble-b-bg);
+    border: 1px dashed var(--accent-blue);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: 0 0 20px var(--accent-glow);
+}
+
+[data-theme="light"] .b-msg.thinking-state .txt {
+    box-shadow: 0 0 25px rgba(37, 99, 235, 0.25);
+    border-style: solid;
 }

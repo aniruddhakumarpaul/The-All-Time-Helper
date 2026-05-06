@@ -7,6 +7,7 @@ from app.database import get_db
 from app.repository import UserRepository
 from app.security import get_password_hash, verify_password, create_access_token
 import time
+from app.logger import logger
 
 import smtplib
 from email.mime.text import MIMEText
@@ -16,6 +17,23 @@ import os
 
 router = APIRouter()
 
+# FIX #8: OTP Rate Limiting — prevent brute-force attacks
+_otp_attempts = {}  # {email: [timestamp, ...]}
+OTP_MAX_ATTEMPTS = 5
+OTP_WINDOW_SECONDS = 300  # 5 minutes
+
+def _check_otp_rate_limit(email: str) -> bool:
+    """Returns True if the request should be BLOCKED."""
+    now = time.time()
+    attempts = _otp_attempts.get(email, [])
+    # Prune old attempts outside the window
+    attempts = [t for t in attempts if now - t < OTP_WINDOW_SECONDS]
+    _otp_attempts[email] = attempts
+    if len(attempts) >= OTP_MAX_ATTEMPTS:
+        return True  # BLOCKED
+    _otp_attempts[email].append(now)
+    return False
+
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SENDER_EMAIL = os.getenv("SENDER_EMAIL")
@@ -23,7 +41,7 @@ SENDER_PWD = os.getenv("SENDER_PWD")
 
 def send_otp_email(target_email, otp):
     if not SENDER_EMAIL or not SENDER_PWD:
-        print(f"SMTP Credentials missing. DEBUG: OTP for {target_email} is {otp}")
+        logger.warning(f"SMTP Credentials missing. DEBUG: OTP for {target_email} is {otp}")
         return False
     def _send():
         try:
@@ -38,8 +56,8 @@ def send_otp_email(target_email, otp):
                 server.login(SENDER_EMAIL, SENDER_PWD)
                 server.send_message(msg)
         except Exception as e:
-            print(f"SMTP Error: {e}")
-            print(f"FALLBACK: OTP for {target_email} is {otp}")
+            logger.error(f"SMTP Error: {e}")
+            logger.info(f"FALLBACK: OTP for {target_email} is {otp}")
     threading.Thread(target=_send, daemon=True).start()
     return True
 
@@ -93,6 +111,10 @@ def login(req: LoginRequest, db: sqlite3.Connection = Depends(get_db)):
 
 @router.post("/verify")
 def verify(req: VerifyRequest, db: sqlite3.Connection = Depends(get_db)):
+    # FIX #8: Rate limit OTP verification attempts
+    if _check_otp_rate_limit(req.email):
+        return {"success": False, "error": "Too many attempts. Please wait 5 minutes."}
+    
     user = UserRepository.get_user_by_email(db, req.email)
     
     if not user or user['otp'] != req.otp:

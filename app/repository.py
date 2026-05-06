@@ -26,12 +26,22 @@ class ChatRepository:
 
     @staticmethod
     def sync_user_chats(db: sqlite3.Connection, user_email: str, chats: List[dict]):
+        # FIX #4: Input validation to prevent DoS via oversized payloads
+        MAX_CHATS = 200
+        MAX_MESSAGES_PER_CHAT = 500
+        if len(chats) > MAX_CHATS:
+            raise ValueError(f"Too many chats to sync ({len(chats)}). Maximum is {MAX_CHATS}.")
+        
         c = db.cursor()
         c.execute("DELETE FROM chats WHERE user_email=?", (user_email,))
         for chat in chats:
             cid = chat.get('id')
-            title = chat.get('title', 'New Chat')
+            if not cid or not isinstance(cid, str):
+                continue  # Skip malformed entries
+            title = chat.get('title', 'New Chat')[:200]  # Cap title length
             ms = chat.get('ms', [])
+            if len(ms) > MAX_MESSAGES_PER_CHAT:
+                ms = ms[-MAX_MESSAGES_PER_CHAT:]  # Keep only recent messages
             c.execute("INSERT INTO chats (id, user_email, title, messages_json, updated_at) VALUES (?, ?, ?, ?, ?)",
                       (cid, user_email, title, json.dumps(ms), time.time()))
         db.commit()

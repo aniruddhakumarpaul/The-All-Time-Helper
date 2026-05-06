@@ -1,6 +1,11 @@
 import os
 import sqlite3
 import requests
+from dotenv import load_dotenv
+from app.logger import logger
+
+# Load environment variables at startup
+load_dotenv()
 
 class TerminalColors:
     HEADER = '\033[95m'
@@ -25,6 +30,11 @@ def print_status(component: str, status: str, message: str = ""):
         fails += 1
         
     print(f"{status_text} {TerminalColors.BOLD}{component.ljust(25)}{TerminalColors.ENDC} {message}")
+    # Also log to file
+    log_msg = f"{component}: {status} - {message}"
+    if status == "FAIL": logger.error(log_msg)
+    elif status == "WARN": logger.warning(log_msg)
+    else: logger.info(log_msg)
 
 fails = 0
 warnings = 0
@@ -83,18 +93,36 @@ def run_startup_diagnostics():
                 print_status("Ollama (helper)", "OK", "Found fine-tuned personal persona model.")
             else:
                 print_status("Ollama (helper)", "WARN", "Missing 'helper'. Local persona training incomplete.")
+
+            if "gemma4:e2b" in models or "gemma4:latest" in models:
+                print_status("Ollama (Gemma 4)", "OK", "Native VLM (Multimodal) Orchestrator detected.")
+            else:
+                print_status("Ollama (Gemma 4)", "WARN", "Gemma 4 not found. Native vision analysis will be unavailable.")
         else:
             print_status("Ollama Connection", "WARN", f"Connected but got HTTP {response.status_code}.")
     except requests.exceptions.RequestException:
         print_status("Ollama Connection", "WARN", "Cannot reach local Ollama daemon.")
 
-    # 4. Check API Key Health (The actual check for agentic-pro cloud model)
+    # 4. Check API Key Health
     if groq_key:
         print_status("Agentic Swarm (Cloud)", "OK", "Groq Infrastructure Ready.")
     else:
         print_status("Agentic Swarm (Cloud)", "FAIL", "Missing Groq Key. agentic-pro will NOT work.")
 
-    # 4. Check Frontend Files
+    # 5. Check Email/Admin Settings
+    admin_key = os.getenv("ADMIN_KEY")
+    sender_email = os.getenv("SENDER_EMAIL")
+    if admin_key:
+        print_status("Security (Admin Key)", "OK", "Admin Key configured for sensitive tools.")
+    else:
+        print_status("Security (Admin Key)", "WARN", "Missing ADMIN_KEY. Email tool will be locked.")
+
+    if sender_email:
+        print_status("Email (SMTP)", "OK", f"Sender configured ({sender_email}).")
+    else:
+        print_status("Email (SMTP)", "WARN", "SMTP credentials missing. Email tool will return errors.")
+
+    # 6. Check Frontend Files
     index_path = os.path.join(base_dir, "templates", "index.html")
     js_path = os.path.join(base_dir, "static", "js", "main_v3.js")
     

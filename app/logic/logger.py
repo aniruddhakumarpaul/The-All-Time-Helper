@@ -28,7 +28,7 @@ def log_agent_step(step_output):
         logger.info(log_msg)
         
         # Also print to console for dev visibility
-        print(f"\n📢 [WORKFLOW LOG]: {log_msg}")
+        print(f"\n[WORKFLOW LOG]: {log_msg}")
         
     except Exception as e:
         logger.error(f"Failed to log step: {e}")

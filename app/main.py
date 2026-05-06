@@ -1,21 +1,32 @@
 import os
 import sys
 import subprocess
+import logging
+import os
+import sys
 
-# Ensure the parent project directory is injected into the Python path
-# This allows you to run this file directly from anywhere without breaking imports!
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# --- BOOTSTRAP PATHS ---
+# This allows running main.py directly from any directory
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 
-from fastapi import FastAPI, Request
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import auth, chat
 from app.database import init_db
+from app.logger import logger
+from app.logic.upscaler import UpscaleManager
 
-# Load environment variables
-from dotenv import load_dotenv
-load_dotenv()
+# Ensure the parent project directory is injected into the Python path
+# This allows you to run this file directly from anywhere without breaking imports!
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 from contextlib import asynccontextmanager
 
@@ -25,8 +36,12 @@ async def lifespan(app: FastAPI):
     try:
         from app.diagnostics import run_startup_diagnostics
         run_startup_diagnostics()
+        
+        # Memory Optimization Hook
+        from app.logic.memory import prune_stale_memories
+        prune_stale_memories(days=30)
     except Exception as e:
-        print(f"[!] Diagnostics Error: {e}")
+        logger.error(f"[!] Diagnostics/Pruning Error: {e}")
         
     # Startup logic
     try:
@@ -43,10 +58,6 @@ async def lifespan(app: FastAPI):
                     subprocess.run("taskkill /F /IM ngrok.exe /T", shell=True, capture_output=True)
                 
                 public_url = ngrok.connect(9000).public_url
-                print("\n" + "="*50)
-                print("THE ALL TIME HELPER - PRO IS ONLINE!")
-                print(f"PUBLIC (Ngrok): {public_url}")
-                print(f"LOCAL: http://localhost:9000")
                 print("="*50 + "\n")
             else:
                 print(f"🌍 THE ALL TIME HELPER - PRO IS STILL ONLINE via {tunnels[0].public_url}")
@@ -64,10 +75,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="The All Time Helper - Pro", lifespan=lifespan)
 
-# Allow CORS for development
+# SECURITY FIX: Lock CORS to known origins instead of wildcard
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:9000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,9 +109,21 @@ async def image_proxy(url: str):
     import requests
     from fastapi.responses import Response
     import anyio
+    from urllib.parse import urlparse
+    
+    # SECURITY FIX #15: Validate URL to prevent SSRF attacks
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return Response(status_code=400)
+        # Block internal/private IPs
+        blocked_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254", "metadata.google.internal"]
+        if parsed.hostname and (parsed.hostname in blocked_hosts or parsed.hostname.startswith("10.") or parsed.hostname.startswith("192.168.")):
+            return Response(status_code=403)
+    except Exception:
+        return Response(status_code=400)
     
     try:
-        # Wrap synchronous requests in a worker thread to keep FastAPI responsive
         def fetch():
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -127,15 +151,30 @@ async def serve_ui(request: Request):
 
 @app.get("/status")
 async def get_status():
+    # FIX #12: Non-blocking status check using anyio
     import requests
+    import anyio
     try:
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        requests.get(ollama_url, timeout=0.5)
+        await anyio.to_thread.run_sync(lambda: requests.get(ollama_url, timeout=0.5))
         return {"running": True}
-    except:
+    except Exception:
         return {"running": False}
+
+# API: Upscale Status Polling
+@app.get("/api/upscale/status/{job_id}")
+async def get_upscale_status(job_id: str):
+    status = UpscaleManager.get_status(job_id)
+    if not status:
+        return {"success": False, "error": "Job not found"}
+    return {"success": True, **status}
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n[+] BINDING TO: 0.0.0.0:9000 (Ngrok Bridge Optimized)")
-    uvicorn.run("app.main:app", host="0.0.0.0", port=9000, reload=True, reload_dirs=[base_dir])
+    logger.info("[Main] BINDING TO: 0.0.0.0:9000 (Ngrok Bridge Optimized)")
+    # FIX #14: Exclude .project_brain (ChromaDB) and scratch dirs from reload watching
+    uvicorn.run(
+        "app.main:app", host="0.0.0.0", port=9000, 
+        reload=True, 
+        reload_dirs=[os.path.join(base_dir, "app"), os.path.join(base_dir, "static"), os.path.join(base_dir, "templates")]
+    )

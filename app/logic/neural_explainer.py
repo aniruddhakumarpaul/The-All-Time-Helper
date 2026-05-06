@@ -18,24 +18,19 @@ def explain_neural_context(query_text, snippets):
             formatted_snippets += f"\nSnippet {i}:\n{clean_s}\n"
 
         prompt = f"""
-        [ROLE] You are the Neural Interpreter for 'The All Time Helper' AI system.
-        [TASK] A user dragged this message onto the system mascot: "{query_text}"
+        [ROLE] Neural Interpreter
+        [CONTEXT] User query: "{query_text}"
+        [DATA] {formatted_snippets}
         
-        The system retrieved these technical details from the Project Memory:
-        {formatted_snippets}
+        [TASK] In 2 extremely concise sentences, explain how these technical snippets relate to the user's query. 
+        Be professional and direct. If snippets are irrelevant, say "I found some technical links, but they seem loosely related to your specific request."
         
-        [REQUIREMENT] 
-        In 2 concise sentences, explain to a human user what these technical details mean and how they relate to the message they dragged. 
-        Be professional, helpful, and avoid saying 'Here is the explanation'. 
-        If the snippets are irrelevant, briefly say you're looking for more specific links.
-        
-        [OUTPUT] 
+        [OUTPUT]
         """
         
         # Execute call
         response = llm.call(prompt)
         
-        # Clean up response (strip quotes if any)
         return response.strip().strip('"').strip("'")
         
     except Exception as e:

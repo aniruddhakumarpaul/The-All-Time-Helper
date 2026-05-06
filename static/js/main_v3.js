@@ -7,22 +7,79 @@ document.addEventListener('DOMContentLoaded', () => {
         const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";
         const BOT_DATA = "/static/img/bot.png";
         let user = null;
-        let chats = [];
+        let chats = []; window.chats = chats;
         let activeId = null; window.activeId = null; // Exposed globally for inline handlers
         let abortC = null; let currentImg = null;
-        let selectedModel = 'agentic-pro';
+        let selectedModel = 'gemma4:e2b';
         let currentBlobUrl = null;
         let chatToDelete = null;
         let isRenaming = false;
         let currentSearch = '';
         let tiltSettleTimer = null;
-
         // --- Core Helpers (Hoisted to Top) ---
         function smartFocus(id) {
             if (window.innerWidth > 850) {
                 const el = document.getElementById(id);
                 if (el) el.focus();
             }
+        }
+
+        // --- Upscaling Engine (Frontend) ---
+        const activePollers = new Set();
+        function startUpscalePoller(jobId, container) {
+            if (activePollers.has(jobId)) return;
+            activePollers.add(jobId);
+
+            const img = container.querySelector('.chat-rendered-img');
+            if (!img) {
+                activePollers.delete(jobId);
+                return;
+            }
+
+            // Wrap image in a container if not already
+            if (!img.parentElement.classList.contains('upscale-container')) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'upscale-container';
+                img.parentNode.insertBefore(wrapper, img);
+                wrapper.appendChild(img);
+            }
+
+            img.classList.add('upscaling');
+            const badge = document.createElement('div');
+            badge.className = 'upscale-badge';
+            badge.innerHTML = '<div class="spinner" style="width:12px; height:12px; margin-right:5px; border-width:2px;"></div> Enhancing...';
+            img.parentElement.appendChild(badge);
+
+            const poll = async () => {
+                try {
+                    const res = await fetch(`/api/upscale/status/${jobId}`);
+                    const data = await res.json();
+                    if (data.success && data.status === 'ready') {
+                        const highRes = new Image();
+                        highRes.src = data.url;
+                        highRes.onload = () => {
+                            img.src = data.url;
+                            img.classList.remove('upscaling');
+                            badge.innerHTML = '✨ 4K Enhanced';
+                            badge.classList.add('ready');
+                            setTimeout(() => {
+                                badge.style.opacity = '0';
+                                setTimeout(() => badge.remove(), 500);
+                            }, 4000);
+                            activePollers.delete(jobId);
+                        };
+                    } else if (data.status === 'failed') {
+                        img.classList.remove('upscaling');
+                        badge.remove();
+                        activePollers.delete(jobId);
+                    } else {
+                        setTimeout(poll, 2500);
+                    }
+                } catch (e) {
+                    activePollers.delete(jobId);
+                }
+            };
+            poll();
         }
 
         // Auth
@@ -35,7 +92,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         function updUI() {
             if (user) {
-                const nameStr = user.name || 'Friend';
+                const nameStr = user.name || 'Human';
                 const initial = nameStr.charAt(0).toUpperCase();
 
                 const sbGreet = document.getElementById('sidebar-greet');
@@ -101,14 +158,24 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        function signOut() { localStorage.removeItem('helper_user_v2'); localStorage.removeItem('helper_token_v2'); location.reload(); }
+        function signOut() { 
+            localStorage.removeItem('helper_user_v2'); 
+            localStorage.removeItem('helper_token_v2'); 
+            localStorage.removeItem('helper_active_chat_v2');
+            localStorage.removeItem('helper_active_modal_v2');
+            location.reload(); 
+        }
 
         // Dropdown
-        function toggleDropdown() { document.getElementById('model-menu').style.display = (document.getElementById('model-menu').style.display === 'flex' ? 'none' : 'flex'); }
+        function toggleDropdown() {
+            const menu = document.getElementById('model-menu');
+            if (menu) menu.classList.toggle('active');
+        }
         function selModel(id, name) {
             selectedModel = id;
             document.getElementById('active-model-name').innerText = name;
-            document.getElementById('model-menu').style.display = 'none';
+            const menu = document.getElementById('model-menu');
+            if (menu) menu.classList.remove('active');
         }
 
         // Sidebar Toggle
@@ -134,9 +201,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Settings
         function openSettings() {
             document.getElementById('settings-modal').style.display = 'flex';
+            localStorage.setItem('helper_active_modal_v2', 'settings');
             history.pushState({ view: 'settings' }, "");
         }
-        function closeSettings() { document.getElementById('settings-modal').style.display = 'none'; document.getElementById('prompt').focus(); }
+        function closeSettings() { 
+            document.getElementById('settings-modal').style.display = 'none'; 
+            localStorage.removeItem('helper_active_modal_v2');
+            document.getElementById('prompt').focus(); 
+        }
 
         function handleChatKey(e) {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -227,7 +299,7 @@ document.addEventListener('DOMContentLoaded', () => {
         initTheme();
 
         // Final UI tweak
-        document.getElementById('active-model-name').innerText = 'Agentic Swarm (Pro)';
+        document.getElementById('active-model-name').innerText = 'Gemma 4';
 
         // -----------------------
         function toggleSet(id) { document.getElementById(id).classList.toggle('on'); }
@@ -238,6 +310,13 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('chat-area').style.display = 'none';
             document.getElementById('welcome').style.display = 'flex';
             clearImgPreview();
+            
+            const promptEl = document.getElementById('prompt');
+            if (promptEl) {
+                promptEl.value = '';
+                promptEl.style.height = 'auto';
+            }
+            
             renderHist();
 
             // Mobile Sidebar Fix
@@ -346,13 +425,16 @@ document.addEventListener('DOMContentLoaded', () => {
             renderHist();
         }
 
+        window.loadChat = loadChat;
         function loadChat(id) {
-            activeId = id; const chat = chats.find(c => c.id === id);
+            activeId = id; 
+            localStorage.setItem('helper_active_chat_v2', id);
+            const chat = chats.find(c => c.id === id);
             document.getElementById('chat-area').innerHTML = '';
             document.getElementById('chat-area').style.display = 'block';
             document.getElementById('welcome').style.display = 'none';
             clearImgPreview();
-            chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant'));
+            chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant', m.masked));
             renderHist();
 
             // Auto-close sidebar on mobile after selection
@@ -361,18 +443,46 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             smartFocus('prompt');
+            checkAuthMode();
+        }
+
+        function checkAuthMode() {
+            console.log("DEBUG: checkAuthMode running for activeId:", window.activeId);
+            const chat = chats.find(c => c.id === window.activeId);
+            const promptIn = document.getElementById('prompt');
+            if (!chat || !promptIn) {
+                console.warn("DEBUG: checkAuthMode failed - no chat or promptEl");
+                return;
+            }
+            
+            const lastMsg = chat.ms.length > 0 ? chat.ms[chat.ms.length - 1] : null;
+            if (lastMsg) console.log("DEBUG: Last message for auth check:", lastMsg.r, lastMsg.c.substring(0, 50));
+
+            const authKeywords = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key", "auth_required", "admin key is missing", "incorrect admin key"];
+            const needsAuth = lastMsg && lastMsg.r === 'b' && authKeywords.some(kw => lastMsg.c.toLowerCase().includes(kw));
+
+            if (needsAuth) {
+                console.log("DEBUG: Auth required detected! Applying UI...");
+                promptIn.placeholder = "🔒 ENTER ADMIN KEY TO AUTHORIZE EMAIL DISPATCH...";
+                promptIn.classList.add('auth-waiting');
+                jiggleLogo();
+                smartFocus('prompt');
+            } else {
+                promptIn.placeholder = "Message The All Time Helper...";
+                promptIn.classList.remove('auth-waiting');
+            }
         }
 
 
 
 
 
-        function addMsg(r, c, i, idx, mName) {
+        function addMsg(r, c, i, idx, mName, isMasked = false) {
             const div = document.createElement('div');
             div.className = `msg ${r}-msg entering`; // Added 'entering' for spring animation
             setTimeout(() => div.classList.remove('entering'), 600);
 
-            const name = user ? user.name : 'User';
+            const name = user ? user.name : 'Human';
             const initial = name.charAt(0).toUpperCase();
 
             const avatarHtml = r === 'u'
@@ -396,10 +506,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="bot-bubble" id="bot-bubble-${idx}">I am great!</div>
                    </div>`;
 
-            const content = r === 'b' ? renderMarkdown(c) : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            let content = r === 'b' ? renderMarkdown(c) : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            
+            // Sensitive Masking Logic
+            if (r === 'u' && isMasked) {
+                content = '•'.repeat(Math.max(8, c.length));
+            }
 
             let tools = '';
-            if (r === 'u' && idx !== undefined) {
+            if (r === 'u' && idx !== undefined && !isMasked) {
                 tools = `<div class="msg-tools">
                             <div class="tool-icon" onclick="startEditPrompt(${idx}, this)" title="Edit Prompt">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
@@ -419,7 +534,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="av-wrap">
                     ${avatarHtml}
                     <div class="av-label" style="font-size: 0.8rem; color: var(--text-sub); font-weight: 600; letter-spacing: 0.5px;">
-                        ${r === 'u' ? (user ? user.name : 'You') : 'THE ALL TIME HELPER'}
+                        ${r === 'u' ? (user ? user.name : 'Human') : 'THE ALL TIME HELPER'}
                     </div>
                 </div>
                 <div class="txt" draggable="false" ondragstart="if(!window.isGDown) { event.preventDefault(); return false; } handleDragStart(event, this.innerText)" ondragend="handleDragEnd(event)">
@@ -449,10 +564,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const oldText = msg.c;
 
             txtDiv.innerHTML = `
-                <textarea class="edit-area" style="width:100%; min-height:80px; background:rgba(255,255,255,0.05); color:white; border:1px solid var(--accent-blue); border-radius:12px; padding:10px; outline:none; margin-top:10px;">${oldText}</textarea>
-                <div style="display:flex; gap:10px; margin-top:10px;">
-                    <button class="auth-btn" style="padding:8px 15px; margin:0; font-size:0.8rem;" onclick="submitEdit(${idx}, this.parentElement.parentElement)">Save & Submit</button>
-                    <button class="auth-btn" style="padding:8px 15px; margin:0; font-size:0.8rem; background: rgba(255,255,255,0.08); color: #e11b1bcc;" onclick="cancelEdit(${idx})">Cancel</button>
+                <textarea class="edit-area">${oldText}</textarea>
+                <div class="edit-controls">
+                    <button class="auth-btn edit-btn" onclick="submitEdit(${idx}, this.parentElement.parentElement)">Save & Submit</button>
+                    <button class="auth-btn edit-btn edit-btn-cancel" onclick="cancelEdit(${idx})">Cancel</button>
                 </div>
             `;
         }
@@ -610,12 +725,34 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('welcome').style.display = 'none';
             document.getElementById('chat-area').style.display = 'block';
 
-            addMsg('u', p, currentImg, chat.ms.length);
-            chat.ms.push({ r: 'u', c: p, i: currentImg });
+            // Detect if this is an Admin Key response
+            let isMasked = false;
+            const promptEl = document.getElementById('prompt');
+            const isAuthWaiting = promptEl && promptEl.classList.contains('auth-waiting');
+
+            if (isAuthWaiting) {
+                isMasked = true;
+            } else if (chat.ms.length > 0) {
+                const lastMsg = chat.ms[chat.ms.length - 1].c.toLowerCase();
+                // ONLY trigger if the bot is EXPLICITLY demanding a key/password in a security context
+                const authKW = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key"];
+                if (authKW.some(kw => lastMsg.includes(kw))) {
+                    isMasked = true;
+                }
+            }
+
+            addMsg('u', p, currentImg, chat.ms.length, null, isMasked);
+            chat.ms.push({ r: 'u', c: p, i: currentImg, masked: isMasked });
             triggerBotReaction(p);
             clearImgPreview();
-            document.getElementById('prompt').value = '';
+            promptEl.value = '';
+            promptEl.style.height = 'auto'; // Reset auto-expanded height
             document.getElementById('stop-btn').style.display = 'flex';
+            document.getElementById('main-send-btn').style.display = 'none';
+            
+            // Reset placeholder after sending
+            promptEl.placeholder = "Message The All Time Helper...";
+            promptEl.classList.remove('auth-waiting');
 
             let initialContent = '...';
             const isLocal = selectedModel !== 'agentic-pro' && !selectedModel.includes('gemini');
@@ -655,6 +792,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         img: currentImg,
                         name: user.name,
                         persona: document.getElementById('persona-toggle').checked,
+                        isMasked: isMasked,
                         sys: {
                             english: document.getElementById('t-eng').classList.contains('on'),
                             oneword: document.getElementById('t-word').classList.contains('on'),
@@ -698,20 +836,37 @@ document.addEventListener('DOMContentLoaded', () => {
                                 
                                 // NEW: Handle Status Updates
                                 if (j.status) {
-                                    const statusEl = bTxt.querySelector('#status-text');
-                                    if (statusEl) statusEl.innerText = j.status;
+                                    let statusEl = bTxt.querySelector('#status-text');
+                                    if (!statusEl) {
+                                        // If missing, prepend a new status block
+                                        const statusDiv = document.createElement('div');
+                                        statusDiv.className = 'status-msg';
+                                        statusDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${j.status}</span>`;
+                                        bTxt.prepend(statusDiv);
+                                    } else {
+                                        statusEl.innerText = j.status;
+                                    }
                                     return;
                                 }
 
                                 if (j.message && j.message.content) {
-                                    // Remove thinking state on first chunk of real content
+                                    // Remove thinking state and typing indicator on first chunk
                                     if (fullTxt === '') {
-                                        bTxt.innerHTML = '';
+                                        const indicator = bTxt.querySelector('.typing-indicator');
+                                        if (indicator) indicator.remove();
+                                        
+                                        // If we have a status msg, we can either keep it or clear it.
+                                        // Let's clear the status but KEEP the container for future chunks if needed,
+                                        // or just clear everything and start fresh.
+                                        const statusMsg = bTxt.querySelector('.status-msg');
+                                        if (statusMsg) statusMsg.remove();
+
                                         const parentMsg = bTxt.closest('.msg');
                                         if (parentMsg) parentMsg.classList.remove('thinking-state');
                                     }
                                     
                                     fullTxt += j.message.content;
+                                    // Use a more efficient update method if not doing heavy markdown
                                     bTxt.innerHTML = renderMarkdown(fullTxt);
                                 }
                             } catch (e) {
@@ -741,23 +896,52 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 chat.ms.push({ r: 'b', c: fullTxt, m: document.getElementById('active-model-name').innerText });
                 // Final render: apply Markdown + syntax highlighting after streaming completes
-                bTxt.innerHTML = renderMarkdown(fullTxt);
+                const rendered = renderMarkdown(fullTxt);
+                bTxt.innerHTML = rendered;
+
+                // NEW: Detect Upscale ID directly from image URLs to prevent LLM stripping
+                const imgs = bTxt.querySelectorAll('img');
+                imgs.forEach(img => {
+                    if (img.src && img.src.includes('uid=')) {
+                        try {
+                            // Extract uid from URL parameters
+                            const urlParams = new URLSearchParams(img.src.split('?')[1]);
+                            const jobId = urlParams.get('uid');
+                            if (jobId) {
+                                startUpscalePoller(jobId, bTxt);
+                            }
+                        } catch (e) {
+                            console.error("Failed to parse upscale ID from image:", e);
+                        }
+                    }
+                });
+
                 bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
                 saveUserChats();
             } catch (e) { bTxt.innerText += " [Stopped]"; }
             finally {
-                // Check if we should keep the UI in 'Thinking' mode for images
-                const chatArea = document.getElementById('chat-area');
-                const lastMsg = chatArea.lastElementChild;
-                const hasLoadingImages = lastMsg && lastMsg.querySelectorAll('.ai-img-loading[style*="display: block"], .ai-img-loading:not([style*="display: none"])').length > 0;
-
-                if (!hasLoadingImages) {
-                    document.getElementById('stop-btn').style.display = 'none';
-                    const mascot = document.getElementById('mascot-container');
-                    if (mascot) mascot.classList.remove('thinking');
-                }
+                // FORCE UI RESET: Stop animations and hide stop button regardless of 'loading' elements
+                document.getElementById('stop-btn').style.display = 'none';
+                document.getElementById('main-send-btn').style.display = 'flex';
+                checkAuthMode();
+                const mascot = document.getElementById('mascot-container');
+                if (mascot) mascot.classList.remove('thinking');
                 
-                abortC = null; currentImg = null; window.activeId = activeId; renderHist();
+                // Clear any lingering thinking states in the chat area
+                document.querySelectorAll('.thinking-state').forEach(m => m.classList.remove('thinking-state'));
+                document.querySelectorAll('.typing-indicator').forEach(ti => ti.remove());
+
+                abortC = null; 
+                currentImg = null; 
+                window.activeId = activeId; 
+                
+                // OPTIMIZED: Only render history if it's the FIRST message of a chat (title change)
+                if (window.activeId === activeId && chats.find(c => c.id === activeId)?.ms.length <= 2) {
+                    renderHist();
+                }
+
+                // NEW: Trigger Auth Mode UI if AI asked for a key
+                checkAuthMode();
             }
         }
 
@@ -778,7 +962,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (localStr) {
                 chats = JSON.parse(localStr);
+                window.chats = chats;
                 renderHist();
+                
+                // RESTORE ACTIVE CHAT IMMEDIATELY FROM LOCAL CACHE
+                const savedChatId = localStorage.getItem('helper_active_chat_v2');
+                if (savedChatId && chats.find(c => c.id === savedChatId)) {
+                    loadChat(savedChatId);
+                }
+                
                 console.log("DEBUG: Loaded chats from local storage:", chats.length);
             }
 
@@ -794,12 +986,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         // Significant safeguard: Only overwrite if cloud has data OR local is empty
                         if (data.chats.length > 0 || chats.length === 0) {
                             chats = data.chats;
+                            window.chats = chats;
                             localStorage.setItem(key, JSON.stringify(chats));
                             renderHist();
                         }
                     }
                 } catch (e) { console.error("Cloud fetch failed:", e); }
             } else {
+                window.chats = chats;
                 renderHist();
             }
         }
@@ -829,9 +1023,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const savedUser = localStorage.getItem('helper_user_v2');
         if (savedUser) {
             user = JSON.parse(savedUser); document.getElementById('auth-overlay').style.display = 'none';
+            
+            // Restore Chats and Active UI
             loadUserChats();
+            
+            const savedModal = localStorage.getItem('helper_active_modal_v2');
+            if (savedModal === 'settings') {
+                openSettings();
+            }
+            
             updUI();
-
+            
             // Show Onboarding for existing users who haven't picked yet
             if (!localStorage.getItem('helper_theme_pref')) {
                 document.getElementById('theme-modal').style.display = 'flex';
@@ -871,6 +1073,26 @@ document.addEventListener('DOMContentLoaded', () => {
             promptIn.addEventListener('keydown', handleChatKey);
         }
 
+        // --- Personal Persona UI Sync ---
+        const personaToggle = document.getElementById('persona-toggle');
+        const personaItem = document.querySelector('.persona-switch-item');
+        
+        function syncPersonaUI() {
+            if (personaToggle && personaItem) {
+                if (personaToggle.checked) {
+                    personaItem.classList.add('persona-active');
+                } else {
+                    personaItem.classList.remove('persona-active');
+                }
+            }
+        }
+
+        if (personaToggle) {
+            personaToggle.addEventListener('change', syncPersonaUI);
+            // Initial Sync
+            syncPersonaUI();
+        }
+
         // Mobile Sidebar & Dropdown Dismissal
         document.addEventListener('click', (e) => {
             const sidebar = document.getElementById('sidebar');
@@ -899,8 +1121,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // 3. Close Model Menu if clicking outside
             const isClickInsideModel = (modelToggle && modelToggle.contains(e.target)) ||
                 (modelMenu && modelMenu.contains(e.target));
-            if (!isClickInsideModel && modelMenu && modelMenu.style.display === 'flex') {
-                modelMenu.style.display = 'none';
+            if (!isClickInsideModel && modelMenu && modelMenu.classList.contains('active')) {
+                modelMenu.classList.remove('active');
             }
         });
         // Image Modal Logic
@@ -909,6 +1131,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const img = document.getElementById('modal-img');
             if (modal && img) {
                 img.src = src;
+                img.classList.remove('is-zoomed'); // Reset zoom on open
                 modal.style.display = 'flex';
                 setTimeout(() => modal.classList.add('active'), 10);
                 history.pushState({ view: 'image' }, "");
@@ -916,8 +1139,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         function closeImageModal() {
             const modal = document.getElementById('image-modal');
+            const img = document.getElementById('modal-img');
             if (modal) {
                 modal.classList.remove('active');
+                if (img) img.classList.remove('is-zoomed');
                 setTimeout(() => modal.style.display = 'none', 300);
             }
         }
@@ -925,6 +1150,25 @@ document.addEventListener('DOMContentLoaded', () => {
         // NOTE: setAtmosphere, openImageModal, closeImageModal are defined
         // inside the DOMContentLoaded block above and exported to window there.
         // Duplicate outer definitions removed to prevent initialization conflicts.
+
+        // --- Image Zoom Engine ---
+        (function initImageZoom() {
+            const modalImg = document.getElementById('modal-img');
+            const modalContainer = document.getElementById('image-modal');
+            if (!modalImg || !modalContainer) return;
+
+            modalImg.addEventListener('click', (e) => {
+                e.stopPropagation();
+                modalImg.classList.toggle('is-zoomed');
+            });
+
+            modalContainer.addEventListener('click', (e) => {
+                if (e.target === modalContainer) {
+                    modalImg.classList.remove('is-zoomed');
+                    closeImageModal();
+                }
+            });
+        })();
 
         // --- Mobile hardware back button & Global Shortcuts ---
         window.addEventListener('popstate', (e) => {
@@ -1236,9 +1480,10 @@ document.addEventListener('DOMContentLoaded', () => {
         function initSidebarSwipe() {
             const sidebar = document.getElementById('sidebar');
             const scrim = document.getElementById('sidebar-scrim');
-            let startX = 0;
+            let startX = 0, startY = 0;
             let currentX = 0;
             let isDragging = false;
+            let isHorizontalSwipe = false;
             const SB_OFFSET = 300; // The translateX value when open
 
             if (!sidebar || !scrim) return;
@@ -1248,8 +1493,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!sidebar.classList.contains('open') || window.innerWidth > 992) return;
                 
                 startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
                 currentX = SB_OFFSET; // Initialize to fully open state
                 isDragging = true;
+                isHorizontalSwipe = false;
                 
                 // Disable transitions for instant follow
                 sidebar.style.transition = 'none';
@@ -1260,7 +1507,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!isDragging) return;
                 
                 const touchX = e.touches[0].clientX;
+                const touchY = e.touches[0].clientY;
                 const deltaX = touchX - startX;
+                const deltaY = touchY - startY;
+
+                // LOCK MECHANISM: Determine if horizontal or vertical on first few px
+                if (!isHorizontalSwipe) {
+                    if (Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+                        isHorizontalSwipe = true;
+                    } else if (Math.abs(deltaY) > 5) {
+                        // If it's more vertical than horizontal, cancel the drag
+                        isDragging = false;
+                        return;
+                    } else {
+                        // Waiting for more movement to decide
+                        return;
+                    }
+                }
                 
                 // We only allow dragging to the left (negative delta)
                 // Sidebar is at translateX(300) when open
@@ -1308,4 +1571,49 @@ document.addEventListener('DOMContentLoaded', () => {
             sidebar.addEventListener('click', (e) => {
                 e.stopPropagation();
             });
+        }
+
+        // --- Markdown & UI Utilities ---
+        function renderMarkdown(text) {
+            if (!text) return '';
+            try {
+                // Ensure marked is available
+                if (typeof marked === 'undefined') return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                
+                // Custom renderer to apply premium CSS classes to markdown elements
+                const renderer = new marked.Renderer();
+                renderer.image = function(href, title, text) {
+                    // Handle newer Marked.js versions where the first argument is a token object
+                    const actualHref = (typeof href === 'object') ? href.href : href;
+                    const actualText = (typeof href === 'object') ? href.text : text;
+                    return `<img src="${actualHref}" alt="${actualText}" class="chat-rendered-img" loading="lazy" onclick="openImageModal(this.src)">`;
+                };
+                
+                return marked.parse(text, { renderer: renderer });
+            } catch (e) {
+                console.error("Markdown Error:", e);
+                return text;
+            }
+        }
+
+        function copyCode(btn) {
+            const pre = btn.closest('pre');
+            const code = pre.querySelector('code').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                const orig = btn.innerHTML;
+                btn.innerHTML = '<span>Copied!</span>';
+                setTimeout(() => btn.innerHTML = orig, 2000);
+            });
+        }
+
+        function downloadCode(btn, filename) {
+            const pre = btn.closest('pre');
+            const code = pre.querySelector('code').innerText;
+            const blob = new Blob([code], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename || 'code_snippet.txt';
+            a.click();
+            URL.revokeObjectURL(url);
         }

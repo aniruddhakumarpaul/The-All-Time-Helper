@@ -1,5 +1,6 @@
 import sqlite3
 import os
+from app.logger import logger
 
 # Calculate absolute path to the project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,4 +38,13 @@ def init_db():
                     FOREIGN KEY(user_email) REFERENCES users(email)
                  )''')
     conn.commit()
+    
+    # FIX #13: Reclaim dead pages from DELETE/INSERT sync cycles
+    try:
+        c.execute("VACUUM")
+        logger.info("[Database] VACUUM completed successfully.")
+    except Exception as e:
+        logger.warning(f"[Database] VACUUM failed (likely DB in use): {e}")
+    
     conn.close()
+    logger.info("[Database] Initialization and schema check complete.")

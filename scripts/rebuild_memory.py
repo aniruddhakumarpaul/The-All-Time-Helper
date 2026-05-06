@@ -4,7 +4,11 @@ import sys
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.logic.memory import index_document
+from app.logic.memory import index_document, user_context
+
+# Target User for Global Indexing
+TARGET_USER = "aniruddha24680kumarpaul@gmail.com"
+user_context.set(TARGET_USER)
 
 # Configuration
 IGNORE_DIRS = {'.project_brain', '__pycache__', 'node_modules', '.git', 'venv', 'practice'}
@@ -41,7 +45,7 @@ def rebuild_neural_memory():
                         doc_id = f"{rel_path}_chunk_{i}"
                         metadata = {
                             "file": rel_path,
-                            "type": "source_code",
+                            "type": "code",
                             "ext": ext,
                             "chunk": i
                         }

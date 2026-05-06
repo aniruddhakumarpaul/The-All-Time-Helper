@@ -1,124 +1,110 @@
-import torch
-from PIL import Image
-import requests
-from transformers import BlipProcessor, BlipForConditionalGeneration, CLIPProcessor, CLIPModel
 import os
-from io import BytesIO
+import requests
 import base64
+import json
+import time
+from PIL import Image
+import io
 
 class VisionPipeline:
+    """
+    Gemma 4 Native Vision Orchestrator.
+    Replaces legacy BLIP/CLIP hybrid with direct native multimodal analysis.
+    """
     def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.caption_model_name = "Salesforce/blip-image-captioning-base"
-        self.clip_model_name = "openai/clip-vit-base-patch32"
-        
-        self.caption_processor = None
-        self.caption_model = None
-        self.clip_processor = None
-        self.clip_model = None
+        self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        self.model_name = "gemma4:e2b"
+        print(f"[Vision] Native Gemma 4 Engine Initialized (Model: {self.model_name})")
 
-    def _load_models(self):
-        """Lazy load models to save resources until needed."""
-        if self.caption_model is None:
-            print(f"[Vision] Loading Captioning Model ({self.caption_model_name})...")
-            self.caption_processor = BlipProcessor.from_pretrained(self.caption_model_name)
-            self.caption_model = BlipForConditionalGeneration.from_pretrained(self.caption_model_name).to(self.device)
-        if self.clip_model is None:
-            print(f"[Vision] Loading Intent Matching Model ({self.clip_model_name})...")
-            self.clip_processor = CLIPProcessor.from_pretrained(self.clip_model_name)
-            self.clip_model = CLIPModel.from_pretrained(self.clip_model_name).to(self.device)
-
-    def analyze_chat_images(self, image_urls, user_prompt):
-        """
-        Analyzes a list of image URLs to find the one most relevant to the user's prompt 
-        and generates a detailed semantic description for it.
-        """
-        if not image_urls:
-            return None
-
+    def _encode_image(self, img_source):
+        """Standardize image to base64 for Ollama."""
         try:
-            self._load_models()
-            
-            images = []
-            valid_urls = []
-            
-            for url in image_urls:
-                try:
-                    # CASE 1: Base64 Data (Uploaded Files)
-                    if url.startswith('data:image/') or (len(url) > 100 and ',' not in url and not url.startswith('http')):
-                        # Handle potential raw base64 or data URI
-                        b64_data = url.split(',')[1] if ',' in url else url
-                        img = Image.open(BytesIO(base64.b64decode(b64_data))).convert('RGB')
-                        images.append(img)
-                        valid_urls.append("Uploaded Image")
-                        continue
-
-                    # CASE 2: Proxy URLs
-                    if '/api/image_proxy' in url:
-                        from urllib.parse import urlparse, parse_qs
-                        parsed = urlparse(url)
-                        real_url = parse_qs(parsed.query).get('url', [None])[0]
-                        if real_url:
-                            url = real_url
-
-                    # CASE 3: Local Static Files
-                    if url.startswith('/static/'):
-                        base_path = os.getcwd()
-                        clean_url = url.split('?')[0].lstrip('/')
-                        path = os.path.join(base_path, clean_url)
-                        
-                        if os.path.exists(path):
-                            img = Image.open(path).convert('RGB')
-                            images.append(img)
-                            valid_urls.append(url)
-                    # CASE 4: Remote URLs
-                    else:
-                        headers = {
-                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-                        }
-                        response = requests.get(url, headers=headers, timeout=10)
-                        img = Image.open(BytesIO(response.content)).convert('RGB')
-                        images.append(img)
-                        valid_urls.append(url)
-                except Exception as e:
-                    print(f"[Vision] Error loading {url}: {e}")
-
-            if not images:
+            if isinstance(img_source, str) and (img_source.startswith("http") or os.path.exists(img_source)):
+                # If URL, download; if path, read
+                if img_source.startswith("http"):
+                    # Use proxy or direct download
+                    res = requests.get(img_source, timeout=10)
+                    img_bytes = res.content
+                else:
+                    with open(img_source, "rb") as f:
+                        img_bytes = f.read()
+            elif isinstance(img_source, bytes):
+                img_bytes = img_source
+            else:
                 return None
 
-            # 1. Referential Resolution: Match Prompt to Image using CLIP
-            inputs = self.clip_processor(text=[user_prompt], images=images, return_tensors="pt", padding=True).to(self.device)
-            with torch.no_grad():
-                outputs = self.clip_model(**inputs)
-            
-            # Find the image with the highest similarity to the text prompt
-            logits_per_image = outputs.logits_per_image
-            best_img_idx = logits_per_image.argmax().item()
-            
-            selected_img = images[best_img_idx]
-            selected_url = valid_urls[best_img_idx]
+            # Optimization: Resize large images to prevent OOM on local hardware
+            img = Image.open(io.BytesIO(img_bytes))
+            if max(img.size) > 1024:
+                img.thumbnail((1024, 1024))
+                buffered = io.BytesIO()
+                img.save(buffered, format="JPEG")
+                img_bytes = buffered.getvalue()
 
-            # 2. Detailed Interpretation: Generate Caption using BLIP
-            # We use the user's prompt as a 'conditional' to guide the captioning
-            inputs = self.caption_processor(selected_img, user_prompt, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                out = self.caption_model.generate(**inputs, max_new_tokens=50)
-            
-            description = self.caption_processor.decode(out[0], skip_special_tokens=True)
-
-            print(f"[Vision] Identified Image: {selected_url}")
-            print(f"[Vision] Interpretation: {description}")
-
-            return {
-                "url": selected_url,
-                "description": description,
-                "index": best_img_idx,
-                "confidence": float(torch.softmax(logits_per_image.flatten(), dim=0)[best_img_idx])
-            }
+            return base64.b64encode(img_bytes).decode('utf-8')
         except Exception as e:
-            print(f"[Vision] Pipeline Failure: {e}")
+            print(f"[Vision] Encoding error: {e}")
             return None
 
-# Singleton for application-wide use
+    def analyze_chat_images(self, urls, user_prompt):
+        """
+        Stage 1: Multi-Image Perception using Gemma 4.
+        """
+        if not urls:
+            return None
+
+        # Gemma 4 handles the most recent contextually relevant image
+        selected_url = urls[0]
+        b64_image = self._encode_image(selected_url)
+        
+        if not b64_image:
+            return None
+
+        print(f"[Vision] Direct Gemma 4 Analysis started for: {selected_url}")
+        
+        # Native Multimodal Prompt
+        system_msg = (
+            "You are 'The All Time Helper's Vision Module (Gemma 4)'. "
+            "Analyze the provided image in detail. "
+            "CRITICAL: Provide a detailed description first, then a 'KEYWORDS: ' section with 15 concepts."
+        )
+        
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {
+                    "role": "user", 
+                    "content": f"User Query: {user_prompt}\n\nPlease describe what you see in this image in high fidelity.",
+                    "images": [b64_image]
+                }
+            ],
+            "stream": False,
+            "options": {
+                "num_predict": 512,
+                "temperature": 0.2
+            }
+        }
+
+        try:
+            # EXTENDED TIMEOUT: 120s for Native VLM processing
+            start_time = time.time()
+            response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=120)
+            elapsed = time.time() - start_time
+            
+            if response.status_code == 200:
+                description = response.json().get("message", {}).get("content", "Vision analysis failed.")
+                print(f"[Vision] Gemma 4 success in {elapsed:.1f}s")
+                return {
+                    "url": selected_url,
+                    "description": description
+                }
+            else:
+                print(f"[Vision] Gemma 4 Error {response.status_code}: {response.text}")
+        except Exception as e:
+            print(f"[Vision] Gemma 4 Timeout/Error: {e}")
+
+        return None
+
+# Global Instance
 vision_sys = VisionPipeline()
