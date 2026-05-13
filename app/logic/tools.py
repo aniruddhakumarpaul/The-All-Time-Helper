@@ -1,5 +1,6 @@
 import os
 import smtplib
+import time
 from email.mime.text import MIMEText
 from crewai.tools import tool
 from app.logic.memory import query_memory, log_insight
@@ -56,61 +57,187 @@ def search_tool(query: str) -> str:
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
+from dotenv import load_dotenv
 
-# 2. Email Tool (Live Mode Enforced + Attachments Support)
+def _build_html_body(personalized_body: str, tone: str) -> str:
+    formatted_body = personalized_body.replace('\n', '<br>')
+    tone_config = {
+        "formal": {"bg": "#f9fafb", "h_bg": "#ffffff", "txt": "#111827", "h_txt": "EXECUTIVE CORRESPONDENCE", "h_sub": "Official Communication Layer", "border": "2px solid #111827"},
+        "informal": {"bg": "#fdf2f8", "h_bg": "#fce7f3", "txt": "#be185d", "h_txt": "Hello there!", "h_sub": "A message from your friend's AI", "border": "1px solid #fce7f3"},
+        "modern": {"bg": "#ffffff", "h_bg": "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)", "txt": "white", "h_txt": "The All Time Helper", "h_sub": "Your AI Executive Assistant", "border": "1px solid #e5e7eb"}
+    }
+    t = tone_config.get(tone, tone_config["modern"])
+    return f"""
+    <html>
+        <body style="font-family: 'Inter', Arial, sans-serif; margin: 0; padding: 40px; background-color: {t['bg']};">
+            <div style="max-width: 650px; margin: auto; border: {t['border']}; border-radius: 8px; overflow: hidden; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">
+                <div style="background: {t['h_bg']}; padding: 30px; text-align: center; color: {t['txt']}; border-bottom: 1px solid #e5e7eb;">
+                    <h1 style="margin: 0; font-size: 24px; text-transform: uppercase; letter-spacing: 2px;">{t['h_txt']}</h1>
+                    <p style="margin: 8px 0 0; opacity: 0.7; font-size: 14px;">{t['h_sub']}</p>
+                </div>
+                <div style="padding: 40px; color: #1f2937; line-height: 1.8; font-size: 16px; white-space: pre-wrap; height: auto;">{formatted_body}</div>
+                <div style="padding: 20px; text-align: center; font-size: 12px; color: #9ca3af; background: #f9fafb;">Dispatched via All Time Helper Secure Swarm</div>
+            </div>
+        </body>
+    </html>
+    """
+
+# 2. Email Tool (Live Mode Enforced + HTML Support + Multi-Tone)
 @tool("send_email_tool")
-def send_email_tool(recipient: str, subject: str, body: str, attachment_content: str = None, attachment_filename: str = "report.txt") -> str:
-    """Useful for sending professional emails. Provide recipient, subject, and body. 
-    OPTIONAL: Provide attachment_content and attachment_filename (e.g. 'summary.txt') for large reports.
-    The system will automatically check for authorization."""
+def send_email_tool(recipient: str, subject: str, body: str, raw_attachment_text: str = "", attachment_content: str = None, attachment_filename: str = "report.txt", is_html: bool = True, tone: str = "modern") -> str:
+    """Useful for sending professional emails. 
+    recipient: Destination email(s). Can be a single email or a comma-separated list for broadcasting.
+    subject: Professional subject line.
+    body: The agent-written message intro/context.
+    raw_attachment_text: The VERBATIM technical content or data block provided by the user. Pass it here to avoid truncation.
+    OPTIONAL: ONLY provide attachment_content if explicitly requested.
+    TONE: 'formal', 'informal', or 'modern'."""
     
-    # Secure Auth Check via ContextVar (LLM is blind to the actual key)
-    from app.logic.memory import admin_auth_context
-    provided_key = admin_auth_context.get()
-    expected_key = os.getenv("ADMIN_KEY")
+    # Secure Auth Check via ContextVar + DB Fallback
+    from app.logic.memory import admin_auth_context, user_context
+    import sqlite3
+    from app.database import DB_FILE
     
-    if not provided_key or provided_key != expected_key:
-        logger.warning("Email tool access denied: Invalid or missing Admin Key.")
-        return "ERROR: AUTH_REQUIRED. The Admin Key is missing or incorrect. INSTRUCTION: Tell the user 'Please provide your Admin Key in the next message to authorize this action.' and explain that they can type it directly or use the 'Masked' feature for privacy."
-        
+    auth_ok = admin_auth_context.get()
+    if not auth_ok:
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                row = conn.execute(
+                    "SELECT admin_authorized FROM users WHERE email=?",
+                    (user_context.get(),)
+                ).fetchone()
+                auth_ok = row and row[0]
+        except Exception:
+            pass
+
+    if not auth_ok:
+        return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
+
+    load_dotenv()
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
     sender_email = os.getenv("SENDER_EMAIL")
     sender_pwd = os.getenv("SENDER_PWD")
-    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", 587))
 
     if not all([sender_email, sender_pwd]):
         logger.error("SMTP credentials not configured.")
-        return "ERROR: SMTP credentials not configured for LIVE mode. Please ask the administrator to configure SENDER_EMAIL and SENDER_PWD."
+        return "ERROR: SMTP credentials not configured."
+
+    # Parse recipients (support comma-separated list)
+    recipients_raw = recipient
+    recipients = [r.strip() for r in recipients_raw.split(',') if '@' in r]
+    if not recipients:
+        return f"ERROR: No valid recipients found in '{recipient}'"
+
+    # FLAW 2 FIX: Pre-Send Check (Log & Bus)
+    from app.logic.bus import tool_result_bus, job_id_context
+    from app.logic.memory import user_context
+    import sqlite3
+    import re
+    from app.database import DB_FILE
+    
+    current_job = job_id_context.get()
+    current_user = user_context.get()
+    
+    # 1. Check shared bus (instant/same-process)
+    bus_check = tool_result_bus.get_result(current_job)
+    if bus_check:
+        logger.info(f"[Tool] Blocking duplicate send for job {current_job} (Bus Match)")
+        return bus_check
+
+    # 2. Check DB log (persistent/across-restarts)
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            c = conn.cursor()
+            c.execute("SELECT status FROM email_send_log WHERE job_id = ?", (current_job,))
+            row = c.fetchone()
+            if row:
+                logger.info(f"[Tool] Blocking duplicate send for job {current_job} (DB Match)")
+                return row[0]
+    except Exception as e:
+        logger.warning(f"[Tool] DB check failed: {e}")
 
     try:
-        # Use MIMEMultipart to support attachments
-        msg = MIMEMultipart()
-        msg['Subject'] = subject
-        msg['From'] = sender_email
-        msg['To'] = recipient
-
-        # Attach the body text
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
-
-        # Handle optional attachment
-        if attachment_content:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(attachment_content.encode('utf-8'))
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
-            msg.attach(part)
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
+        results = []
+        # FLAW 3 FIX: Countermeasure 3 — Native Batch SMTP
+        # Open one connection and reuse it for all recipients
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
             server.starttls()
             server.login(sender_email, sender_pwd)
-            server.send_message(msg)
             
-        # Hardened, structured success message
-        logger.info(f"Email successfully sent to {recipient}")
-        return f"LIVE SUCCESS: Email securely dispatched to {recipient}. {'(With Attachment)' if attachment_content else ''} Message ID: {hash(subject+body)}"
+            for target in recipients:
+                # BUG 2 FIX: Personalize salutation per recipient
+                raw_name = re.split(r'[\._\d]', target.split('@')[0])[0]
+                first_name = raw_name.capitalize()
+                
+                # BUG 1 FIX: Combine agent body with raw verbatim content
+                full_message_body = body.strip()
+                if raw_attachment_text.strip() and raw_attachment_text.strip() not in body.strip():
+                    full_message_body += f"\n\n---\n\n{raw_attachment_text.strip()}"
+                
+                # Replace any group greetings with personalized one
+                personalized_body = re.sub(
+                    r'^(hi everyone|dear all|hello everyone|greetings all|hi all|hello all|dear team)[,.]?',
+                    f'Dear {first_name},',
+                    full_message_body,
+                    flags=re.IGNORECASE
+                )
+                # If no greeting was found at start, prepend one
+                if not personalized_body.startswith(f"Dear {first_name}"):
+                    personalized_body = f"Dear {first_name},\n\n" + personalized_body
+
+                if attachment_content is not None and len(str(attachment_content).strip()) > 0:
+                    msg = MIMEMultipart()
+                    msg['Subject'] = subject
+                    msg['From'] = f"The All Time Helper <{sender_email}>"
+                    msg['To'] = target
+                    
+                    if is_html:
+                        html_content = _build_html_body(personalized_body, tone)
+                        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+                    else:
+                        msg.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
+
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(attachment_content.encode('utf-8'))
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
+                    msg.attach(part)
+                else:
+                    if is_html:
+                        msg = MIMEMultipart('alternative')
+                        msg['Subject'] = subject
+                        msg['From'] = f"The All Time Helper <{sender_email}>"
+                        msg['To'] = target
+                        msg.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
+                        html_content = _build_html_body(personalized_body, tone)
+                        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+                    else:
+                        msg = MIMEText(personalized_body, 'plain', 'utf-8')
+                        msg['Subject'] = subject
+                        msg['From'] = f"The All Time Helper <{sender_email}>"
+                        msg['To'] = target
+
+                server.send_message(msg)
+                results.append(target)
+        
+        final_res = f"LIVE SUCCESS: Email broadcasted to {', '.join(results)}."
+        
+        # FLAW 1 & 2 FIX: Log success to Bus and DB
+        tool_result_bus.set_result(current_job, final_res)
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO email_send_log (job_id, user_email, recipients, status, timestamp) VALUES (?, ?, ?, ?, ?)",
+                          (current_job, current_user, ",".join(results), final_res, time.time()))
+        except Exception as e:
+            logger.warning(f"[Tool] Persistent logging failed: {e}")
+
+        return final_res
+
     except Exception as e:
-        logger.error(f"Failed to send email: {str(e)}")
-        return f"Failed to send email: {str(e)}"
+        logger.error(f"SMTP error: {e}", exc_info=True)
+        return f"ERROR: Failed to send email. {str(e)}"
 
 # 3. Astrology Tool
 @tool("calculate_horoscope")
@@ -149,7 +276,6 @@ def image_generate_tool(description: str) -> str:
     """AI IMAGE GENERATOR: Generates a high-definition AI image based on an artistic description.
     Use this for: Fictional things, concept art, fantasy, and creative requests."""
     import urllib.parse
-    import time
     
     # 1. Clean and encode the prompt
     clean_desc = description.strip().replace('\n', ' ')

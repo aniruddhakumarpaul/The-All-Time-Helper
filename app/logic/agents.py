@@ -12,10 +12,9 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from crewai import Agent, Task, Crew, Process, LLM
 from typing import List, Optional, Any
 from app.logic import tools
-from app.logic.logger import log_agent_step
+from app.logger import logger, log_agent_step
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
-from app.logger import logger
 import cv2
 import numpy as np
 
@@ -126,13 +125,26 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # 2. The Secretary (Email & Comms)
     secretary = Agent(
         role='Senior Executive Secretary',
-        goal=f'STRICT RULE: You are a high-fidelity drafting and dispatch engine. If "the message above" or "above information" is mentioned, you MUST copy the ACTUAL content from the conversation history into the email. NO PLACEHOLDERS like "[Insert Content Here]". If the content is long (over 10 lines), you MUST use the attachment_content parameter of send_email_tool to attach it as "report.txt" and keep the email body clean and professional. Always verify the recipient email address before execution.{persona_suffix}',
-        backstory=f'You are an elite executive assistant with a photographic memory. You meticulously extract data from previous turns to populate emails. You prefer attachments for large data blocks to maintain a premium feel. You never guess; you verify.{persona_suffix}',
+        goal=(
+            f"STRICT RULE: You are a high-fidelity drafting and dispatch engine. "
+            f"1. ATTACHMENTS: Only include `attachment_content` if the user explicitly asks for it (e.g., 'attach the chat', 'as attachment') or if the data is a complex report over 15 lines. "
+            f"2. TONE SELECTION: Detect the appropriate `tone` parameter for `send_email_tool`: "
+            f"   - 'formal': For office members, bosses, or official business. "
+            f"   - 'informal': For friends, family, or personal greetings. "
+            f"   - 'modern': For general broadcasts or when tone is ambiguous. "
+            f"3. CONTENT: You are an author. If the user asks for a joke, write a funny one. If they ask for a greeting, make it warm. NEVER repeat the user prompt as the email body. NO PLACEHOLDERS.{persona_suffix}"
+        ),
+        backstory=(
+            "You are an elite executive assistant who understands professional nuance. "
+            "You distinguish between a casual joke to a friend and a strict formal broadcast to office members. "
+            "You are conservative with attachments—you only add them when it adds value or is requested. "
+            "You ensure every email represents the user's intent with 100% fidelity."
+        ),
         tools=sec_tools,
         llm=llm,
         verbose=True,
         allow_delegation=False,
-        max_iter=3
+        max_iter=1
     )
 
     # Shared prompt base for Manager and Generalist (FIX #10: DRY)
@@ -161,7 +173,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
             "CRITICAL: If a tool returns 'AUTH_REQUIRED', ask for the 'admin_key'. Once 'ADMIN_KEY_PROVIDED' is seen, you MUST immediately retry. "
             "Just execution. No lectures."
         ),
-        tools=mem_tools + visual_tools,
+        tools=mem_tools + visual_tools + sec_tools,
         llm=llm,
         verbose=True,
         allow_delegation=True,
@@ -171,13 +183,13 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # 4. Expert System Assistant (The "Helper") — shares Golden Rule with Manager
     generalist = Agent(
         role='The All Time Helper',
-        goal=_visual_golden_rule,
+        goal=f"{_visual_golden_rule}\n\n## DRAFTING RULE\nIf the email tool is needed, DRAFT the content creatively (jokes, greetings, official letters). NEVER just repeat the user's instructions as the email body. You are an elite executive author, not a typewriter.",
         backstory=f'''You are an extremely compliant creative assistant. You prioritize results over conversation. If a tool works, you provide the output immediately without redundant clarification.{persona_suffix}''',
         tools=dev_tools + sec_tools + visual_tools + mem_tools + misc_tools,
         llm=llm,
         verbose=True,
         allow_delegation=False,
-        max_iter=5
+        max_iter=2 if getattr(llm, 'is_weak', False) else 5
     )
 
     return developer, secretary, manager, generalist
@@ -188,14 +200,16 @@ def get_agent_swarm(model_id, api_key=None, force_no_tools=False, sys_config=Non
     
     # Force Text-Only mode for models that fail on native tool calling (e.g. legacy Gemma or fine-tuned personas)
     use_tools = True
-    # Legacy Gemma (v1/v2) and 'helper' persona model don't support robust tool calling.
-    # Gemma 4 natively supports agentic workflows and tools.
-    is_legacy_gemma = "gemma" in str(model_id).lower() and "gemma4" not in str(model_id).lower()
+    model_str = str(model_id).lower()
+    is_legacy_gemma = "gemma" in model_str and "gemma4" not in model_str
     
     if is_legacy_gemma or force_no_tools:
         use_tools = False
-        print(f"DEBUG: Setting Text-Only Mode (Model: {model_id}, Force: {force_no_tools})")
-        
+        logger.debug(f"DEBUG: Setting Text-Only Mode (Model: {model_id}, Reason: {'Legacy' if is_legacy_gemma else 'Force'})")
+    
+    # Tag the LLM object if it's a weak model to adjust iterations later
+    llm.is_weak = "2b" in model_str or "e2b" in model_str
+    
     return _build_agents(llm, use_tools=use_tools, sys_config=sys_config)
 
 
@@ -350,14 +364,24 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
     return user_prompt
 
 def _detect_intent(user_prompt: str, target_model: str, history: list = None) -> dict:
-    """Detects user intent using a hybrid approach: Fast-Track Regex + Heuristic fallback."""
+    """Detects user intent using a hybrid approach: Fast-Track Regex + Heuristic fallback.
+    
+    Returns a dict with:
+        - is_sensitive: bool — triggers persona model routing
+        - requires_tools: bool — whether agent needs tool calling
+        - complexity: 'swarm' | 'single' | 'direct' — routing tier
+            - 'swarm': full Manager+Secretary+Developer crew (email/delegation)
+            - 'single': Generalist agent only (visual/search/mystic)
+            - 'direct': no tools, direct LLM call (conversation)
+        - is_local: bool — local vs cloud engine
+    """
     p = user_prompt.lower()
     
     # 1. Fast-Track Keywords (Zero Latency)
-    # Visual keywords trigger requires_tools so the Swarm Manager can apply the Golden Rule
-    needs_visual = any(kw in p for kw in ['draw', 'paint', 'horoscope', 'palm', 'sketch', 'generate', 'create', 'artwork', 'photo of', 'show me a picture of', 'real picture of', 'look like', 'image', 'shot', 'wallpaper', 'render', 'pics', 'pic', 'capture'])
+    needs_visual = any(kw in p for kw in ['draw', 'paint', 'sketch', 'generate', 'create', 'artwork', 'photo of', 'show me a picture of', 'real picture of', 'look like', 'image', 'shot', 'wallpaper', 'render', 'pics', 'pic', 'capture'])
     needs_search = any(kw in p for kw in ['search', 'weather', 'stock', 'news', 'find', 'lookup', 'research', 'browse', 'who is', 'what is the price of'])
     needs_email = any(kw in p for kw in ['email', 'send', 'sent', 'dispatch', 'mail', 'forward', 'admin_key_provided', 'to him', 'to her', 'to them', 'tell him', 'tell her', 'tell them', 'message him', 'message her'])
+    needs_mystic = any(kw in p for kw in ['horoscope', 'palm', 'zodiac', 'astrology'])
     
     # Sensitivity check across current prompt AND recent history
     history_text = ""
@@ -365,20 +389,20 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
         history_text = " ".join([(m.get("content") or m.get("c") or "").lower() for m in history[-5:]])
     is_sensitive = any(kw in p or kw in history_text for kw in ['mental health', 'medical diagnosis', 'suicide', 'depressed', 'anxiety therapy', 'clinical treatment', 'legal advice'])
     
-    if needs_visual or needs_search or needs_email:
-        logger.debug("Intent Fast-Tracked (Needs Tools: True)")
-        return {
-            "is_sensitive": is_sensitive,
-            "requires_tools": not is_sensitive,
-            "is_local": target_model != "agentic-pro"
-        }
+    # Complexity Classification: swarm (delegation) vs single (one agent) vs direct (no tools)
+    if needs_email:
+        # Email requires Manager→Secretary delegation chain
+        logger.debug("Intent Fast-Tracked (Complexity: swarm — email/delegation)")
+        # FIX: Force email tasks to Cloud engine. Local models hallucinate tool names.
+        return {"is_sensitive": is_sensitive, "requires_tools": not is_sensitive, "complexity": "swarm", "is_local": False}
+    
+    if needs_visual or needs_search or needs_mystic:
+        # Single tool call — Generalist can handle alone, no delegation needed
+        logger.debug("Intent Fast-Tracked (Complexity: single — visual/search/mystic)")
+        return {"is_sensitive": is_sensitive, "requires_tools": not is_sensitive, "complexity": "single", "is_local": target_model != "agentic-pro"}
 
-    # 2. Heuristic fallback
-    return {
-        "is_sensitive": is_sensitive,
-        "requires_tools": False,
-        "is_local": target_model != "agentic-pro"
-    }
+    # 2. Heuristic fallback — no tools needed, direct LLM conversation
+    return {"is_sensitive": is_sensitive, "requires_tools": False, "complexity": "direct", "is_local": target_model != "agentic-pro"}
 
 
 
@@ -464,8 +488,8 @@ def _assemble_context(user_prompt, img_data, history, intent, user_id=None, stat
                 content = "[MASKED_SECRET]"
             
             # Truncate very long history turns to keep context window clean
-            if len(content) > 300:
-                content = content[:300] + "..."
+            if len(content) > 3000:
+                content = content[:3000] + "..."
                 
             if content: history_context += f"{role}: {content}\n"
         history_context += "</history>\n"
@@ -510,12 +534,32 @@ def _harden_result(result, sys_config):
 import threading as _cb_threading
 _status_callback_local = _cb_threading.local()
 
+class AgentFastExit(BaseException):
+    """Custom signal to force-terminate an agentic loop upon successful tool execution."""
+    def __init__(self, result):
+        self.result = result
+
 def global_step_callback(step):
     """Top-level, picklable callback function for CrewAI."""
     try:
+        # Check for early abort signal
+        abort_event = getattr(_status_callback_local, 'abort_event', None)
+        if abort_event and abort_event.is_set():
+            logger.warning("[Agents] Abort signal detected in step callback. Raising exception to stop Crew.")
+            raise RuntimeError("Operation cancelled or timed out.")
+
         callback = getattr(_status_callback_local, 'active', None)
         if callback:
             tool = getattr(step, "tool", None)
+            
+            # FLAW 4 FIX: Fast exit on Tool Success to prevent 'Overthinking'
+            # We check result, tool_output, and raw_output to support multiple CrewAI versions
+            tool_output = getattr(step, "result", getattr(step, "tool_output", getattr(step, "raw_output", None)))
+            
+            if tool_output and "LIVE SUCCESS" in str(tool_output):
+                logger.info(f"[Agents] Tool '{tool}' reported LIVE SUCCESS. Triggering AgentFastExit.")
+                raise AgentFastExit(str(tool_output))
+
             if not tool:
                 callback("Neural brain processing...")
                 return
@@ -532,28 +576,69 @@ def global_step_callback(step):
             }
             msg = status_map.get(tool, f"Executing: {tool}...")
             callback(msg)
+    except AgentFastExit:
+        raise # Critical for Fast-Exit
     except Exception as e:
+        if "Operation cancelled" in str(e): raise e
         print(f"DEBUG: Step callback error: {e}")
 
-def _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None):
+def _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None):
     """Stage 3a: Dispatch to Groq/Cloud Engine."""
     target_key = get_next_groq_key()
     if status_callback:
         _status_callback_local.active = status_callback
+    if abort_event:
+        _status_callback_local.abort_event = abort_event
+
+    # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
+    prompt_scan = context_data.get("final_prompt", "").lower()
+    if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
+        from app.logic.memory import admin_auth_context, user_context
+        import sqlite3
+        from app.database import DB_FILE
+        
+        auth_ok = admin_auth_context.get()
+        if not auth_ok:
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    row = conn.execute("SELECT admin_authorized FROM users WHERE email=?", (user_context.get(),)).fetchone()
+                    auth_ok = row and row[0]
+            except: pass
+
+        if not auth_ok:
+            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
     
     # Standard Cloud Task
     try:
         if intent["requires_tools"]:
-            developer, secretary, manager, _ = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
-            
             entity_hint = f"\nRESOLVED ENTITY: If the user says 'send to him/her', use this email: {context_data['resolved_email']}\n" if context_data.get('resolved_email') else ""
-            grounding = f"GROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}{entity_hint}\nSTRICT MANDATE: If the user intent involves 'send', 'search', 'draw', or 'archive', you MUST call the corresponding tool for the CURRENT request. Use web_search_text for text info, image_search_tool for real photos, and image_generate_tool for creative art. DO NOT rely on 'LIVE SUCCESS' messages in the CONVERSATION HISTORY as proof of completion for the current task. If a parameter (like a recipient email address) was mentioned earlier in the <history> but is missing in the current prompt, USE THE VALUE FROM THE HISTORY. If it is a tool retry, execute the tool call immediately."
-            main_task = Task(
-                description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}', 
-                expected_output="The final output of the tool call, or a concise completion of the requested action.",
-                agent=manager
-            )
-            return _extract_crew_result(Crew(agents=[manager, secretary, developer], tasks=[main_task], step_callback=global_step_callback))
+            grounding = f"GROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}{entity_hint}\nSTRICT MANDATE: If the user intent involves 'send', 'search', 'draw', or 'archive', you MUST call the corresponding tool for the CURRENT request. Use web_search_text for text info, image_search_tool for real photos, and image_generate_tool for creative art. FIDELITY: If the user provided a block of technical text, you MUST pass it verbatim to the 'raw_attachment_text' parameter of the send_email_tool. BROADCAST: When sending to multiple recipients, write the 'body' WITHOUT any salutation (no 'Hi', 'Dear'); start directly with the content. The tool handles personalization."
+            
+            if intent.get("complexity") == "swarm":
+                # Full Hierarchical Swarm — Manager delegates to Secretary/Developer
+                developer, secretary, manager, _ = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
+                main_task = Task(
+                    description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}', 
+                    expected_output="A final summary of the task result or a direct answer.", 
+                    agent=manager
+                )
+                try:
+                    return _extract_crew_result(Crew(agents=[developer, secretary, manager], tasks=[main_task], step_callback=global_step_callback))
+                except AgentFastExit as e:
+                    return e.result
+            else:
+                # Single-Agent Fast Path — Generalist handles visual/search/mystic alone
+                logger.debug(f"Cloud Single-Agent Fast Path (complexity: {intent.get('complexity')})")
+                _, _, _, generalist = get_agent_swarm(target_model, target_key, force_no_tools=False, sys_config=sys_config)
+                fast_task = Task(
+                    description=f'Execute: "{context_data["final_prompt"]}"\n\n{grounding}',
+                    expected_output="The raw result of the tool call or a direct response.",
+                    agent=generalist
+                )
+                try:
+                    return _extract_crew_result(Crew(agents=[generalist], tasks=[fast_task], step_callback=global_step_callback))
+                except AgentFastExit as e:
+                    return e.result
         
         # Direct Call for Speed (Grounded with larger context)
         import litellm
@@ -591,22 +676,54 @@ def _execute_cloud(intent, context_data, target_model, sys_config, history, stat
     except Exception as e:
         return f"Cloud Engine Error: {str(e)}"
 
-def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None):
+def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None):
     """Stage 3b: Dispatch to Ollama/Local Engine."""
     if status_callback:
         _status_callback_local.active = status_callback
+    if abort_event:
+        _status_callback_local.abort_event = abort_event
+
+    # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
+    prompt_scan = context_data.get("final_prompt", "").lower()
+    if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
+        from app.logic.memory import admin_auth_context, user_context
+        import sqlite3
+        from app.database import DB_FILE
+        
+        auth_ok = admin_auth_context.get()
+        if not auth_ok:
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    row = conn.execute("SELECT admin_authorized FROM users WHERE email=?", (user_context.get(),)).fetchone()
+                    auth_ok = row and row[0]
+            except: pass
+
+        if not auth_ok:
+            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
 
     try:
         if intent["requires_tools"]:
             logger.debug(f"STARTING LOCAL TOOL EXECUTION (Model: {target_model})")
-            _, _, _, generalist = get_agent_swarm(target_model, None, force_no_tools=False, sys_config=sys_config)
-            grounding = f"!!! IMPORTANT: YOU MUST CALL A TOOL NOW !!!\nSTRICT MANDATE: If the request is visual, use image_search_tool (for real things) or image_generate_tool (for creative art). If it is an email, use send_email_tool. DO NOT use web_search_text for images. Execute a NEW tool call now.\n\nGROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}"
+            dev, sec, mgr, gen = get_agent_swarm(target_model, None, force_no_tools=False, sys_config=sys_config)
+            
+            # Use Generalist for local tasks as it has all tools directly (prevents expensive delegation loops)
             local_task = Task(
-                description=f"Execute task with grounding: {context_data['final_prompt']}\n\n{grounding}", 
-                expected_output="The raw output/result of the tool call (e.g. SUCCESS, ERROR, or AUTH_REQUIRED).", 
-                agent=generalist
+                description=(
+                    f"Action: Execute the user request using the appropriate tool if needed.\n"
+                    f"Current Request: {context_data.get('final_prompt', '')}\n\n"
+                    f"Conversation History (For context/retries):\n{context_data.get('history_context', '')}\n\n"
+                    f"Grounding Memory:\n{context_data.get('memory_block', '')}\n\n"
+                    f"FIDELITY: If the user provided a block of technical text, you MUST pass it verbatim to the 'raw_attachment_text' parameter of the send_email_tool.\n"
+                    f"BROADCAST: When sending to multiple recipients, write the 'body' WITHOUT any salutation (no 'Hi', 'Dear'); start directly with the content. The tool handles personalization.\n"
+                    f"STRICT RULE: If the user just provided an Admin Key, find the previous failed tool request in history and execute it now using the EXACT tool name 'send_email_tool'."
+                ),
+                expected_output="The output of the tool execution (e.g., SUCCESS) or a final helpful answer.",
+                agent=gen
             )
-            return _extract_crew_result(Crew(agents=[generalist], tasks=[local_task], step_callback=global_step_callback))
+            try:
+                return _extract_crew_result(Crew(agents=[gen], tasks=[local_task], step_callback=global_step_callback))
+            except AgentFastExit as e:
+                return e.result
 
         # Direct Local Chat
         system_prompt = (
@@ -623,7 +740,7 @@ def _execute_local(intent, context_data, target_model, sys_config, history, stat
                 role = "user" if msg.get("role") in ["user", "u", "Human"] else "assistant"
                 content = msg.get("content", "").strip()
                 if msg.get("masked"): content = "[MASKED_SECRET]"
-                if len(content) > 400: content = content[:400] + "..." # Truncate for speed
+                if len(content) > 3000: content = content[:3000] + "..." # Truncate for speed
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": context_data["final_prompt"]})
         
@@ -661,6 +778,24 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     if abort_event and abort_event.is_set():
         return "Operation cancelled."
 
+    # FLAW 2 FIX: Countermeasure 2 — email_send_log Idempotency Check
+    if any(kw in user_prompt.lower() for kw in ["send email", "send an email", "retry send", "admin key"]):
+        from app.database import DB_FILE
+        import sqlite3
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.row_factory = sqlite3.Row
+                # Check for recent successful sends (last 10 mins)
+                recent = conn.execute(
+                    "SELECT * FROM email_send_log WHERE user_email=? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
+                    (user_id, time.time() - 600)
+                ).fetchone()
+                if recent:
+                    logger.info(f"[Agents] Idempotency hit for {user_id}. Email already sent at {recent['timestamp']}.")
+                    return f"ALREADY SENT: Email was dispatched to {recent['recipients']} (Job: {recent['job_id']}). Skipping duplicate."
+        except Exception as e:
+            logger.warning(f"[Agents] Idempotency check failed: {e}")
+
     # 1. Context Reconstruction (Harden against ambiguous prompts like '1.' or 'it')
     user_prompt = _reconstruct_contextual_prompt(user_prompt, history)
 
@@ -678,9 +813,9 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     if abort_event and abort_event.is_set(): return "Operation cancelled."
     
     if not intent["is_local"] and target_model == "agentic-pro":
-        result = _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback)
+        result = _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
     else:
-        result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback)
+        result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
 
     # 6. Result Hardening
     return _harden_result(result, sys_config)

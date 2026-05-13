@@ -43,26 +43,55 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"[!] Diagnostics/Pruning Error: {e}")
         
-    # Startup logic
+    # Startup logic: Ngrok Bridge
     try:
         from pyngrok import ngrok
         ngrok_token = os.getenv("NGROK_TOKEN")
         if ngrok_token:
             ngrok.set_auth_token(ngrok_token)
             
-            # Check for existing tunnels to avoid redundant overhead on reload
+            # Check for existing tunnels via pyngrok
             tunnels = ngrok.get_tunnels()
+            public_url = None
+            
             if not tunnels:
+                # Fallback: Check local ngrok API directly (handles cases where ngrok was started externally)
+                import requests
+                try:
+                    res = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
+                    if res.status_code == 200:
+                        data = res.json().get("tunnels", [])
+                        if data:
+                            public_url = data[0].get("public_url")
+                            logger.info(f"🌍 Detected external Ngrok tunnel: {public_url}")
+                except Exception:
+                    pass
+            else:
+                public_url = tunnels[0].public_url
+                logger.info(f"🌍 THE ALL TIME HELPER - PRO IS ONLINE via {public_url}")
+
+            if not public_url:
                 # Try to kill ghost ngrok instances quietly on Windows
                 if os.name == 'nt':
                     subprocess.run("taskkill /F /IM ngrok.exe /T", shell=True, capture_output=True)
                 
-                public_url = ngrok.connect(9000).public_url
-                print("="*50 + "\n")
-            else:
-                print(f"🌍 THE ALL TIME HELPER - PRO IS STILL ONLINE via {tunnels[0].public_url}")
+                try:
+                    tunnel = ngrok.connect(9000)
+                    public_url = tunnel.public_url
+                    logger.info(f"🚀 Started NEW Ngrok tunnel: {public_url}")
+                except Exception as e:
+                    logger.error(f"❌ Ngrok connect failed: {e}")
+
+            # Ensure the public URL is in ALLOWED_ORIGINS for CORS
+            if public_url and public_url not in ALLOWED_ORIGINS:
+                ALLOWED_ORIGINS.append(public_url)
+                # Also add the base domain without protocol if needed by some middlewares
+                domain = public_url.replace("https://", "").replace("http://", "")
+                if domain not in ALLOWED_ORIGINS:
+                    ALLOWED_ORIGINS.append(domain)
+                logger.info(f"🔒 CORS origins updated to include Ngrok")
     except Exception as e:
-        print("Ngrok failed to start:", e)
+        logger.error(f"Ngrok manager failure: {e}")
     
     yield
     # Shutdown logic (optional)

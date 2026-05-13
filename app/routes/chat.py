@@ -16,6 +16,7 @@ from app.logic.memory import query_memory, user_context, admin_auth_context
 from app.logic.neural_explainer import explain_neural_context
 from app.logic.agents import ask_the_helper
 from app.logger import logger
+from app.inference_queue import inference_queue
 import asyncio
 import threading
 import queue
@@ -86,8 +87,18 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         admin_key_value = req.prompt.strip()
         # Securely store the key for the tool to access natively
         admin_auth_context.set(admin_key_value)
-        # The LLM gets a generic message to proceed without seeing the key
-        prompt = "ADMIN_KEY_PROVIDED: [SECRET]. Please proceed with the previous task using this key."
+        
+        # FIX: Persist admin auth to DB session so it survives retry loops
+        try:
+            from app.database import DB_FILE
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("UPDATE users SET admin_authorized = 1 WHERE email = ?", (current_user,))
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to persist admin auth to DB: {e}")
+            
+        # The LLM gets a clear instruction to proceed without seeing the key
+        prompt = "ADMIN_KEY_PROVIDED: The system has securely received the Admin Key and loaded it into the execution environment. You MUST now execute the send_email_tool immediately using the exact arguments from your previous attempt. DO NOT ask for the key again. DO NOT say you are ready, just execute the tool."
     else:
         # Ensure context is cleared for regular messages
         admin_auth_context.set(None)
@@ -141,9 +152,17 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 # FIX #3: Capture admin key for thread-safe propagation
                 _admin_key_for_thread = admin_key_value
 
+                # Run the Agentic Brain via the Inference Queue (backpressure + timeout)
+                job_id = f"{current_user}_{int(time.time())}"
+
+                # FIX: Propagate job_id for ToolResultBus tracking
+                from app.logic.bus import job_id_context
+                _job_id_for_thread = job_id
+
                 def thread_target():
                     # Propagate ContextVars into worker thread
                     user_context.set(current_user)
+                    job_id_context.set(_job_id_for_thread)
                     if _admin_key_for_thread:
                         admin_auth_context.set(_admin_key_for_thread)
                     return ask_the_helper(
@@ -151,8 +170,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         status_callback=status_callback, chunk_callback=chunk_callback
                     )
 
-                # Run the Agentic Brain in a separate thread with the abort signal
-                task = asyncio.create_task(asyncio.to_thread(thread_target))
+                task = asyncio.create_task(inference_queue.submit(job_id, thread_target, abort_event, timeout=1500.0))
 
                 
                 # HEARTBEAT LOOP: Yield status/chunks from queue

@@ -28,6 +28,12 @@ def init_db():
                     name TEXT
                  )''')
                  
+    # FIX: Add admin_authorized column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN admin_authorized INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass # Column already exists
+                 
     # Create a table for storing chat history
     c.execute('''CREATE TABLE IF NOT EXISTS chats (
                     id TEXT PRIMARY KEY,
@@ -36,6 +42,15 @@ def init_db():
                     messages_json TEXT,
                     updated_at REAL,
                     FOREIGN KEY(user_email) REFERENCES users(email)
+                 )''')
+
+    # FLAW 2 FIX: Persistent log to prevent duplicate sends on retry
+    c.execute('''CREATE TABLE IF NOT EXISTS email_send_log (
+                    job_id TEXT PRIMARY KEY,
+                    user_email TEXT,
+                    recipients TEXT,
+                    status TEXT,
+                    timestamp REAL
                  )''')
     conn.commit()
     

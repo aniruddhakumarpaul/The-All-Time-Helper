@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let isRenaming = false;
         let currentSearch = '';
         let tiltSettleTimer = null;
+
         // --- Core Helpers (Hoisted to Top) ---
         function smartFocus(id) {
             if (window.innerWidth > 850) {
@@ -186,7 +187,6 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.classList.toggle('sidebar-open', isOpen);
 
             // GHOST FIX: Clear inline styles left by the swipe gesture
-            // This ensures that the CSS class-based transitions take over.
             if (sb) sb.style.transform = '';
             if (scrim) {
                 scrim.style.opacity = '';
@@ -281,7 +281,6 @@ document.addEventListener('DOMContentLoaded', () => {
         function setThemeUI(theme) {
             document.body.setAttribute('data-theme', theme);
             const isDark = theme === 'dark';
-            // Swapped: Logo is original for Dark, and (2) for Light
             document.getElementById('main-logo-img').src = isDark ? LOGO_DATA : LOGO_LIGHT_DATA;
         }
 
@@ -369,8 +368,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 chat.pinned = !chat.pinned;
                 saveUserChats();
                 renderHist();
-
-                // Gentle Animation: Scroll list to top to follow the pinned chat
                 const histList = document.getElementById('history-list');
                 if (histList) {
                     histList.scrollTo({ top: 0, behavior: 'smooth' });
@@ -437,7 +434,6 @@ document.addEventListener('DOMContentLoaded', () => {
             chat.ms.forEach((m, idx) => addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant', m.masked));
             renderHist();
 
-            // Auto-close sidebar on mobile after selection
             if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) {
                 toggleSidebar();
             }
@@ -457,7 +453,6 @@ document.addEventListener('DOMContentLoaded', () => {
             
             const lastMsg = chat.ms.length > 0 ? chat.ms[chat.ms.length - 1] : null;
             if (lastMsg) console.log("DEBUG: Last message for auth check:", lastMsg.r, lastMsg.c.substring(0, 50));
-
             const authKeywords = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key", "auth_required", "admin key is missing", "incorrect admin key"];
             const needsAuth = lastMsg && lastMsg.r === 'b' && authKeywords.some(kw => lastMsg.c.toLowerCase().includes(kw));
 
@@ -473,13 +468,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-
-
-
-
         function addMsg(r, c, i, idx, mName, isMasked = false) {
             const div = document.createElement('div');
-            div.className = `msg ${r}-msg entering`; // Added 'entering' for spring animation
+            div.className = `msg ${r}-msg entering`; 
             setTimeout(() => div.classList.remove('entering'), 600);
 
             const name = user ? user.name : 'Human';
@@ -506,12 +497,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="bot-bubble" id="bot-bubble-${idx}">I am great!</div>
                    </div>`;
 
-            let content = r === 'b' ? renderMarkdown(c) : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            
-            // Sensitive Masking Logic
-            if (r === 'u' && isMasked) {
-                content = '•'.repeat(Math.max(8, c.length));
-            }
+            let content = r === 'b' ? window.renderMarkdown(c) : c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (r === 'u' && isMasked) content = '•'.repeat(Math.max(8, c.length));
 
             let tools = '';
             if (r === 'u' && idx !== undefined && !isMasked) {
@@ -562,7 +549,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const txtDiv = document.getElementById(`msg-text-${idx}`);
             if (!txtDiv) { console.error("DEBUG: txtDiv not found"); return; }
             const oldText = msg.c;
-
             txtDiv.innerHTML = `
                 <textarea class="edit-area">${oldText}</textarea>
                 <div class="edit-controls">
@@ -578,7 +564,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const msg = chat.ms[idx];
             const txtDiv = document.getElementById(`msg-text-${idx}`);
             if (txtDiv) {
-                txtDiv.innerHTML = msg.r === 'b' ? renderMarkdown(msg.c) : msg.c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                txtDiv.innerHTML = msg.r === 'b' ? window.renderMarkdown(msg.c) : msg.c.replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 if (msg.r === 'b') txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
             }
         }
@@ -586,17 +572,10 @@ document.addEventListener('DOMContentLoaded', () => {
         async function submitEdit(idx, container) {
             const newText = container.querySelector('textarea').value.trim();
             if (!newText) return;
-            
             let chat = chats.find(c => c.id === activeId);
             if (!chat) return;
-
-            // 1. Clean the display: Truncate history to BEFORE the edited message
             chat.ms = chat.ms.slice(0, idx);
-            
-            // 2. Re-load the chat area to remove the 'future' messages from view
             loadChat(activeId);
-
-            // 3. Trigger the resubmission
             triggerBotReaction(newText);
             document.getElementById('prompt').value = newText;
             send();
@@ -615,21 +594,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         function updateBotVisuals() {
-            const bubbles = document.querySelectorAll('.bot-bubble');
-            bubbles.forEach(b => {
-                if (window.botState !== 'idle') b.style.display = 'block';
-                else b.style.display = 'none';
+            document.querySelectorAll('.bot-bubble').forEach(b => {
+                b.style.display = window.botState !== 'idle' ? 'block' : 'none';
             });
         }
 
-        function popBot(idx) {
+        function popBot() {
             const logo = document.getElementById('main-logo-img');
             if (logo) {
                 logo.classList.add('logo-pop');
                 setTimeout(() => logo.classList.remove('logo-pop'), 600);
             }
         }
-        function hitBot(idx) {
+        function hitBot() {
             const logo = document.getElementById('main-logo-img');
             if (logo) {
                 logo.classList.add('logo-jiggle');
@@ -637,41 +614,34 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
+        // --- Extreme Watchful Teacher Tracking ---
         function trackCursor(e) {
             const logo = document.getElementById('main-logo-img');
             if (!logo || window.innerWidth <= 850) return;
-
-            // Clear any existing settle timer
             if (tiltSettleTimer) clearTimeout(tiltSettleTimer);
-
             const rect = logo.getBoundingClientRect();
             const centerX = rect.left + rect.width / 2;
             const centerY = rect.top + rect.height / 2;
-
-            const mouseX = e.clientX;
-            const mouseY = e.clientY;
-
-            const angleX = (centerY - mouseY) / 30;
-            const angleY = (mouseX - centerX) / 30;
-
-            // Apply Tilt
-            logo.style.transform = `perspective(500px) rotateX(${angleX}deg) rotateY(${angleY}deg)`;
-
-            // Set Idle Settle Timer (2 Seconds)
+            const dx = e.clientX - centerX;
+            const dy = e.clientY - centerY;
+            const maxRotation = 35;
+            const rotX = Math.max(-maxRotation, Math.min(maxRotation, -dy / 12));
+            const rotY = Math.max(-maxRotation, Math.min(maxRotation, dx / 12));
+            const moveX = Math.max(-10, Math.min(10, dx / 50));
+            const moveY = Math.max(-10, Math.min(10, dy / 50));
+            logo.style.transform = `perspective(600px) rotateX(${rotX}deg) rotateY(${rotY}deg) translate3d(${moveX}px, ${moveY}px, 0)`;
             tiltSettleTimer = setTimeout(() => {
-                logo.style.transform = `perspective(500px) rotateX(0) rotateY(0)`;
+                logo.style.transform = `perspective(600px) rotateX(0) rotateY(0) translate3d(0, 0, 0)`;
             }, 2000);
         }
 
         function previewImg(i) {
             if (i.files && i.files[0]) {
-                const file = i.files[0];
                 const reader = new FileReader();
                 reader.onload = (e) => {
                     currentImg = e.target.result.split(',')[1];
                     if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
-                    currentBlobUrl = URL.createObjectURL(file);
-
+                    currentBlobUrl = URL.createObjectURL(i.files[0]);
                     const area = document.getElementById('img-preview-area');
                     area.style.display = 'flex';
                     area.innerHTML = `
@@ -682,23 +652,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     `;
                     selModel('moondream', 'Moondream (Vision)');
                 };
-                reader.readAsDataURL(file);
+                reader.readAsDataURL(i.files[0]);
             }
         }
 
         function clearImgPreview() {
             if (currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
-            currentBlobUrl = null;
-            currentImg = null;
+            currentBlobUrl = null; currentImg = null;
             document.getElementById('img-in').value = '';
             const area = document.getElementById('img-preview-area');
-            area.style.display = 'none';
-            area.innerHTML = '';
+            area.style.display = 'none'; area.innerHTML = '';
         }
 
         function showDeleteConfirm(id, e) {
-            if (e) e.stopPropagation();
-            chatToDelete = id;
+            if (e) e.stopPropagation(); chatToDelete = id;
             document.getElementById('delete-confirm-modal').style.display = 'flex';
             document.getElementById('confirm-del-btn').onclick = () => {
                 chats = chats.filter(c => c.id !== chatToDelete);
@@ -721,11 +688,9 @@ document.addEventListener('DOMContentLoaded', () => {
             let chat = chats.find(c => c.id === activeId);
             if (!chat) { chat = { id: activeId, title: p.substring(0, 35), ms: [] }; chats.push(chat); }
             window.activeId = activeId;
-
             document.getElementById('welcome').style.display = 'none';
             document.getElementById('chat-area').style.display = 'block';
 
-            // Detect if this is an Admin Key response
             let isMasked = false;
             const promptEl = document.getElementById('prompt');
             const isAuthWaiting = promptEl && promptEl.classList.contains('auth-waiting');
@@ -734,7 +699,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 isMasked = true;
             } else if (chat.ms.length > 0) {
                 const lastMsg = chat.ms[chat.ms.length - 1].c.toLowerCase();
-                // ONLY trigger if the bot is EXPLICITLY demanding a key/password in a security context
                 const authKW = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key"];
                 if (authKW.some(kw => lastMsg.includes(kw))) {
                     isMasked = true;
@@ -745,33 +709,26 @@ document.addEventListener('DOMContentLoaded', () => {
             chat.ms.push({ r: 'u', c: p, i: currentImg, masked: isMasked });
             triggerBotReaction(p);
             clearImgPreview();
-            promptEl.value = '';
-            promptEl.style.height = 'auto'; // Reset auto-expanded height
+            promptEl.value = ''; promptEl.style.height = 'auto';
             document.getElementById('stop-btn').style.display = 'flex';
             document.getElementById('main-send-btn').style.display = 'none';
-            
-            // Reset placeholder after sending
             promptEl.placeholder = "Message The All Time Helper...";
             promptEl.classList.remove('auth-waiting');
 
             let initialContent = '...';
             const isLocal = selectedModel !== 'agentic-pro' && !selectedModel.includes('gemini');
-            if (isLocal) {
-                initialContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
-            }
+            if (isLocal) initialContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
+            
             const mName = document.getElementById('active-model-name').innerText;
             const bTxt = addMsg('b', initialContent, null, chat.ms.length, mName);
             const parentMsg = bTxt.closest('.msg');
             if (parentMsg) parentMsg.classList.add('thinking-state');
             
-            // Add typing indicator
             bTxt.innerHTML = `
                 <div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${initialContent}</span></div>
                 <div class="typing-indicator"><span></span><span></span><span></span></div>
             `;
             updateBotVisuals();
-
-            // Mascot Neural Thinking Aura
             const mascot = document.getElementById('mascot-container');
             if (mascot) mascot.classList.add('thinking');
             abortC = new AbortController();
@@ -780,167 +737,81 @@ document.addEventListener('DOMContentLoaded', () => {
                 const token = localStorage.getItem('helper_token_v2') || '';
                 const res = await fetch('/chat', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`,
-                        'ngrok-skip-browser-warning': '69420'
-                    },
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' },
                     body: JSON.stringify({
-                        prompt: p,
-                        history: chat.ms,
-                        model: selectedModel,
-                        img: currentImg,
-                        name: user.name,
-                        persona: document.getElementById('persona-toggle').checked,
-                        isMasked: isMasked,
-                        sys: {
-                            english: document.getElementById('t-eng').classList.contains('on'),
-                            oneword: document.getElementById('t-word').classList.contains('on'),
-                            pers: document.getElementById('t-pers').classList.contains('on')
-                        }
+                        prompt: p, history: chat.ms, model: selectedModel, img: currentImg, name: user.name,
+                        persona: document.getElementById('persona-toggle').checked, isMasked: isMasked,
+                        sys: { english: document.getElementById('t-eng').classList.contains('on'), oneword: document.getElementById('t-word').classList.contains('on'), pers: document.getElementById('t-pers').classList.contains('on') }
                     }),
                     signal: abortC.signal
                 });
-
-                if (res.status === 401) {
-                    signOut();
-                    return;
-                }
+                if (res.status === 401) { signOut(); return; }
 
                 if (!res.ok) {
                     const errorText = `System Error ${res.status}: The backend is currently overloaded or experiencing rate limits. Please try again in a few seconds.`;
                     bTxt.innerText = errorText;
                     chat.ms.push({ r: 'b', c: errorText });
-                    saveChats();
+                    saveUserChats();
                     return;
                 }
 
-                const reader = res.body.getReader();
-                let fullTxt = '';
-                let buffer = '';
-                const decoder = new TextDecoder("utf-8");
-
+                const reader = res.body.getReader(); let fullTxt = ''; let buffer = ''; const decoder = new TextDecoder("utf-8");
                 while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
+                    const { done, value } = await reader.read(); if (done) break;
                     buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // Retain the final incomplete chunk in the buffer
-
+                    const lines = buffer.split('\n'); buffer = lines.pop();
                     lines.forEach(line => {
                         const trimmedLine = line.trim();
-                        if (trimmedLine && !trimmedLine.startsWith('<')) {
-                            try {
-                                const j = JSON.parse(trimmedLine);
-                                
-                                // NEW: Handle Status Updates
-                                if (j.status) {
-                                    let statusEl = bTxt.querySelector('#status-text');
-                                    if (!statusEl) {
-                                        // If missing, prepend a new status block
-                                        const statusDiv = document.createElement('div');
-                                        statusDiv.className = 'status-msg';
-                                        statusDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${j.status}</span>`;
-                                        bTxt.prepend(statusDiv);
-                                    } else {
-                                        statusEl.innerText = j.status;
-                                    }
-                                    return;
-                                }
-
-                                if (j.message && j.message.content) {
-                                    // Remove thinking state and typing indicator on first chunk
-                                    if (fullTxt === '') {
-                                        const indicator = bTxt.querySelector('.typing-indicator');
-                                        if (indicator) indicator.remove();
-                                        
-                                        // If we have a status msg, we can either keep it or clear it.
-                                        // Let's clear the status but KEEP the container for future chunks if needed,
-                                        // or just clear everything and start fresh.
-                                        const statusMsg = bTxt.querySelector('.status-msg');
-                                        if (statusMsg) statusMsg.remove();
-
-                                        const parentMsg = bTxt.closest('.msg');
-                                        if (parentMsg) parentMsg.classList.remove('thinking-state');
-                                    }
-                                    
-                                    fullTxt += j.message.content;
-                                    // Use a more efficient update method if not doing heavy markdown
-                                    bTxt.innerHTML = renderMarkdown(fullTxt);
-                                }
-                            } catch (e) {
-                                // Silent skip for heartbeats (empty lines) or minor streaming noise
-                                if (trimmedLine.length > 5) {
-                                    console.warn("Dropped malformed line:", e, "Line:", trimmedLine);
-                                }
+                        if (!trimmedLine || trimmedLine.startsWith('<')) return;
+                        try {
+                            const j = JSON.parse(trimmedLine);
+                            if (j.status) {
+                                let statusEl = bTxt.querySelector('#status-text');
+                                if (!statusEl) {
+                                    const statusDiv = document.createElement('div');
+                                    statusDiv.className = 'status-msg';
+                                    statusDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${j.status}</span>`;
+                                    bTxt.prepend(statusDiv);
+                                } else { statusEl.innerText = j.status; }
+                                return;
                             }
+                            if (j.message && j.message.content) {
+                                if (fullTxt === '') {
+                                    bTxt.querySelector('.typing-indicator')?.remove();
+                                    bTxt.querySelector('.status-msg')?.remove();
+                                    bTxt.closest('.msg').classList.remove('thinking-state');
+                                }
+                                fullTxt += j.message.content; bTxt.innerHTML = window.renderMarkdown(fullTxt);
+                            }
+                        } catch (e) {
+                            if (trimmedLine.length > 5) console.warn("Dropped malformed line:", trimmedLine);
                         }
                     });
                 }
-
-                // Process any remaining buffered payload
+                // Process remaining buffer
                 if (buffer.trim()) {
-                    try {
-                        const j = JSON.parse(buffer);
-                        if (j.message && j.message.content) { fullTxt += j.message.content; }
-                    } catch (e) { }
+                    try { const j = JSON.parse(buffer); if (j.message && j.message.content) fullTxt += j.message.content; } catch (e) { }
                 }
-
-                // Smart Title Generation: Update title if it's currently a short placeholder
                 if (chat.title && chat.title.trim().length <= 5 && fullTxt.trim().length > 10) {
                     const firstLine = fullTxt.split('\n')[0];
-                    const newTitle = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
-                    if (newTitle) chat.title = newTitle;
+                    chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
                 }
-
                 chat.ms.push({ r: 'b', c: fullTxt, m: document.getElementById('active-model-name').innerText });
-                // Final render: apply Markdown + syntax highlighting after streaming completes
-                const rendered = renderMarkdown(fullTxt);
-                bTxt.innerHTML = rendered;
-
-                // NEW: Detect Upscale ID directly from image URLs to prevent LLM stripping
-                const imgs = bTxt.querySelectorAll('img');
-                imgs.forEach(img => {
-                    if (img.src && img.src.includes('uid=')) {
-                        try {
-                            // Extract uid from URL parameters
-                            const urlParams = new URLSearchParams(img.src.split('?')[1]);
-                            const jobId = urlParams.get('uid');
-                            if (jobId) {
-                                startUpscalePoller(jobId, bTxt);
-                            }
-                        } catch (e) {
-                            console.error("Failed to parse upscale ID from image:", e);
-                        }
-                    }
-                });
-
+                bTxt.innerHTML = window.renderMarkdown(fullTxt);
+                bTxt.querySelectorAll('img').forEach(img => { if (img.src.includes('uid=')) { const jId = new URLSearchParams(img.src.split('?')[1]).get('uid'); if (jId) startUpscalePoller(jId, bTxt); } });
                 bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
                 saveUserChats();
             } catch (e) { bTxt.innerText += " [Stopped]"; }
             finally {
-                // FORCE UI RESET: Stop animations and hide stop button regardless of 'loading' elements
                 document.getElementById('stop-btn').style.display = 'none';
                 document.getElementById('main-send-btn').style.display = 'flex';
                 checkAuthMode();
-                const mascot = document.getElementById('mascot-container');
                 if (mascot) mascot.classList.remove('thinking');
-                
-                // Clear any lingering thinking states in the chat area
                 document.querySelectorAll('.thinking-state').forEach(m => m.classList.remove('thinking-state'));
                 document.querySelectorAll('.typing-indicator').forEach(ti => ti.remove());
-
-                abortC = null; 
-                currentImg = null; 
-                window.activeId = activeId; 
-                
-                // OPTIMIZED: Only render history if it's the FIRST message of a chat (title change)
-                if (window.activeId === activeId && chats.find(c => c.id === activeId)?.ms.length <= 2) {
-                    renderHist();
-                }
-
-                // NEW: Trigger Auth Mode UI if AI asked for a key
+                abortC = null; currentImg = null;
+                window.activeId = activeId;
+                if (window.activeId === activeId && chats.find(c => c.id === activeId)?.ms.length <= 2) renderHist();
                 checkAuthMode();
             }
         }
@@ -950,8 +821,6 @@ document.addEventListener('DOMContentLoaded', () => {
         async function loadUserChats() {
             if (!user || !user.email) return;
             const key = 'helper_chats_v2_' + user.email;
-
-            // 1. Load initial state from LocalStorage immediately
             let localStr = localStorage.getItem(key);
             if (!localStr && localStorage.getItem('helper_chats_v2')) {
                 // Migration from global key
@@ -959,22 +828,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem(key, localStr);
                 localStorage.removeItem('helper_chats_v2');
             }
-
             if (localStr) {
-                chats = JSON.parse(localStr);
-                window.chats = chats;
-                renderHist();
-                
-                // RESTORE ACTIVE CHAT IMMEDIATELY FROM LOCAL CACHE
-                const savedChatId = localStorage.getItem('helper_active_chat_v2');
-                if (savedChatId && chats.find(c => c.id === savedChatId)) {
-                    loadChat(savedChatId);
-                }
-                
+                chats = JSON.parse(localStr); window.chats = chats; renderHist();
+                const sId = localStorage.getItem('helper_active_chat_v2');
+                if (sId && chats.find(c => c.id === sId)) loadChat(sId);
                 console.log("DEBUG: Loaded chats from local storage:", chats.length);
             }
-
-            // 2. Refresh from Cloud
             const token = localStorage.getItem('helper_token_v2');
             if (token) {
                 try {
@@ -983,12 +842,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const data = await res.json();
                     if (data.success && data.chats) {
                         console.log("DEBUG: Cloud sync returned chats:", data.chats.length);
-                        // Significant safeguard: Only overwrite if cloud has data OR local is empty
                         if (data.chats.length > 0 || chats.length === 0) {
-                            chats = data.chats;
-                            window.chats = chats;
-                            localStorage.setItem(key, JSON.stringify(chats));
-                            renderHist();
+                            chats = data.chats; window.chats = chats;
+                            localStorage.setItem(key, JSON.stringify(chats)); renderHist();
                         }
                     }
                 } catch (e) { console.error("Cloud fetch failed:", e); }
@@ -1000,398 +856,166 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async function saveUserChats() {
             if (!user) return;
-            const key = 'helper_chats_v2_' + user.email;
-
-            // Sync to Local Storage (as transient quick-load cache)
-            localStorage.setItem(key, JSON.stringify(chats));
-
-            // Sync to Cloud (Primary Source of Truth)
+            localStorage.setItem('helper_chats_v2_' + user.email, JSON.stringify(chats));
             const token = localStorage.getItem('helper_token_v2');
             if (token) {
-                try {
-                    const res = await fetch('/sync_chats', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' },
-                        body: JSON.stringify(chats)
-                    });
-                    const data = await res.json();
-                    if (!data.success) console.error("Cloud sync failed server-side:", data.error);
-                } catch (e) { console.error("Cloud sync failed:", e); }
+                try { await fetch('/sync_chats', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' }, body: JSON.stringify(chats) }); } catch (e) { }
             }
         }
 
         const savedUser = localStorage.getItem('helper_user_v2');
         if (savedUser) {
             user = JSON.parse(savedUser); document.getElementById('auth-overlay').style.display = 'none';
-            
-            // Restore Chats and Active UI
             loadUserChats();
-            
-            const savedModal = localStorage.getItem('helper_active_modal_v2');
-            if (savedModal === 'settings') {
-                openSettings();
-            }
-            
+            if (localStorage.getItem('helper_active_modal_v2') === 'settings') openSettings();
             updUI();
-            
-            // Show Onboarding for existing users who haven't picked yet
-            if (!localStorage.getItem('helper_theme_pref')) {
-                document.getElementById('theme-modal').style.display = 'flex';
-            }
-
+            if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
             smartFocus('prompt');
         } else {
             document.getElementById('l-email').focus();
             renderHist();
         }
 
-        // Liquid-Glass Interactions
-        function jiggleLogo() {
-            hitBot();
-        }
-
-        // Add Cursor Tracking to Sidebar Logo
         document.addEventListener('mousemove', trackCursor);
         document.addEventListener('mouseleave', () => {
             const logo = document.getElementById('main-logo-img');
-            if (logo) logo.style.transform = 'perspective(500px) rotateX(0) rotateY(0)';
+            if (logo) logo.style.transform = 'perspective(600px) rotateX(0) rotateY(0) translate3d(0, 0, 0)';
         });
 
         const promptIn = document.getElementById('prompt');
         const sendBtn = document.getElementById('main-send-btn');
         if (promptIn) {
-            // Auto Resize
             promptIn.addEventListener('input', () => {
-                autoRes(promptIn);
-                if (promptIn.value.trim().length > 0) {
-                    if (sendBtn) sendBtn.classList.add('pulsing');
-                } else {
-                    if (sendBtn) sendBtn.classList.remove('pulsing');
-                }
+                window.autoRes(promptIn);
+                sendBtn?.classList.toggle('pulsing', promptIn.value.trim().length > 0);
             });
-            // Key Handling
             promptIn.addEventListener('keydown', handleChatKey);
         }
 
-        // --- Personal Persona UI Sync ---
         const personaToggle = document.getElementById('persona-toggle');
         const personaItem = document.querySelector('.persona-switch-item');
-        
         function syncPersonaUI() {
-            if (personaToggle && personaItem) {
-                if (personaToggle.checked) {
-                    personaItem.classList.add('persona-active');
-                } else {
-                    personaItem.classList.remove('persona-active');
-                }
-            }
+            if (personaToggle && personaItem) personaItem.classList.toggle('persona-active', personaToggle.checked);
         }
+        if (personaToggle) { personaToggle.addEventListener('change', syncPersonaUI); syncPersonaUI(); }
 
-        if (personaToggle) {
-            personaToggle.addEventListener('change', syncPersonaUI);
-            // Initial Sync
-            syncPersonaUI();
-        }
-
-        // Mobile Sidebar & Dropdown Dismissal
         document.addEventListener('click', (e) => {
-            const sidebar = document.getElementById('sidebar');
-            const menuBtn = document.getElementById('mobile-menu-btn');
-            const modelToggle = document.getElementById('model-toggle');
-            const modelMenu = document.getElementById('model-menu');
-            const themeBtn = document.getElementById('theme-btn');
-            const themeSettingsBtn = document.getElementById('theme-btn-settings');
-            const themeMenu = document.getElementById('theme-menu');
-
-            // 1. Close Sidebar if clicking outside (Mobile)
-            if (window.innerWidth <= 850 && sidebar && sidebar.classList.contains('open')) {
-                if (!sidebar.contains(e.target) && (!menuBtn || !menuBtn.contains(e.target))) {
-                    toggleSidebar();
-                }
-            }
-
-            // 2. Close Theme Menus if clicking outside
-            const isClickInsideTheme = (themeBtn && themeBtn.contains(e.target)) ||
-                (themeSettingsBtn && themeSettingsBtn.contains(e.target)) ||
-                (themeMenu && themeMenu.contains(e.target));
-            if (!isClickInsideTheme && themeMenu && themeMenu.style.display === 'flex') {
-                themeMenu.style.display = 'none';
-            }
-
-            // 3. Close Model Menu if clicking outside
-            const isClickInsideModel = (modelToggle && modelToggle.contains(e.target)) ||
-                (modelMenu && modelMenu.contains(e.target));
-            if (!isClickInsideModel && modelMenu && modelMenu.classList.contains('active')) {
-                modelMenu.classList.remove('active');
-            }
+            const sb = document.getElementById('sidebar');
+            if (window.innerWidth <= 850 && sb?.classList.contains('open') && !sb.contains(e.target) && !document.getElementById('mobile-menu-btn')?.contains(e.target)) toggleSidebar();
+            const tm = document.getElementById('theme-menu');
+            if (tm && tm.style.display === 'flex' && !tm.contains(e.target) && !document.getElementById('theme-btn')?.contains(e.target) && !document.getElementById('theme-btn-settings')?.contains(e.target)) tm.style.display = 'none';
+            const mm = document.getElementById('model-menu');
+            if (mm && mm.classList.contains('active') && !mm.contains(e.target) && !document.getElementById('model-toggle')?.contains(e.target)) mm.classList.remove('active');
         });
-        // Image Modal Logic
+
         function openImageModal(src) {
-            const modal = document.getElementById('image-modal');
-            const img = document.getElementById('modal-img');
-            if (modal && img) {
-                img.src = src;
-                img.classList.remove('is-zoomed'); // Reset zoom on open
-                modal.style.display = 'flex';
-                setTimeout(() => modal.classList.add('active'), 10);
-                history.pushState({ view: 'image' }, "");
-            }
+            const m = document.getElementById('image-modal'); const img = document.getElementById('modal-img');
+            if (m && img) { img.src = src; img.classList.remove('is-zoomed'); m.style.display = 'flex'; setTimeout(() => m.classList.add('active'), 10); history.pushState({ view: 'image' }, ""); }
         }
         function closeImageModal() {
-            const modal = document.getElementById('image-modal');
-            const img = document.getElementById('modal-img');
-            if (modal) {
-                modal.classList.remove('active');
-                if (img) img.classList.remove('is-zoomed');
-                setTimeout(() => modal.style.display = 'none', 300);
-            }
+            const m = document.getElementById('image-modal'); const img = document.getElementById('modal-img');
+            if (m) { m.classList.remove('active'); img?.classList.remove('is-zoomed'); setTimeout(() => m.style.display = 'none', 300); }
         }
 
-        // NOTE: setAtmosphere, openImageModal, closeImageModal are defined
-        // inside the DOMContentLoaded block above and exported to window there.
-        // Duplicate outer definitions removed to prevent initialization conflicts.
-
-        // --- Image Zoom Engine ---
         (function initImageZoom() {
-            const modalImg = document.getElementById('modal-img');
-            const modalContainer = document.getElementById('image-modal');
-            if (!modalImg || !modalContainer) return;
-
-            modalImg.addEventListener('click', (e) => {
-                e.stopPropagation();
-                modalImg.classList.toggle('is-zoomed');
-            });
-
-            modalContainer.addEventListener('click', (e) => {
-                if (e.target === modalContainer) {
-                    modalImg.classList.remove('is-zoomed');
-                    closeImageModal();
-                }
-            });
+            const img = document.getElementById('modal-img'); const cont = document.getElementById('image-modal');
+            if (!img || !cont) return;
+            img.onclick = (e) => { e.stopPropagation(); img.classList.toggle('is-zoomed'); };
+            cont.onclick = (e) => { if (e.target === cont) { img.classList.remove('is-zoomed'); closeImageModal(); } };
         })();
 
-        // --- Mobile hardware back button & Global Shortcuts ---
         window.addEventListener('popstate', (e) => {
-            // 1. Close Lightbox
-            const lb = document.getElementById('image-modal');
-            if (lb && lb.classList.contains('active')) {
-                closeImageModal();
-                return;
-            }
-            // 2. Close Settings
-            const set = document.getElementById('settings-modal');
-            if (set && set.style.display === 'flex') {
-                closeSettings();
-                return;
-            }
-            // 3. Close Sidebar
-            const sb = document.getElementById('sidebar');
-            if (sb && sb.classList.contains('open')) {
-                toggleSidebar();
-                return;
-            }
-            // 4. Close confirmation
+            if (document.getElementById('image-modal')?.classList.contains('active')) { closeImageModal(); return; }
+            if (document.getElementById('settings-modal')?.style.display === 'flex') { closeSettings(); return; }
+            if (document.getElementById('sidebar')?.classList.contains('open')) { toggleSidebar(); return; }
             const conf = document.getElementById('delete-confirm-modal');
-            if (conf && conf.style.display === 'flex') {
-                conf.style.display = 'none';
-                return;
-            }
+            if (conf && conf.style.display === 'flex') { conf.style.display = 'none'; return; }
         });
 
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                // Priority close on ESC
-                const lb = document.getElementById('image-modal');
-                if (lb && lb.classList.contains('active')) { closeImageModal(); return; }
-
-                const set = document.getElementById('settings-modal');
-                if (set && set.style.display === 'flex') { closeSettings(); return; }
-
-                const conf = document.getElementById('delete-confirm-modal');
-                if (conf && conf.style.display === 'flex') { conf.style.display = 'none'; return; }
-
-                const sb = document.getElementById('sidebar');
-                if (sb && sb.classList.contains('open')) { toggleSidebar(); return; }
+                if (document.getElementById('image-modal')?.classList.contains('active')) { closeImageModal(); return; }
+                if (document.getElementById('settings-modal')?.style.display === 'flex') { closeSettings(); return; }
+                if (document.getElementById('delete-confirm-modal')?.style.display === 'flex') { document.getElementById('delete-confirm-modal').style.display = 'none'; return; }
+                if (document.getElementById('sidebar')?.classList.contains('open')) { toggleSidebar(); return; }
             }
         });
 
-
-        // --- Neural Drag & Drop Context Retrieval ---
         function handleDragStart(e) {
-            // Store the text content of the message
-            const text = e.currentTarget.innerText;
-            e.dataTransfer.setData('text/plain', text);
-            // Visual feedback for the message bubble
+            e.dataTransfer.setData('text/plain', e.currentTarget.innerText);
             e.currentTarget.parentElement.classList.add('dragging');
-            // Highlight the mascot as drop zone
-            const mascot = document.getElementById('mascot-container');
-            if (mascot) mascot.classList.add('mascot-drop-active');
+            document.getElementById('mascot-container')?.classList.add('mascot-drop-active');
         }
-
         function handleDragEnd(e) {
             e.currentTarget.parentElement.classList.remove('dragging');
-            const mascot = document.getElementById('mascot-container');
-            if (mascot) mascot.classList.remove('mascot-drop-active');
+            document.getElementById('mascot-container')?.classList.remove('mascot-drop-active');
         }
 
         function initMascotDrop() {
-            const mascot = document.getElementById('mascot-container');
-            if (!mascot) return;
-
-            mascot.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                mascot.classList.add('mascot-drop-active');
-            });
-
-            mascot.addEventListener('dragleave', () => {
-                mascot.classList.remove('mascot-drop-active');
-            });
-
-            mascot.addEventListener('drop', async (e) => {
-                e.preventDefault();
-                mascot.classList.remove('mascot-drop-active');
-                const text = e.dataTransfer.getData('text/plain');
-                if (text) {
-                    retrieveContext(text);
-                }
-            });
+            const m = document.getElementById('mascot-container'); if (!m) return;
+            m.ondragover = (e) => { e.preventDefault(); m.classList.add('mascot-drop-active'); };
+            m.ondragleave = () => m.classList.remove('mascot-drop-active');
+            m.ondrop = async (e) => {
+                e.preventDefault(); m.classList.remove('mascot-drop-active');
+                const txt = e.dataTransfer.getData('text/plain');
+                if (txt) retrieveContext(txt);
+            };
         }
 
         async function retrieveContext(text) {
-            const mascot = document.getElementById('mascot-container');
-            if (mascot) mascot.classList.add('thinking');
-            
+            const m = document.getElementById('mascot-container'); if (m) m.classList.add('thinking');
             try {
-                const token = localStorage.getItem('helper_token_v2') || '';
-                const res = await fetch('/retrieve_context', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`,
-                        'ngrok-skip-browser-warning': '69420'
-                    },
-                    body: JSON.stringify({ text: text, n: 3 })
-                });
-
+                const res = await fetch('/retrieve_context', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('helper_token_v2')}`, 'ngrok-skip-browser-warning': '69420' }, body: JSON.stringify({ text, n: 3 }) });
                 const data = await res.json();
-                if (data.success) {
-                    showNeuralContext(data.results, data.explanation);
-                }
-            } catch (e) {
-                console.error("Context Retrieval Error:", e);
-            } finally {
-                if (mascot) mascot.classList.remove('thinking');
-            }
+                if (data.success) showNeuralContext(data.results, data.explanation);
+            } finally { if (m) m.classList.remove('thinking'); }
         }
 
         function showNeuralContext(results, explanation) {
             const card = document.getElementById('neural-context-card');
-            const container = document.getElementById('context-results');
+            const cont = document.getElementById('context-results');
             const scrim = document.getElementById('neural-scrim');
-            
-            if (!card || !container || !scrim) return;
-
-            container.innerHTML = '';
-
-            // 1. Inject AI Explanation (The "Bridge")
+            if (!card || !cont || !scrim) return;
+            cont.innerHTML = '';
             if (explanation) {
-                const insightBox = document.createElement('div');
-                insightBox.className = 'neural-insight-box';
-                insightBox.innerHTML = `
-                    <div class="insight-header">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
-                        </svg>
-                        Neural Insight
-                    </div>
-                    <div class="insight-text">${explanation}</div>
-                `;
-                container.appendChild(insightBox);
+                const box = document.createElement('div'); box.className = 'neural-insight-box';
+                box.innerHTML = `<div class="insight-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg> Neural Insight</div><div class="insight-text">${explanation}</div>`;
+                cont.appendChild(box);
             }
-
-            // 2. Inject Raw Source Snippets
-            const sourceLabel = document.createElement('span');
-            sourceLabel.className = 'source-label';
-            sourceLabel.innerText = 'Technical Source Snippets';
-            container.appendChild(sourceLabel);
-
-            if (!results || results.length === 0) {
-                container.innerHTML += '<p style="text-align:center; color:var(--text-sub); padding: 20px;">No direct neural links found for this snippet.</p>';
-            } else {
-                results.forEach(res => {
-                    const div = document.createElement('div');
-                    div.className = 'context-snippet';
-                    const type = res.metadata ? (res.metadata.type || 'DOCUMENT') : 'DOCUMENT';
-                    div.innerHTML = `
-                        <span class="context-meta">${type}</span>
-                        <div style="max-height: 150px; overflow-y: auto; font-size: 0.85rem; color: var(--text-main);">${res.content}</div>
-                    `;
-                    container.appendChild(div);
-                });
-            }
-
-            card.classList.add('active');
-            scrim.classList.add('active');
+            const label = document.createElement('span'); label.className = 'source-label'; label.innerText = 'Technical Source Snippets'; cont.appendChild(label);
+            if (!results?.length) cont.innerHTML += '<p style="text-align:center; color:var(--text-sub); padding: 20px;">No direct neural links found.</p>';
+            else results.forEach(res => {
+                const div = document.createElement('div'); div.className = 'context-snippet';
+                div.innerHTML = `<span class="context-meta">${res.metadata?.type || 'DOCUMENT'}</span><div style="max-height: 150px; overflow-y: auto; font-size: 0.85rem; color: var(--text-main);">${res.content}</div>`;
+                cont.appendChild(div);
+            });
+            card.classList.add('active'); scrim.classList.add('active');
         }
 
-        function closeNeuralContext() {
-            const card = document.getElementById('neural-context-card');
-            const scrim = document.getElementById('neural-scrim');
-            if (card) card.classList.remove('active');
-            if (scrim) scrim.classList.remove('active');
-        }
-
-        // --- Pull to Refresh Gesture ---
-        let touchStartY = 0;
-        let touchDiffY = 0;
-        const REFRESH_THRESHOLD = 120;
-        const NOTCH_ZONE = 60; // Pull must start in the top 60px
-
+        let touchStartY = 0, touchDiffY = 0;
         window.addEventListener('touchstart', (e) => {
-            const startY = e.touches[0].pageY;
-            if ((window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0) && startY < NOTCH_ZONE) {
-                touchStartY = startY;
-            } else {
-                touchStartY = 999999; // Disarm if outside zone
-            }
+            const y = e.touches[0].pageY;
+            if ((window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0) && y < 60) touchStartY = y;
+            else touchStartY = 999999;
         }, { passive: true });
-
         window.addEventListener('touchmove', (e) => {
-            const currentY = e.touches[0].pageY;
-            touchDiffY = currentY - touchStartY;
-
+            const y = e.touches[0].pageY; touchDiffY = y - touchStartY;
             if (touchDiffY > 0 && (window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0)) {
-                const indicator = document.getElementById('pull-indicator');
-                if (indicator) {
-                    const pullProgress = Math.min(touchDiffY, REFRESH_THRESHOLD * 1.5);
-                    indicator.style.top = (pullProgress - 60) + 'px';
-                    indicator.style.opacity = Math.min(pullProgress / REFRESH_THRESHOLD, 1);
-                }
+                const ind = document.getElementById('pull-indicator');
+                if (ind) { const p = Math.min(touchDiffY, 180); ind.style.top = (p - 60) + 'px'; ind.style.opacity = Math.min(p / 120, 1); }
             }
         }, { passive: true });
-
         window.addEventListener('touchend', () => {
-            if (touchDiffY > REFRESH_THRESHOLD) {
-                // Trigger Refresh
-                location.reload();
-            } else {
-                // Reset Indicator
-                const indicator = document.getElementById('pull-indicator');
-                if (indicator) {
-                    indicator.style.top = '-60px';
-                    indicator.style.opacity = '0';
-                }
-            }
+            if (touchDiffY > 120) location.reload();
+            else { const ind = document.getElementById('pull-indicator'); if (ind) { ind.style.top = '-60px'; ind.style.opacity = '0'; } }
             touchDiffY = 0;
         });
 
+        // Liquid-Glass Interactions
+        function jiggleLogo() { hitBot(); }
+
         const logoImg = document.getElementById('main-logo-img');
-        if (logoImg) logoImg.addEventListener('click', () => {
-            jiggleLogo();
-            // Removed defunct setAtmosphere ghost call to prevent console errors.
-        });
+        if (logoImg) logoImg.addEventListener('click', () => { jiggleLogo(); });
 
         // --- Global Function Mapping for HTML onclick ---
         window.handleAuth = handleAuth;
@@ -1408,16 +1032,11 @@ document.addEventListener('DOMContentLoaded', () => {
         window.previewImg = previewImg;
         window.toggleSidebar = toggleSidebar;
         window.triggerBotReaction = triggerBotReaction;
-        window.copyCode = copyCode;
-        window.downloadCode = downloadCode;
+        // copyCode & downloadCode are defined in utils.js (loaded first)
         window.startEditPrompt = startEditPrompt;
         window.cancelEdit = cancelEdit;
         window.submitEdit = submitEdit;
         window.openSettings = openSettings;
-        // BUG FIX: Restored correct closeSettings.
-        // The previous version only closed the modal when clicking the backdrop itself,
-        // which meant the X button (which has class 'close-settings') worked but
-        // calling closeSettings() directly from openSettings() button logic did not.
         window.closeSettings = closeSettings;
         window.handleChatKey = handleChatKey;
         window.autoRes = function (el) {
@@ -1431,14 +1050,20 @@ document.addEventListener('DOMContentLoaded', () => {
         window.toggleSet = toggleSet;
         window.filterHist = filterHist;
         window.startRename = startRename;
-        window.closeNeuralContext = closeNeuralContext;
+        window.closeNeuralContext = function() {
+            const card = document.getElementById('neural-context-card');
+            const scrim = document.getElementById('neural-scrim');
+            if (card) card.classList.remove('active');
+            if (scrim) scrim.classList.remove('active');
+        };
         window.handleDragStart = handleDragStart;
         window.handleDragEnd = handleDragEnd;
-        
+        window.jiggleLogo = jiggleLogo;
+
         initMascotDrop();
 
         // --- Neural Grab Logic (Hold 'G' to Enable Dragging) ---
-        window.isGDown = false; // Exposed globally for inline handlers
+        window.isGDown = false;
         function updateDraggableState(enabled) {
             window.isGDown = enabled;
             const msgs = document.querySelectorAll('.msg .txt');
@@ -1457,163 +1082,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateDraggableState(true);
             }
         });
-
         document.addEventListener('keyup', (e) => {
             if (e.key.toLowerCase() === 'g') {
                 updateDraggableState(false);
             }
         });
-
-        // Fail-safe: Reset if window loses focus
         window.addEventListener('blur', () => {
             updateDraggableState(false);
         });
 
         initSidebarSwipe();
-        // exportChat is already exported at line 286. 
-    } catch (e) {
-        console.error("Critical Runtime Error in Dashboard:", e);
-    }
+    } catch (e) { console.error("Critical Runtime Error in Dashboard:", e); }
 });
 
-        // --- Sidebar Swipe-to-Close (Mobile Only) ---
-        function initSidebarSwipe() {
-            const sidebar = document.getElementById('sidebar');
-            const scrim = document.getElementById('sidebar-scrim');
-            let startX = 0, startY = 0;
-            let currentX = 0;
-            let isDragging = false;
-            let isHorizontalSwipe = false;
-            const SB_OFFSET = 300; // The translateX value when open
-
-            if (!sidebar || !scrim) return;
-
-            sidebar.addEventListener('touchstart', (e) => {
-                // Only enable swipe if sidebar is open and on mobile
-                if (!sidebar.classList.contains('open') || window.innerWidth > 992) return;
-                
-                startX = e.touches[0].clientX;
-                startY = e.touches[0].clientY;
-                currentX = SB_OFFSET; // Initialize to fully open state
-                isDragging = true;
-                isHorizontalSwipe = false;
-                
-                // Disable transitions for instant follow
-                sidebar.style.transition = 'none';
-                scrim.style.transition = 'none';
-            }, { passive: true });
-
-            sidebar.addEventListener('touchmove', (e) => {
-                if (!isDragging) return;
-                
-                const touchX = e.touches[0].clientX;
-                const touchY = e.touches[0].clientY;
-                const deltaX = touchX - startX;
-                const deltaY = touchY - startY;
-
-                // LOCK MECHANISM: Determine if horizontal or vertical on first few px
-                if (!isHorizontalSwipe) {
-                    if (Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
-                        isHorizontalSwipe = true;
-                    } else if (Math.abs(deltaY) > 5) {
-                        // If it's more vertical than horizontal, cancel the drag
-                        isDragging = false;
-                        return;
-                    } else {
-                        // Waiting for more movement to decide
-                        return;
-                    }
-                }
-                
-                // We only allow dragging to the left (negative delta)
-                // Sidebar is at translateX(300) when open
-                currentX = Math.min(SB_OFFSET, Math.max(0, SB_OFFSET + deltaX));
-                
-                sidebar.style.transform = `translateX(${currentX}px)`;
-                
-                // Fade the scrim based on how much is closed (currentX/300)
-                scrim.style.opacity = currentX / SB_OFFSET;
-            }, { passive: true });
-
-            sidebar.addEventListener('touchend', () => {
-                if (!isDragging) return;
-                isDragging = false;
-                
-                // Re-enable transitions for snapping
-                sidebar.style.transition = 'transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)';
-                scrim.style.transition = 'opacity 0.4s ease';
-                
-                // If dragged more than 30%, close it
-                if (currentX < 200) {
-                    sidebar.style.transform = 'translateX(0px)';
-                    scrim.style.opacity = '0';
-                    setTimeout(() => {
-                        sidebar.classList.remove('open');
-                        document.body.classList.remove('sidebar-open');
-                        // Reset inline styles to let CSS take over
-                        sidebar.style.transform = '';
-                        sidebar.style.transition = '';
-                        scrim.style.opacity = '';
-                        scrim.style.transition = '';
-                    }, 400);
-                } else {
-                    // Snap back to open
-                    sidebar.style.transform = `translateX(${SB_OFFSET}px)`;
-                    scrim.style.opacity = '1';
-                    setTimeout(() => {
-                        sidebar.style.transition = '';
-                        scrim.style.transition = '';
-                    }, 400);
-                }
-            });
-
-            // Prevent sidebar clicks from bubbling to global close listeners
-            sidebar.addEventListener('click', (e) => {
-                e.stopPropagation();
-            });
+function initSidebarSwipe() {
+    const sb = document.getElementById('sidebar'); const scr = document.getElementById('sidebar-scrim');
+    let sX = 0, sY = 0, cX = 300, isD = false, isH = false;
+    if (!sb || !scr) return;
+    sb.addEventListener('touchstart', (e) => {
+        if (!sb.classList.contains('open') || window.innerWidth > 992) return;
+        sX = e.touches[0].clientX; sY = e.touches[0].clientY; cX = 300; isD = true; isH = false;
+        sb.style.transition = 'none'; scr.style.transition = 'none';
+    }, { passive: true });
+    sb.addEventListener('touchmove', (e) => {
+        if (!isD) return;
+        const tX = e.touches[0].clientX, tY = e.touches[0].clientY, dX = tX - sX, dY = tY - sY;
+        if (!isH) {
+            if (Math.abs(dX) > Math.abs(dY) * 1.5) isH = true;
+            else if (Math.abs(dY) > 5) { isD = false; return; }
+            else return;
         }
-
-        // --- Markdown & UI Utilities ---
-        function renderMarkdown(text) {
-            if (!text) return '';
-            try {
-                // Ensure marked is available
-                if (typeof marked === 'undefined') return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                
-                // Custom renderer to apply premium CSS classes to markdown elements
-                const renderer = new marked.Renderer();
-                renderer.image = function(href, title, text) {
-                    // Handle newer Marked.js versions where the first argument is a token object
-                    const actualHref = (typeof href === 'object') ? href.href : href;
-                    const actualText = (typeof href === 'object') ? href.text : text;
-                    return `<img src="${actualHref}" alt="${actualText}" class="chat-rendered-img" loading="lazy" onclick="openImageModal(this.src)">`;
-                };
-                
-                return marked.parse(text, { renderer: renderer });
-            } catch (e) {
-                console.error("Markdown Error:", e);
-                return text;
-            }
+        cX = Math.min(300, Math.max(0, 300 + dX));
+        sb.style.transform = `translateX(${cX}px)`; scr.style.opacity = cX / 300;
+    }, { passive: true });
+    sb.addEventListener('touchend', () => {
+        if (!isD) return; isD = false;
+        sb.style.transition = 'transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)'; scr.style.transition = 'opacity 0.4s ease';
+        if (cX < 200) {
+            sb.style.transform = 'translateX(0px)'; scr.style.opacity = '0';
+            setTimeout(() => { sb.classList.remove('open'); document.body.classList.remove('sidebar-open'); sb.style.transform = ''; sb.style.transition = ''; scr.style.opacity = ''; scr.style.transition = ''; }, 400);
+        } else {
+            sb.style.transform = 'translateX(300px)'; scr.style.opacity = '1';
+            setTimeout(() => { sb.style.transition = ''; scr.style.transition = ''; }, 400);
         }
+    });
+    sb.onclick = (e) => e.stopPropagation();
+}
 
-        function copyCode(btn) {
-            const pre = btn.closest('pre');
-            const code = pre.querySelector('code').innerText;
-            navigator.clipboard.writeText(code).then(() => {
-                const orig = btn.innerHTML;
-                btn.innerHTML = '<span>Copied!</span>';
-                setTimeout(() => btn.innerHTML = orig, 2000);
-            });
-        }
-
-        function downloadCode(btn, filename) {
-            const pre = btn.closest('pre');
-            const code = pre.querySelector('code').innerText;
-            const blob = new Blob([code], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename || 'code_snippet.txt';
-            a.click();
-            URL.revokeObjectURL(url);
-        }
+// renderMarkdown, copyCode, downloadCode → canonical versions live in utils.js

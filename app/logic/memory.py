@@ -75,21 +75,39 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
 
     results = collection.query(**query_args)
     
+    # FLAW 5 FIX: PASS 2: High-Recall Tool-Rule Search
+    # We always pull tool rules even with weak matches to ensure agent behavior is grounded.
+    rule_filter = {"$and": [{"user_id": uid}, {"type": "tool_rule"}]}
+    rule_results = collection.query(query_texts=[query_text], n_results=3, where=rule_filter)
+
     formatted_results = []
+    
+    # Add tool rules first (if they meet the wider 0.90 threshold)
+    if rule_results['documents']:
+        for i in range(len(rule_results['documents'][0])):
+            distance = rule_results['distances'][0][i] if 'distances' in rule_results else 0
+            if distance <= 0.90:  # Wider threshold for rules
+                formatted_results.append({
+                    "content": f"[SYSTEM_RULE] {rule_results['documents'][0][i]}",
+                    "metadata": rule_results['metadatas'][0][i],
+                    "distance": distance
+                })
+
+    # Add standard results (if they meet the strict 0.65 threshold)
     if results['documents']:
         for i in range(len(results['documents'][0])):
             distance = results['distances'][0][i] if 'distances' in results else 0
-            
-            # Semantic Guardrail: Reject if the match is too weak
-            if distance > threshold:
-                logger.debug(f"DEBUG: Rejecting Weak Memory (Dist: {distance:.2f})")
+            content = results['documents'][0][i]
+            # Deduplicate
+            if any(r["content"].endswith(content) for r in formatted_results):
                 continue
-
-            formatted_results.append({
-                "content": results['documents'][0][i],
-                "metadata": results['metadatas'][0][i],
-                "distance": distance
-            })
+                
+            if distance <= threshold:
+                formatted_results.append({
+                    "content": content,
+                    "metadata": results['metadatas'][0][i],
+                    "distance": distance
+                })
     return formatted_results
 
 def delete_memory(doc_id: str, user_id: str = None, clear: bool = False):
@@ -136,19 +154,25 @@ def warmup_memory():
 
 import threading
 threading.Thread(target=warmup_memory, daemon=True).start()
-def prune_stale_memories(days: int = 30):
+def prune_stale_memories(days: int = 30, user_id: str = None):
     """
     Removes memories older than X days to maintain high retrieval performance.
     Skips entries with metadata 'permanent': True.
     FIX #7: Also enforces a hard cap on total collection size.
     """
+    uid = user_id or user_context.get()
     MAX_MEMORY_ENTRIES = 10000  # Hard cap to prevent unbounded growth
     
     cutoff = time.time() - (days * 86400)
     try:
         # Phase 1: Prune stale entries
+        if uid:
+            where_filter = {"$and": [{"timestamp": {"$lt": cutoff}}, {"user_id": uid}]}
+        else:
+            where_filter = {"timestamp": {"$lt": cutoff}}
+            
         stale = collection.get(
-            where={"timestamp": {"$lt": cutoff}}
+            where=where_filter
         )
         
         if stale and stale['ids']:
