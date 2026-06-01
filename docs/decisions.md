@@ -14,6 +14,7 @@
 - The intent normalizer must preserve structured technical prompts instead of collapsing them into a single line; only ordinary prose should have whitespace compacted for routing.
 - The stop button now cancels the active backend job by job_id, and the chat stream exits early instead of awaiting the full worker future after cancellation.
 - Pasted code/logs that ask for explanation, syntax breakdown, summary, or description are direct chat requests; they must bypass tool/email routing unless the user explicitly asks to send, attach, edit files, run code, or execute another action.
+- Runtime theme changes must keep `data-theme` synchronized on both `<html>` and `<body>` because CSS uses ancestor theme selectors and JS visual effects observe the body attribute.
 
 This file records the current high-level architectural decisions.
 

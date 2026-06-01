@@ -51,9 +51,7 @@
 
 <body data-theme="dark"> <!-- 8. BODY: Contains all the visible contents of the website (text, images, cards, etc.). -->
     <script>
-        if (window.__initialThemeIsDark === false) {
-            document.body.setAttribute('data-theme', 'light');
-        }
+        document.body.setAttribute('data-theme', window.__initialThemeIsDark ? 'dark' : 'light');
     </script>
     <!-- Page Loader Overlay -->
     <div id="page-loader-overlay">

@@ -425,6 +425,20 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("https://example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
         self.assertNotIn("example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
 
+    def test_theme_runtime_updates_html_and_body_theme_attributes(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        ui_js = (root / "static" / "js" / "ui.js").read_text(encoding="utf-8")
+        template = (root / "templates" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("document.documentElement.setAttribute('data-theme', theme)", ui_js)
+        self.assertIn("document.body.setAttribute('data-theme', theme)", ui_js)
+        self.assertIn(
+            "document.body.setAttribute('data-theme', window.__initialThemeIsDark ? 'dark' : 'light')",
+            template,
+        )
+
     def test_upscale_status_returns_registry_ready(self):
         from app import main
 

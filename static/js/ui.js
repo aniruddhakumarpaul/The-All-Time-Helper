@@ -416,9 +416,11 @@ function closeNeuralContext() {
 }
 
 function setThemeUI(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
     document.body.setAttribute('data-theme', theme);
     const isDark = theme === 'dark';
-    document.getElementById('main-logo-img').src = isDark ? LOGO_DATA : LOGO_LIGHT_DATA;
+    const logo = document.getElementById('main-logo-img');
+    if (logo) logo.src = isDark ? LOGO_DATA : LOGO_LIGHT_DATA;
 }
 
 function handleDragStart(e) {
