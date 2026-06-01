@@ -8,6 +8,22 @@
 import { state } from './state.js';
 
 const HEADERS_BASE = { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '69420' };
+const DEFAULT_LOCAL_API_BASE = 'http://127.0.0.1:9000';
+
+function resolveApiBase() {
+    const explicit = typeof window !== 'undefined' ? window.__HELPER_API_BASE__ : '';
+    const stored = typeof window !== 'undefined' ? localStorage.getItem('helper_api_base_url') : '';
+    const candidate = (stored || explicit || '').toString().trim().replace(/\/+$/, '');
+    if (candidate) return candidate;
+    if (typeof window !== 'undefined' && window.location && window.location.protocol !== 'file:') {
+        return window.location.origin;
+    }
+    return DEFAULT_LOCAL_API_BASE;
+}
+
+function apiUrl(path) {
+    return new URL(path, resolveApiBase()).toString();
+}
 
 function getAuthHeaders() {
     const token = localStorage.getItem('helper_token_v2') || '';
@@ -43,7 +59,7 @@ async function handleAuth(type) {
         params = { email: document.getElementById('s-email').value || document.getElementById('l-email').value, otp: document.getElementById('v-otp').value };
     }
 
-    const res = await fetch('/' + type, { method: 'POST', headers: HEADERS_BASE, body: JSON.stringify(params) });
+    const res = await fetch(apiUrl('/' + type), { method: 'POST', headers: HEADERS_BASE, body: JSON.stringify(params) });
     return await res.json();
 }
 
@@ -54,7 +70,7 @@ async function handleAuth(type) {
  * @returns {Response} Raw fetch response for streaming
  */
 async function streamChat(payload, signal) {
-    const res = await fetch('/chat', {
+    const res = await fetch(apiUrl('/chat'), {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify(payload),
@@ -69,7 +85,7 @@ async function streamChat(payload, signal) {
 async function fetchChats() {
     const token = localStorage.getItem('helper_token_v2');
     if (!token) return null;
-    const res = await fetch('/get_chats', { headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' } });
+    const res = await fetch(apiUrl('/get_chats'), { headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' } });
     checkAuthStatus(res);
     return await res.json();
 }
@@ -82,7 +98,7 @@ async function syncChats(chats) {
     if (!token) return;
     let res;
     try {
-        res = await fetch('/sync_chats', {
+        res = await fetch(apiUrl('/sync_chats'), {
             method: 'POST',
             headers: getAuthHeaders(),
             body: JSON.stringify(chats)
@@ -97,7 +113,7 @@ async function syncChats(chats) {
  * Retrieve neural context via drag-drop.
  */
 async function retrieveContext(text) {
-    const res = await fetch('/retrieve_context', {
+    const res = await fetch(apiUrl('/retrieve_context'), {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ text, n: 3 })
@@ -110,7 +126,7 @@ async function retrieveContext(text) {
  * Check upscale job status.
  */
 async function checkUpscaleStatus(jobId) {
-    const res = await fetch(`/api/upscale/status/${jobId}`);
+    const res = await fetch(apiUrl(`/api/upscale/status/${jobId}`));
     checkAuthStatus(res);
     return await res.json();
 }
@@ -119,7 +135,7 @@ async function checkUpscaleStatus(jobId) {
  * Send an email directly via the backend API.
  */
 async function sendEmailDirect(recipient, subject, body, tone, attachmentContent = null, attachmentFilename = 'report.txt', adminKey = null) {
-    const res = await fetch('/api/send_email_direct', {
+    const res = await fetch(apiUrl('/api/send_email_direct'), {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
@@ -141,7 +157,7 @@ async function sendEmailDirect(recipient, subject, body, tone, attachmentContent
  */
 async function cancelChatJob(jobId) {
     if (!jobId) return null;
-    const res = await fetch('/cancel_chat_job', {
+    const res = await fetch(apiUrl('/cancel_chat_job'), {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ job_id: jobId })
@@ -154,7 +170,7 @@ async function cancelChatJob(jobId) {
  * Render email preview HTML from the backend API.
  */
 async function renderEmailPreview(body, tone) {
-    const res = await fetch('/api/render_email_preview', {
+    const res = await fetch(apiUrl('/api/render_email_preview'), {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({ body, tone })

@@ -211,7 +211,9 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
     if (r === 'b') {
         renderBotMessage(textEl, c, idx);
     }
-    div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    if (typeof hljs !== 'undefined') {
+        div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    }
     document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
     if (mName) console.log(`DEBUG: Rendered watermark for ${mName}`);
     if (r === 'b') checkAuthMode();
@@ -283,25 +285,12 @@ function saveRename(id, val) {
 function filterHist(q) { state.currentSearch = q; renderHist(); }
 
 function checkAuthMode() {
-    console.log("DEBUG: checkAuthMode running for activeId:", state.activeId);
     const chat = state.chats.find(c => c.id === state.activeId);
     const promptIn = document.getElementById('prompt');
-    if (!chat || !promptIn) { 
-        console.warn("DEBUG: checkAuthMode failed - no chat or promptEl"); 
-        // Fallback: check last bot message in the DOM if state is weird
-        const allMsgs = document.querySelectorAll('.b-msg .txt');
-        if (allMsgs.length > 0) {
-            const lastTxt = allMsgs[allMsgs.length - 1].innerText.toLowerCase();
-            if (["auth_required", "admin key", "provide your key"].some(kw => lastTxt.includes(kw))) {
-                applyAuthUI(promptIn);
-                return;
-            }
-        }
-        return; 
-    }
+    if (!chat || !promptIn) return;
     const lastMsg = chat.ms.length > 0 ? chat.ms[chat.ms.length - 1] : null;
     const authKeywords = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key", "auth_required", "admin key is missing", "incorrect admin key", "provide your admin key"];
-    const needsAuth = lastMsg && lastMsg.r === 'b' && authKeywords.some(kw => lastMsg.c.toLowerCase().includes(kw));
+    const needsAuth = lastMsg && lastMsg.r === 'b' && lastMsg.c && typeof lastMsg.c === 'string' && authKeywords.some(kw => lastMsg.c.toLowerCase().includes(kw));
     
     if (needsAuth) {
         applyAuthUI(promptIn);
@@ -344,7 +333,9 @@ function cancelEdit(idx) {
     if (txtDiv) {
         if (msg.r === 'b') {
             txtDiv.innerHTML = window.renderMarkdown(msg.c);
-            txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+            if (typeof hljs !== 'undefined') {
+                txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+            }
         } else {
             const parsed = window.parseAttachedContexts(msg.c);
             txtDiv.innerHTML = parsed.cleanText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -766,7 +757,9 @@ function renderBotMessage(el, content, idx) {
         }
     }
     
-    el.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    if (typeof hljs !== 'undefined') {
+        el.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+    }
 }
 
 const ui = {

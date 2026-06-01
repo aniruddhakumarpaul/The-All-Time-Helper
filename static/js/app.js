@@ -2,9 +2,9 @@
  * app.js — ES6 Module Entry Point & Orchestrator
  * Imports modular components. Contains send/load/save orchestration from main_v3.js.
  */
-import { state } from './state.js?v=2';
-import { api } from './api.js?v=2';
-import { ui } from './ui.js?v=204';
+import { state } from './state.js';
+import { api } from './api.js';
+import { ui } from './ui.js';
 import { mascot } from './mascot.js';
 
 const CHAT_SYNC_DEBOUNCE_MS = 750;
@@ -260,6 +260,8 @@ function handleChatKey(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
     else if (e.key === 'Escape') startNewChat();
 }
+
+window.handleChatKey = handleChatKey;
 
 // --- Core: Start New Chat ---
 function startNewChat() {
@@ -658,7 +660,9 @@ async function send() {
             chat.ms.push({ r: 'b', c: fullTxt, m: mName });
         }
         ui.renderBotMessage(bTxt, fullTxt, chat.ms.length);
-        bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+        if (typeof hljs !== 'undefined') {
+            bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+        }
         touchChat(chat.id);
         requestChatPersist({ immediate: true });
     } catch (e) {
@@ -1003,13 +1007,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const savedUser = localStorage.getItem('helper_user_v2');
         if (savedUser) {
-            state.set('user', JSON.parse(savedUser));
-            document.getElementById('auth-overlay').style.display = 'none';
-            await loadUserChats();
-            if (localStorage.getItem('helper_active_modal_v2') === 'settings') ui.openSettings();
-            ui.updUI();
-            if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
-            ui.smartFocus('prompt');
+            try {
+                state.set('user', JSON.parse(savedUser));
+                document.getElementById('auth-overlay').style.display = 'none';
+                await loadUserChats();
+                if (localStorage.getItem('helper_active_modal_v2') === 'settings') ui.openSettings();
+                ui.updUI();
+                if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
+                ui.smartFocus('prompt');
+            } catch (err) {
+                console.warn('Failed to restore saved user state, clearing local auth cache:', err);
+                localStorage.removeItem('helper_user_v2');
+                localStorage.removeItem('helper_token_v2');
+                localStorage.removeItem('helper_active_chat_v2');
+                localStorage.removeItem('helper_active_modal_v2');
+                document.getElementById('auth-overlay').style.display = 'flex';
+                ui.renderHist();
+                document.getElementById('l-email')?.focus();
+            }
         } else { document.getElementById('l-email').focus(); ui.renderHist(); }
 
         // Mouse tracking

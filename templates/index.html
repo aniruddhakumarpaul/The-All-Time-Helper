@@ -21,7 +21,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     
     <!-- Local Stylesheets: Custom CSS styles specifically designed for this application -->
-    <link rel="stylesheet" href="/static/css/style_v3.css?v=149">
+    <link rel="stylesheet" href="/static/css/style_v3.css?v=150">
     <link rel="stylesheet" href="/static/css/animations.css?v=2">
     <meta name="referrer" content="no-referrer">
     <link rel="preload" href="/static/img/logo.png" as="image">
@@ -30,6 +30,7 @@
     <!-- Inline SCRIPT: Small JavaScript that runs immediately before the page loads to prevent "flash" of unauth states and themes -->
     <script>
         (function () {
+            window.__HELPER_API_BASE__ = {{ api_base_url | tojson }};
             if (localStorage.getItem('helper_user_v2')) {
                 document.documentElement.classList.add('is-authenticated');
             }
@@ -340,7 +341,7 @@
                         </svg>
                     </button>
 
-                    <textarea id="prompt" placeholder="Ask me anything..." onkeydown="handleChatKey(event)"
+                    <textarea id="prompt" placeholder="Ask me anything..." onkeydown="window.handleChatKey(event)"
                         rows="1"></textarea>
 
                     <button id="main-send-btn" class="action-btn send-btn" onclick="send()">
@@ -512,7 +513,7 @@
     <script src="/static/js/particles.js?v=142"></script>
     <script src="/static/js/palette.js?v=142"></script>
     <script src="/static/js/utils.js?v=3"></script>
-    <script type="module" src="/static/js/app.js?v=207"></script>
+    <script type="module" src="/static/js/app.js?v=208"></script>
 </body>
 
 </html>

@@ -199,6 +199,71 @@ def _looks_like_structured_technical_text(text: str) -> bool:
     return False
 
 
+def _is_pasted_technical_explanation_request(text: str) -> bool:
+    """Detect pasted code/logs that ask for explanation rather than action."""
+    if not text:
+        return False
+
+    normalized = _preserve_structured_text(clean_user_prompt(text))
+    if not _looks_like_structured_technical_text(normalized):
+        return False
+
+    lower = normalized.lower()
+    explanation_patterns = [
+        r"\bexplain\b",
+        r"\bsyntax\b",
+        r"\bwhy\s+this\s+syntax\b",
+        r"\bbreak\s+down\b",
+        r"\bsummarize\b",
+        r"\bdescribe\b",
+        r"\bwhat\s+does\s+.*\bdo\b",
+        r"\btell\s+me\s+about\b",
+    ]
+    if not any(re.search(pattern, lower, flags=re.IGNORECASE | re.DOTALL) for pattern in explanation_patterns):
+        return False
+
+    explicit_action_patterns = [
+        r"\b(send|draft)\s+(an?\s+)?email\b",
+        r"\bemail\s+(this|it|the|to)\b",
+        r"[\w\.-]+@[\w\.-]+\.\w+",
+        r"\battach\s+(this|it|the|above)\b",
+        r"\b(save|write)\s+(this|it|the|above)?\s*(to|into)\s+(a\s+)?file\b",
+        r"\b(create|modify|edit|update|delete)\s+(a\s+)?file\b",
+        r"\b(run|execute)\s+(this|it|the|above|code|script)\b",
+        r"\bfix\s+(this|the)\s+(bug|code|script|error)\b",
+        r"\bdebug\s+(this|the)\s+(code|script|error)\b",
+        r"\bimplement\s+(this|the|a)\b",
+    ]
+    return not any(re.search(pattern, lower, flags=re.IGNORECASE | re.DOTALL) for pattern in explicit_action_patterns)
+
+
+def _looks_like_raw_tool_call_leak(result: str) -> bool:
+    """Detect Python-style or fenced tool-call plans leaked as final prose."""
+    if not result:
+        return False
+
+    text = str(result).strip()
+    if "EMAIL_DRAFT_PAYLOAD:" in text:
+        return False
+
+    tool_names = [
+        "send_email_tool",
+        "image_generate_tool",
+        "image_search_tool",
+        "web_search_text",
+        "recall_memory",
+        "archive_insight",
+    ]
+    tool_pattern = "|".join(re.escape(name) for name in tool_names)
+    leak_patterns = [
+        rf"^\s*\[\s*(?:{tool_pattern})\s*\(",
+        rf"^\s*(?:{tool_pattern})\s*\(",
+        rf"```(?:tool_code|python)?\s*\[\s*(?:{tool_pattern})\s*\(",
+        rf"```(?:tool_code|python)?\s*(?:{tool_pattern})\s*\(",
+    ]
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL) for pattern in leak_patterns)
+
+
 # Helper to keep code DRY
 def _strip_base64_prefix(img_base64: str) -> str:
     return img_base64.split(",")[1] if img_base64 and "," in img_base64 else img_base64
@@ -1038,6 +1103,15 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
         history_text = " ".join([(m.get("content") or m.get("c") or "").lower() for m in history[-5:]])
     is_sensitive = any(kw in p or kw in history_text for kw in ['mental health', 'medical diagnosis', 'suicide', 'depressed', 'anxiety therapy', 'clinical treatment', 'legal advice'])
 
+    if _is_pasted_technical_explanation_request(clean_p):
+        logger.info("[Intent Classifier] Direct route forced for pasted technical explanation request")
+        return {
+            "is_sensitive": is_sensitive,
+            "requires_tools": False,
+            "complexity": "direct",
+            "is_local": not _is_cloud_model(target_model)
+        }
+
     # Try structured LLM Prompt Analyzer first
     analysis = _analyze_prompt_via_llm(clean_p, target_model)
     if analysis:
@@ -1232,7 +1306,7 @@ def _assemble_context(user_prompt, img_data, history, intent, user_id=None, stat
         "resolved_email": resolved_email
     }
 
-def _harden_result(result, sys_config, target_model="gemma4:e2b"):
+def _harden_result(result, sys_config, target_model="gemma4:e2b", intent=None, user_prompt: str = None):
     """Stage 4: Post-processing and strict enforcement."""
     if not result: return result
     
@@ -1240,6 +1314,19 @@ def _harden_result(result, sys_config, target_model="gemma4:e2b"):
     for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
         if marker in str(result):
             result = str(result).split(marker)[0].strip()
+
+    if (
+        intent
+        and not intent.get("requires_tools")
+        and intent.get("complexity") == "direct"
+        and _is_pasted_technical_explanation_request(user_prompt or "")
+        and _looks_like_raw_tool_call_leak(str(result))
+    ):
+        logger.warning("[Agents] Suppressed raw tool-call leak for direct pasted technical explanation request")
+        return (
+            "I could not produce a valid direct explanation because the model returned an invalid tool-call plan. "
+            "Please retry the same explanation request."
+        )
             
     # Fallback email JSON detection - strictly only for local models
     is_local = True
@@ -2326,7 +2413,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
 
     # 6. Result Hardening
-    hardened = _harden_result(result, sys_config, target_model=target_model)
+    hardened = _harden_result(result, sys_config, target_model=target_model, intent=intent, user_prompt=user_prompt)
     from app.logic.bus import tool_result_bus, job_id_context
     jid = job_id_context.get()
     if jid:

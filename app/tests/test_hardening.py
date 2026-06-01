@@ -216,6 +216,51 @@ class HardeningTests(unittest.TestCase):
             self.assertFalse(intent["requires_tools"])
             self.assertEqual(intent["complexity"], "direct")
 
+    def test_combined_pasted_code_explanation_overrides_bad_prompt_analyzer(self):
+        from app.logic import agents
+
+        prompt = (
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "def run_indexing():\n"
+            "    print('hello world')\n"
+            "\n"
+            "explain the above in details and syntax by syntax and also tell why this syntax is used."
+        )
+        bad_analysis = {"requires_tools": True, "complexity": "swarm", "category": "code"}
+
+        with patch.object(agents, "_analyze_prompt_via_llm", return_value=bad_analysis) as analyzer:
+            intent = agents._detect_intent(prompt, "gemma4-openrouter", history=[])
+
+        analyzer.assert_not_called()
+        self.assertFalse(intent["requires_tools"])
+        self.assertEqual(intent["complexity"], "direct")
+
+    def test_direct_pasted_code_explanation_suppresses_raw_tool_call_leak(self):
+        from app.logic import agents
+
+        prompt = (
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "def run_indexing():\n"
+            "    print('hello world')\n"
+            "\n"
+            "explain the above in details and syntax by syntax and also tell why this syntax is used."
+        )
+        intent = {"requires_tools": False, "complexity": "direct", "is_local": False}
+        raw = (
+            "[send_email_tool(recipient='user@example.com', "
+            "subject='Detailed Explanation', body='Here is the explanation.')]"
+        )
+
+        result = agents._harden_result(raw, None, target_model="gemma4-openrouter", intent=intent, user_prompt=prompt)
+
+        self.assertNotIn("send_email_tool", result)
+        self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
+        self.assertIn("invalid tool-call plan", result)
+
     def test_email_template_field_update_returns_widget_not_tool_json(self):
         from app.logic import agents
         import json
