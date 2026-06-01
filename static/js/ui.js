@@ -476,22 +476,59 @@ function renderBotMessage(el, content, idx) {
                 window.initUpscaleImagePolling(el);
             }
             
-            const attachmentContent = draft.attachment_content || null;
-            const attachmentFilename = draft.attachment_filename || 'report.txt';
-            const attachmentText = attachmentContent ? String(attachmentContent).trim() : '';
-            const attachmentIsUrl = /^https?:\/\//i.test(attachmentText);
-            const attachmentIsDataUrl = /^data:/i.test(attachmentText);
-            const attachmentLooksBase64 = !attachmentIsUrl && !attachmentIsDataUrl && attachmentText.length >= 64 && /^[A-Za-z0-9+/=\s]+$/.test(attachmentText);
-            const attachmentCanPreview = attachmentIsDataUrl || attachmentLooksBase64;
-            const attachmentSizeLabel = attachmentIsUrl
-                ? 'not downloaded'
-                : attachmentCanPreview
-                    ? `${Math.round((attachmentIsDataUrl ? attachmentText.length : attachmentText.replace(/\s/g, '').length * 0.75) / 10.24) / 100} KB`
-                    : 'invalid data';
-            const attachmentExt = (attachmentFilename.split('.').pop() || 'png').toLowerCase();
-            const attachmentPreviewSrc = attachmentIsDataUrl
-                ? attachmentText
-                : `data:image/${attachmentExt === 'jpg' ? 'jpeg' : attachmentExt};base64,${attachmentText}`;
+            const normalizeDraftAttachments = () => {
+                const rawAttachments = Array.isArray(draft.attachments) ? draft.attachments : [];
+                const normalized = rawAttachments
+                    .map((attachment, index) => ({
+                        content: attachment?.content || attachment?.attachment_content || '',
+                        filename: attachment?.filename || attachment?.attachment_filename || `attachment_${index + 1}.png`
+                    }))
+                    .filter(attachment => String(attachment.content || '').trim());
+                if (!normalized.length && draft.attachment_content) {
+                    normalized.push({
+                        content: draft.attachment_content,
+                        filename: draft.attachment_filename || 'report.txt'
+                    });
+                }
+                return normalized;
+            };
+            const attachmentList = normalizeDraftAttachments();
+            const primaryAttachment = attachmentList[0] || null;
+            const attachmentContent = primaryAttachment?.content || null;
+            const attachmentFilename = primaryAttachment?.filename || draft.attachment_filename || 'report.txt';
+            const attachmentRowsHtml = attachmentList.map((attachment) => {
+                const attachmentText = String(attachment.content || '').trim();
+                const filename = attachment.filename || 'attachment.png';
+                const attachmentIsUrl = /^https?:\/\//i.test(attachmentText);
+                const attachmentIsDataUrl = /^data:/i.test(attachmentText);
+                const attachmentLooksBase64 = !attachmentIsUrl && !attachmentIsDataUrl && attachmentText.length >= 64 && /^[A-Za-z0-9+/=\s]+$/.test(attachmentText);
+                const attachmentCanPreview = attachmentIsDataUrl || attachmentLooksBase64;
+                const attachmentSizeLabel = attachmentIsUrl
+                    ? 'not downloaded'
+                    : attachmentCanPreview
+                        ? `${Math.round((attachmentIsDataUrl ? attachmentText.length : attachmentText.replace(/\s/g, '').length * 0.75) / 10.24) / 100} KB`
+                        : 'invalid data';
+                const attachmentExt = (filename.split('.').pop() || 'png').toLowerCase();
+                const attachmentPreviewSrc = attachmentIsDataUrl
+                    ? attachmentText
+                    : `data:image/${attachmentExt === 'jpg' ? 'jpeg' : attachmentExt};base64,${attachmentText}`;
+                return `
+                    <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
+                        <div class="email-attachment-chip" style="display: flex; align-items: center; gap: 8px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); padding: 8px 12px; border-radius: 10px; color: var(--text-main); font-size: 0.85rem;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color: var(--accent-blue);">
+                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                            </svg>
+                            <span style="font-weight: 500; font-family: 'Outfit', sans-serif;">${escapeHTML(filename)}</span>
+                            <span style="opacity: 0.6; font-size: 0.75rem;">(${attachmentSizeLabel})</span>
+                        </div>
+                        ${attachmentCanPreview && /\.(jpe?g|png|gif|webp|svg)$/i.test(filename) ? `
+                            <div class="email-attachment-preview" style="max-width: 150px; border-radius: 8px; overflow: hidden; border: 1px solid var(--glass-border); margin-top: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15);">
+                                <img src="${attachmentPreviewSrc}" style="width: 100%; height: auto; display: block;">
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
             
             const card = document.createElement('div');
             card.className = 'email-widget-container';
@@ -520,22 +557,11 @@ function renderBotMessage(el, content, idx) {
                     <label>Body</label>
                     <textarea class="email-textarea email-body-input">${escapeHTML(draft.body || '')}</textarea>
                 </div>
-                ${attachmentContent ? `
+                ${attachmentList.length ? `
                 <div class="email-field-row">
-                    <label>Attachment</label>
+                    <label>${attachmentList.length > 1 ? 'Attachments' : 'Attachment'}</label>
                     <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start;">
-                        <div class="email-attachment-chip" style="display: flex; align-items: center; gap: 8px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); padding: 8px 12px; border-radius: 10px; color: var(--text-main); font-size: 0.85rem;">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color: var(--accent-blue);">
-                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-                            </svg>
-                            <span style="font-weight: 500; font-family: 'Outfit', sans-serif;">${escapeHTML(attachmentFilename)}</span>
-                            <span style="opacity: 0.6; font-size: 0.75rem;">(${attachmentSizeLabel})</span>
-                        </div>
-                        ${attachmentCanPreview && /\.(jpe?g|png|gif|webp|svg)$/i.test(attachmentFilename) ? `
-                            <div class="email-attachment-preview" style="max-width: 150px; border-radius: 8px; overflow: hidden; border: 1px solid var(--glass-border); margin-top: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.15);">
-                                <img src="${attachmentPreviewSrc}" style="width: 100%; height: auto; display: block;">
-                            </div>
-                        ` : ''}
+                        ${attachmentRowsHtml}
                     </div>
                 </div>
                 ` : ''}
@@ -596,6 +622,7 @@ function renderBotMessage(el, content, idx) {
                     // Update the draft payload directly
                     draft.attachment_content = base64;
                     draft.attachment_filename = filename;
+                    draft.attachments = [{ content: base64, filename }];
                     if (window.updateSavedBotMessage) {
                         window.updateSavedBotMessage(idx, `EMAIL_DRAFT_PAYLOAD:${JSON.stringify(draft)}`, { immediate: false });
                     }
@@ -660,7 +687,8 @@ function renderBotMessage(el, content, idx) {
                 card.querySelectorAll('.email-input, .email-textarea').forEach(el => el.disabled = true);
                 
                 try {
-                    const res = await api.sendEmailDirect(toVal, subjectVal, bodyVal, toneVal, attachmentContent, attachmentFilename);
+                    const attachmentsForSend = Array.isArray(draft.attachments) && draft.attachments.length ? draft.attachments : null;
+                    const res = await api.sendEmailDirect(toVal, subjectVal, bodyVal, toneVal, attachmentContent, attachmentFilename, null, attachmentsForSend);
                     if (res.success) {
                         const successHtml = `
                             <div class="email-success-alert">
@@ -689,7 +717,8 @@ function renderBotMessage(el, content, idx) {
                                 sendBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px;margin-right:5px;border-width:2px;"></div> Sending...';
                                 card.querySelectorAll('.email-input, .email-textarea').forEach(el => el.disabled = true);
                                 try {
-                                    const retryRes = await api.sendEmailDirect(toVal, subjectVal, bodyVal, toneVal, attachmentContent, attachmentFilename, adminKey);
+                                    const attachmentsForRetry = Array.isArray(draft.attachments) && draft.attachments.length ? draft.attachments : null;
+                                    const retryRes = await api.sendEmailDirect(toVal, subjectVal, bodyVal, toneVal, attachmentContent, attachmentFilename, adminKey, attachmentsForRetry);
                                     if (retryRes.success) {
                                         const successHtml = `
                                             <div class="email-success-alert">

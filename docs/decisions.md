@@ -15,6 +15,10 @@
 - The stop button now cancels the active backend job by job_id, and the chat stream exits early instead of awaiting the full worker future after cancellation.
 - Pasted code/logs that ask for explanation, syntax breakdown, summary, or description are direct chat requests; they must bypass tool/email routing unless the user explicitly asks to send, attach, edit files, run code, or execute another action.
 - Runtime theme changes must keep `data-theme` synchronized on both `<html>` and `<body>` because CSS uses ancestor theme selectors and JS visual effects observe the body attribute.
+- Email-template attachment requests using frontend attached-context blocks should produce `EMAIL_DRAFT_PAYLOAD:` directly; raw `send_email_tool` JSON from cloud agents is a recoverable tool-plan leak and must be converted to the email widget payload.
+- Page refresh starts the prompt composer fresh: pending prompt text, drag/drop attached contexts, and unsent image attachments are cleared on frontend startup while saved chat history remains persisted.
+- Prompt-bar drag/drop contexts are bounded before send to keep multi-context requests model-safe; current submitted prompts are skipped when building backend history context to avoid duplicating attached-context payloads.
+- Email image-attachment drafts support a backward-compatible `attachments` array for multi-image requests while preserving the legacy first-attachment fields used by older widgets and send paths.
 
 This file records the current high-level architectural decisions.
 

@@ -8,6 +8,9 @@ import { ui } from './ui.js';
 import { mascot } from './mascot.js';
 
 const CHAT_SYNC_DEBOUNCE_MS = 750;
+const MAX_ATTACHED_CONTEXTS = 6;
+const MAX_CONTEXT_CHARS = 6000;
+const MAX_TOTAL_CONTEXT_CHARS = 18000;
 let persistTimer = null;
 let cloudSyncChain = Promise.resolve();
 
@@ -56,6 +59,55 @@ function writeDeletedChatIds(ids) {
     const unique = Array.from(new Set((ids || []).filter(id => typeof id === 'string')));
     if (unique.length) localStorage.setItem(key, JSON.stringify(unique));
     else localStorage.removeItem(key);
+}
+
+function clearPendingComposerDrafts() {
+    Object.keys(localStorage)
+        .filter(key => key.startsWith('helper_pending_prompt_'))
+        .forEach(key => localStorage.removeItem(key));
+    state.attachedContexts = [];
+    state.currentImages = [];
+}
+
+function normalizeAttachedContextText(text) {
+    return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+}
+
+function attachedContextTotalChars() {
+    return (state.attachedContexts || []).reduce((total, ctx) => total + String(ctx.text || '').length, 0);
+}
+
+function addAttachedContext(text, { render = true } = {}) {
+    const normalized = normalizeAttachedContextText(text);
+    if (!normalized) return false;
+
+    state.attachedContexts = state.attachedContexts || [];
+    if (state.attachedContexts.some(ctx => normalizeAttachedContextText(ctx.text) === normalized)) {
+        if (render) renderAttachmentsPreview();
+        return true;
+    }
+
+    if (state.attachedContexts.length >= MAX_ATTACHED_CONTEXTS) {
+        alert(`You can attach up to ${MAX_ATTACHED_CONTEXTS} context items at a time.`);
+        return false;
+    }
+
+    const currentTotal = attachedContextTotalChars();
+    const remainingTotal = Math.max(0, MAX_TOTAL_CONTEXT_CHARS - currentTotal);
+    if (remainingTotal <= 0) {
+        alert('Attached context is already at the safe limit for one model request.');
+        return false;
+    }
+
+    const limit = Math.min(MAX_CONTEXT_CHARS, remainingTotal);
+    const clipped = normalized.length > limit
+        ? `${normalized.slice(0, limit).trimEnd()}\n\n[Context truncated to keep this request within the model limit.]`
+        : normalized;
+
+    const id = `text-${Date.now()}-${Math.random()}`;
+    state.attachedContexts.push({ id, text: clipped });
+    if (render) renderAttachmentsPreview();
+    return true;
 }
 
 function normalizeMessageContent(content) {
@@ -129,20 +181,33 @@ function formatMessageForExport(message) {
     try {
         const draft = JSON.parse(emailJson);
         const prefix = content.split('EMAIL_DRAFT_PAYLOAD:', 1)[0].trim();
-        const attachmentContent = draft.attachment_content ? String(draft.attachment_content) : '';
-        const attachmentName = draft.attachment_filename || 'attachment';
+        const attachmentList = Array.isArray(draft.attachments) && draft.attachments.length
+            ? draft.attachments.map((attachment, index) => ({
+                content: attachment?.content || attachment?.attachment_content || '',
+                filename: attachment?.filename || attachment?.attachment_filename || `attachment_${index + 1}`
+            })).filter(attachment => String(attachment.content || '').trim())
+            : (draft.attachment_content ? [{
+                content: draft.attachment_content,
+                filename: draft.attachment_filename || 'attachment'
+            }] : []);
         let attachmentLine = 'Attachment: none';
-        if (attachmentContent) {
-            if (/^https?:\/\//i.test(attachmentContent)) {
-                attachmentLine = `Attachment: ${attachmentName} (URL)`;
-            } else if (/^data:/i.test(attachmentContent)) {
-                attachmentLine = `Attachment: ${attachmentName} (embedded data URL omitted from export)`;
-            } else if (attachmentContent.length > 256 && /^[A-Za-z0-9+/=\s]+$/.test(attachmentContent)) {
-                const approxKb = Math.round((attachmentContent.replace(/\s/g, '').length * 0.75) / 10.24) / 100;
-                attachmentLine = `Attachment: ${attachmentName} (${approxKb} KB embedded file omitted from export)`;
-            } else {
-                attachmentLine = `Attachment: ${attachmentName}`;
-            }
+        if (attachmentList.length) {
+            const attachmentSummaries = attachmentList.map((attachment) => {
+                const attachmentContent = String(attachment.content || '');
+                const attachmentName = attachment.filename || 'attachment';
+                if (/^https?:\/\//i.test(attachmentContent)) {
+                    return `${attachmentName} (URL)`;
+                }
+                if (/^data:/i.test(attachmentContent)) {
+                    return `${attachmentName} (embedded data URL omitted from export)`;
+                }
+                if (attachmentContent.length > 256 && /^[A-Za-z0-9+/=\s]+$/.test(attachmentContent)) {
+                    const approxKb = Math.round((attachmentContent.replace(/\s/g, '').length * 0.75) / 10.24) / 100;
+                    return `${attachmentName} (${approxKb} KB embedded file omitted from export)`;
+                }
+                return attachmentName;
+            });
+            attachmentLine = `${attachmentList.length > 1 ? 'Attachments' : 'Attachment'}: ${attachmentSummaries.join(', ')}`;
         }
         return [
             prefix,
@@ -298,7 +363,7 @@ function loadChat(id) {
     ui.renderHist();
     if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) ui.toggleSidebar();
     
-    // Restore pending prompt if one was typed but not sent
+    // Restore pending prompt if one was typed but not sent during the current page session.
     const pendingPrompt = localStorage.getItem('helper_pending_prompt_' + id);
     const promptEl = document.getElementById('prompt');
     if (promptEl) {
@@ -490,10 +555,7 @@ async function submitEdit(idx, container) {
         if (parsed.contexts && parsed.contexts.length > 0) {
             parsed.contexts.forEach(ctx => {
                 if (!state.attachedContexts.some(c => c.text === ctx.text)) {
-                    state.attachedContexts.push({
-                        id: `text-${Date.now()}-${Math.random()}`,
-                        text: ctx.text
-                    });
+                    addAttachedContext(ctx.text, { render: false });
                 }
             });
         }
@@ -965,6 +1027,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         console.log("DEBUG: app.js orchestrator initializing...");
         initTheme();
+        clearPendingComposerDrafts();
         
         // Initialize Default Email Tone
         const currentTone = state.get('emailTone') || 'modern';
@@ -1107,12 +1170,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                 // Case 3: Drop text (from message drag handle or other source)
                 if (textVal) {
-                    const id = `text-${Date.now()}-${Math.random()}`;
-                    state.attachedContexts = state.attachedContexts || [];
-                    state.attachedContexts.push({ id, text: textVal });
-                    renderAttachmentsPreview();
-                    const sendBtn = document.getElementById('main-send-btn');
-                    if (sendBtn) sendBtn.classList.add('pulsing');
+                    if (addAttachedContext(textVal)) {
+                        const sendBtn = document.getElementById('main-send-btn');
+                        if (sendBtn) sendBtn.classList.add('pulsing');
+                    }
                 }
             });
         }

@@ -31,6 +31,7 @@ class SendEmailRequest(BaseModel):
     tone: str = "modern"
     attachment_content: Optional[str] = None
     attachment_filename: Optional[str] = "report.txt"
+    attachments: Optional[List[dict]] = None
     admin_key: Optional[str] = None
 
 class PreviewEmailRequest(BaseModel):
@@ -322,7 +323,8 @@ def send_email_direct(req: SendEmailRequest, current_user: str = Depends(get_cur
             body=req.body,
             tone=req.tone,
             attachment_content=req.attachment_content,
-            attachment_filename=req.attachment_filename
+            attachment_filename=req.attachment_filename,
+            attachments=req.attachments
         )
         
         # Determine status

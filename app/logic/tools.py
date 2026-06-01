@@ -111,6 +111,8 @@ def _filename_with_detected_extension(filename: str, detected_ext: Optional[str]
 def _attachment_size_bytes(attachment_content: Optional[str]) -> int:
     if not attachment_content:
         return 0
+    if isinstance(attachment_content, list):
+        return sum(_attachment_size_bytes(item.get("content") if isinstance(item, dict) else item) for item in attachment_content)
     content = str(attachment_content).strip()
     try:
         if is_base64(content):
@@ -118,6 +120,87 @@ def _attachment_size_bytes(attachment_content: Optional[str]) -> int:
     except Exception:
         pass
     return len(content.encode("utf-8"))
+
+
+def _attachment_label(attachments: list, fallback_filename: str = "report.txt") -> str:
+    if not attachments:
+        return f"{fallback_filename} (0 bytes)"
+    return ", ".join(
+        f"{att.get('filename') or fallback_filename} ({_attachment_size_bytes(att.get('content'))} bytes)"
+        for att in attachments
+        if isinstance(att, dict)
+    )
+
+
+def _prepare_attachment(content: Any, filename: str = "report.txt", fallback: str = "attachment") -> Optional[dict]:
+    if content is None or len(str(content).strip()) == 0:
+        return None
+    content_str = str(content).strip()
+    attachment_filename = filename or "report.txt"
+
+    markdown_match = re.match(r'^!\[([^\]]*)\]\(([^)]+)\)$', content_str)
+    if markdown_match:
+        alt_text = markdown_match.group(1)
+        content_str = markdown_match.group(2)
+        if (not attachment_filename or attachment_filename == "report.txt") and alt_text:
+            clean_alt = re.sub(r'[^\w\s]', '_', alt_text).strip().replace(' ', '_')
+            attachment_filename = f"{clean_alt[:30]}.png"
+
+    if content_str.startswith("http://") or content_str.startswith("https://"):
+        img_b64, detected_ext, error = _download_image_attachment(content_str)
+        if not img_b64:
+            logger.error(f"[Email Attachment] Error fetching URL {content_str}: {error}")
+            from app.logic.exceptions import AgentFastExit
+            raise AgentFastExit(f"ERROR: Failed to download image attachment bytes from URL: {error}")
+        content_str = img_b64
+        attachment_filename = _filename_with_detected_extension(
+            attachment_filename,
+            detected_ext,
+            fallback=f"{fallback}_{int(time.time())}",
+        )
+    elif content_str.startswith("/static/") or content_str.startswith("static/"):
+        local_path = content_str.lstrip("/")
+        if os.path.exists(local_path):
+            with open(local_path, "rb") as f:
+                content_str = base64.b64encode(f.read()).decode("utf-8")
+            if not attachment_filename or attachment_filename == "report.txt":
+                attachment_filename = os.path.basename(local_path)
+
+    if is_base64(content_str):
+        try:
+            clean_content = "".join(content_str.split())
+            decoded_bytes = base64.b64decode(clean_content, validate=True)
+            detected_ext = detect_extension_from_bytes(decoded_bytes)
+            if detected_ext:
+                current_ext = attachment_filename.lower().split('.')[-1]
+                if current_ext == 'txt' or attachment_filename == 'report.txt':
+                    base_name, _ = os.path.splitext(attachment_filename)
+                    attachment_filename = f"{base_name}.{detected_ext}"
+            content_str = clean_content
+        except Exception as e:
+            logger.error(f"[Email Attachment] Error detecting attachment type: {e}")
+
+    return {"content": content_str, "filename": attachment_filename}
+
+
+def _normalize_attachments(attachment_content: Any = None, attachment_filename: str = "report.txt", attachments: Optional[list] = None) -> list:
+    normalized = []
+    if attachments:
+        for idx, att in enumerate(attachments):
+            if not isinstance(att, dict):
+                continue
+            prepared = _prepare_attachment(
+                att.get("content") or att.get("attachment_content"),
+                att.get("filename") or att.get("attachment_filename") or f"attachment_{idx + 1}.png",
+                fallback=f"attachment_{idx + 1}",
+            )
+            if prepared:
+                normalized.append(prepared)
+    elif attachment_content:
+        prepared = _prepare_attachment(attachment_content, attachment_filename, fallback="attachment")
+        if prepared:
+            normalized.append(prepared)
+    return normalized
 
 def resolve_chat_image(reference: str, history: List[dict]) -> Optional[tuple]:
     """
@@ -180,6 +263,61 @@ def resolve_chat_image(reference: str, history: List[dict]) -> Optional[tuple]:
                     logger.error(f"Failed to retrieve generated image {url}: {e}")
                     
     return None, "No matching image found in chat history"
+
+
+def resolve_chat_images(reference: str, history: List[dict], max_images: int = 2) -> List[tuple]:
+    """Resolve one or more recent chat images as (base64_data, filename) tuples."""
+    if not history or not reference or max_images <= 0:
+        return []
+
+    ref = reference.lower().strip()
+    wants_recent = any(kw in ref for kw in ["above", "last", "previous", "recent", "these", "those", "this"])
+    results = []
+    seen = set()
+
+    def add_result(data, filename):
+        if not data:
+            return
+        key = str(data)[:128]
+        if key in seen:
+            return
+        seen.add(key)
+        results.append((data, filename or f"attachment_{len(results) + 1}.png"))
+
+    for msg in reversed(history):
+        if len(results) >= max_images:
+            break
+        content = msg.get("content", msg.get("c", ""))
+
+        user_img = msg.get("img") or msg.get("i")
+        if user_img and wants_recent:
+            imgs = user_img if isinstance(user_img, list) else [user_img]
+            for item in imgs:
+                add_result(item, f"upload_{len(results) + 1}_{int(time.time())}.png")
+                if len(results) >= max_images:
+                    break
+
+        img_matches = re.findall(r'!\[([^\]]*)\]\(([^)]+)\)', content)
+        for alt, url in reversed(img_matches):
+            if len(results) >= max_images:
+                break
+            try:
+                if url.startswith("/static/"):
+                    local_path = url.lstrip("/")
+                    if os.path.exists(local_path):
+                        with open(local_path, "rb") as f:
+                            add_result(base64.b64encode(f.read()).decode("utf-8"), os.path.basename(local_path))
+                elif url.startswith("http"):
+                    img_b64, detected_ext, error = _download_image_attachment(url)
+                    if img_b64:
+                        clean_alt = re.sub(r'[^\w\s]', '_', alt).strip().replace(' ', '_') or "generated"
+                        add_result(img_b64, f"{clean_alt[:24]}_{len(results) + 1}.{detected_ext or 'png'}")
+                    else:
+                        logger.error(f"Failed to retrieve generated image {url}: {error}")
+            except Exception as e:
+                logger.error(f"Failed to retrieve generated image {url}: {e}")
+
+    return results[:max_images]
 
 
 # 1. Custom DuckDuckGo TEXT Search Tool (using modern ddgs library)
@@ -458,6 +596,7 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
     
     # Internal variables to match previous implementation and maintain backward compatibility
     attachment_filename = kwargs.get("attachment_filename", "report.txt")
+    attachments = kwargs.get("attachments") or []
     chat_image_reference = kwargs.get("chat_image_reference", "")
     raw_attachment_text = kwargs.get("raw_attachment_text", "")
     
@@ -550,6 +689,11 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
         except Exception as e:
             logger.error(f"[Email Tool] Error running type detection on attachment: {e}")
 
+    normalized_attachments = _normalize_attachments(attachment_content, attachment_filename, attachments)
+    if normalized_attachments:
+        attachment_content = normalized_attachments[0]["content"]
+        attachment_filename = normalized_attachments[0]["filename"]
+
     draft = {
         "recipient": recipient,
         "subject": subject,
@@ -558,13 +702,15 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
         "attachment_content": attachment_content,
         "attachment_filename": attachment_filename
     }
+    if len(normalized_attachments) > 1:
+        draft["attachments"] = normalized_attachments
     
     # Serialized draft payload
     from app.logic.exceptions import AgentFastExit
     payload = f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
     raise AgentFastExit(payload)
 
-def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = "modern", attachment_content: str = None, attachment_filename: str = "report.txt") -> str:
+def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = "modern", attachment_content: str = None, attachment_filename: str = "report.txt", attachments: Optional[list] = None) -> str:
     """Direct dispatch function. Integrates live SMTP or writes to simulated_emails.log."""
     load_dotenv()
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -580,21 +726,10 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
     if not recipients:
         return f"ERROR: No valid recipients found in '{recipient}'"
 
-    # 0. If attachment_content is a URL, download it so it can be attached correctly
-    if attachment_content and (str(attachment_content).startswith("http://") or str(attachment_content).startswith("https://")):
-        content_url = str(attachment_content).strip()
-        logger.info(f"[Email Send] Fetching URL for attachment: {content_url}")
-        img_b64, detected_ext, error = _download_image_attachment(content_url)
-        if not img_b64:
-            logger.error(f"[Email Send] Error downloading attachment URL {content_url}: {error}")
-            return f"ERROR: Failed to download image attachment bytes from URL: {error}"
-        attachment_content = img_b64
-        attachment_filename = _filename_with_detected_extension(
-            attachment_filename,
-            detected_ext,
-            fallback=f"image_{int(time.time())}",
-        )
-        logger.info(f"[Email Send] Successfully fetched attachment image. Encoded size: {len(attachment_content)} chars.")
+    normalized_attachments = _normalize_attachments(attachment_content, attachment_filename, attachments)
+    if normalized_attachments:
+        attachment_content = normalized_attachments[0]["content"]
+        attachment_filename = normalized_attachments[0]["filename"]
 
     results = []
     
@@ -629,12 +764,16 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                     html_content = _build_html_body(personalized_body, tone)
                     msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
-                    if attachment_content is not None and len(str(attachment_content).strip()) > 0:
+                    for attachment in normalized_attachments:
+                        current_content = attachment.get("content")
+                        current_filename = attachment.get("filename") or attachment_filename
+                        if current_content is None or len(str(current_content).strip()) == 0:
+                            continue
                         # Try to decode from base64 if it's base64 encoded
                         att_bytes = None
                         is_b64 = False
                         try:
-                            clean_content = "".join(str(attachment_content).split())
+                            clean_content = "".join(str(current_content).split())
                             if len(clean_content) >= 64 and re.match(r'^[A-Za-z0-9+/]*={0,2}$', clean_content):
                                 decoded_bytes = base64.b64decode(clean_content, validate=True)
                                 att_bytes = decoded_bytes
@@ -644,7 +783,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                             pass
                         
                         if not is_b64:
-                            att_bytes = str(attachment_content).encode('utf-8')
+                            att_bytes = str(current_content).encode('utf-8')
                             logger.info(f"[Email Send] Attachment content is plain text ({len(att_bytes)} bytes)")
 
                         if is_b64:
@@ -652,8 +791,8 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                             pass
 
                         maintype, subtype = 'application', 'octet-stream'
-                        if attachment_filename:
-                            ext = attachment_filename.lower().split('.')[-1]
+                        if current_filename:
+                            ext = current_filename.lower().split('.')[-1]
                             if ext in ['png', 'jpg', 'jpeg', 'gif']:
                                 maintype = 'image'
                                 subtype = 'jpeg' if ext == 'jpg' else ext
@@ -667,7 +806,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                         part = MIMEBase(maintype, subtype)
                         part.set_payload(att_bytes)
                         encoders.encode_base64(part)
-                        part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
+                        part.add_header('Content-Disposition', f'attachment; filename="{current_filename}"')
                         msg.attach(part)
                         
                     server.send_message(msg)
@@ -688,7 +827,7 @@ From: The All Time Helper (Simulation Mode)
 To: {recipient}
 Subject: {subject}
 Tone: {tone}
-Attachment: {attachment_filename} ({_attachment_size_bytes(attachment_content)} bytes)
+Attachment: {_attachment_label(normalized_attachments, attachment_filename)}
 ------------------------------------------------------------------------
 HTML CONTENT PREVIEW:
 {html_content}

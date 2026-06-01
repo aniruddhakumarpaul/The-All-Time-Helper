@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-STATE_DIR = Path(os.environ.get("CODEX_HOOK_STATE_DIR", r"C:\tmp\the-all-time-helper-codex-hooks"))
+STATE_DIR = REPO_ROOT / "codex_hook_state"
 
 
 def read_event() -> dict[str, Any]:
@@ -72,12 +71,12 @@ def is_verification_command(command: str) -> bool:
 
     verification_patterns = [
         r"\bpytest\b",
-        r"\bpython(?:\.exe)?\s+-m\s+pytest\b",
+        r"\bpython(?:\.exe)?(?:\s+-[A-Za-z]+)*\s+-m\s+pytest\b",
         r"\bpy\s+-m\s+pytest\b",
         r"\bunittest\b",
-        r"\bpython(?:\.exe)?\s+-m\s+unittest\b",
-        r"\bpython(?:\.exe)?\s+-m\s+compileall\b",
-        r"\bpython(?:\.exe)?\s+-m\s+py_compile\b",
+        r"\bpython(?:\.exe)?(?:\s+-[A-Za-z]+)*\s+-m\s+unittest\b",
+        r"\bpython(?:\.exe)?(?:\s+-[A-Za-z]+)*\s+-m\s+compileall\b",
+        r"\bpython(?:\.exe)?(?:\s+-[A-Za-z]+)*\s+-m\s+py_compile\b",
         r"\bnode\s+--check\b",
         r"\bnpm\s+(?:run\s+)?(?:test|lint|build)\b",
         r"\bpnpm\s+(?:run\s+)?(?:test|lint|build)\b",
@@ -93,6 +92,6 @@ def is_verification_command(command: str) -> bool:
 def command_text(event: dict[str, Any]) -> str:
     tool_input = event.get("tool_input")
     if isinstance(tool_input, dict):
-        value = tool_input.get("command")
+        value = tool_input.get("command") or tool_input.get("cmd")
         return value if isinstance(value, str) else ""
     return ""

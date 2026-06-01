@@ -141,6 +141,14 @@ def clean_user_prompt(prompt: str) -> str:
     return cleaned.strip()
 
 
+def _extract_attached_context_text(prompt: str) -> str:
+    """Returns concatenated text payloads from frontend attached-context blocks."""
+    if not prompt:
+        return ""
+    matches = re.findall(r'\[Attached Context \d+\]\s*"""([\s\S]*?)"""', str(prompt))
+    return _preserve_structured_text("\n\n".join(match.strip() for match in matches if match.strip()))
+
+
 def _normalize_prompt_for_intent(prompt: str) -> str:
     """Light normalization used only for intent classification."""
     cleaned = clean_user_prompt(prompt)
@@ -262,6 +270,56 @@ def _looks_like_raw_tool_call_leak(result: str) -> bool:
         rf"```(?:tool_code|python)?\s*(?:{tool_pattern})\s*\(",
     ]
     return any(re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL) for pattern in leak_patterns)
+
+
+def _email_draft_payload_from_json_result(result: str) -> Optional[str]:
+    """Convert JSON email/tool-plan output into the frontend email widget payload."""
+    res_str = str(result).strip()
+    if "EMAIL_DRAFT_PAYLOAD:" in res_str:
+        return res_str
+
+    json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', res_str)
+    if not json_match:
+        return None
+
+    try:
+        candidate = json.loads(json_match.group(1))
+    except Exception:
+        return None
+
+    def find_email_dict(data):
+        if isinstance(data, dict):
+            if any(k in data for k in ["recipient", "to"]) and "subject" in data and "body" in data:
+                return data
+            for val in data.values():
+                found = find_email_dict(val)
+                if found:
+                    return found
+        elif isinstance(data, list):
+            for item in data:
+                found = find_email_dict(item)
+                if found:
+                    return found
+        return None
+
+    email_data = find_email_dict(candidate)
+    if not email_data:
+        return None
+
+    draft = {
+        "recipient": email_data.get("recipient") or email_data.get("to") or "",
+        "subject": email_data.get("subject") or "Requested Content",
+        "body": email_data.get("body") or "",
+        "tone": email_data.get("tone", "modern"),
+        "attachment_content": email_data.get("attachment_content"),
+        "attachment_filename": email_data.get("attachment_filename") or "report.txt",
+    }
+    prefix_text = res_str.split(json_match.group(1), 1)[0].strip()
+    prefix_text = re.sub(r'```json\s*$', '', prefix_text).strip()
+    prefix_text = re.sub(r'```\s*$', '', prefix_text).strip()
+    if prefix_text:
+        return f"{prefix_text}\n\nEMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
+    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
 
 
 # Helper to keep code DRY
@@ -1272,10 +1330,13 @@ def _assemble_context(user_prompt, img_data, history, intent, user_id=None, stat
         history_context = "\n<history>\n"
         # OPTIMIZATION: limit to last 5 turns if it requires tools, otherwise 15
         limit = 5 if intent.get("requires_tools") else 15
+        current_prompt_raw = str(user_prompt or "").strip()
         for msg in history[-limit:]:
             r = msg.get('role', msg.get('r', ''))
             role = "U" if r in ['user', 'u'] else "A"
             content = msg.get('content', msg.get('c', '')).strip()
+            if current_prompt_raw and content == current_prompt_raw:
+                continue
             
             if msg.get('masked', False):
                 content = "[MASKED_SECRET]"
@@ -1327,6 +1388,13 @@ def _harden_result(result, sys_config, target_model="gemma4:e2b", intent=None, u
             "I could not produce a valid direct explanation because the model returned an invalid tool-call plan. "
             "Please retry the same explanation request."
         )
+
+    res_str = str(result).strip()
+    if "EMAIL_DRAFT_PAYLOAD:" not in res_str and "send_email_tool" in res_str:
+        payload = _email_draft_payload_from_json_result(res_str)
+        if payload:
+            logger.warning("[Agents] Converted leaked send_email_tool JSON plan into email draft payload")
+            return payload
             
     # Fallback email JSON detection - strictly only for local models
     is_local = True
@@ -1334,7 +1402,6 @@ def _harden_result(result, sys_config, target_model="gemma4:e2b", intent=None, u
         is_local = not _is_cloud_model(target_model)
         
     if is_local:
-        res_str = str(result).strip()
         if "EMAIL_DRAFT_PAYLOAD:" not in res_str:
             # Match either a JSON object { ... } or a JSON array [ ... ]
             json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', res_str)
@@ -1829,7 +1896,8 @@ def _latest_attachable_history_context(history: list, current_prompt: str = "") 
         if msg.get("img") or msg.get("i") or re.search(r'!\[[^\]]*\]\([^)]+\)', content):
             context["has_image"] = True
 
-        text = re.sub(r'!\[[^\]]*\]\([^)]+\)', ' ', content)
+        attached_text = _extract_attached_context_text(content)
+        text = attached_text if attached_text else re.sub(r'!\[[^\]]*\]\([^)]+\)', ' ', content)
         text = re.sub(r'EMAIL_DRAFT_PAYLOAD:\s*\{[\s\S]*?\}', ' ', text)
         text = re.sub(r'```[\s\S]*?```', ' ', text)
         text = _preserve_structured_text(text)
@@ -1959,16 +2027,22 @@ def _extract_email_draft_updates(prompt: str) -> dict:
 
 
 def _is_email_draft_edit_request(prompt_lower: str) -> bool:
-    has_edit_action = any(kw in prompt_lower for kw in [
+    has_field_edit_action = any(kw in prompt_lower for kw in [
         "fill", "update", "change", "set", "put", "replace", "edit"
+    ])
+    has_attachment_action = any(kw in prompt_lower for kw in [
+        "attach", "include", "add", "use"
     ])
     has_email_surface = any(kw in prompt_lower for kw in [
         "email", "mail", "template", "tamplate", "draft", "widget"
     ])
+    has_template_surface = any(kw in prompt_lower for kw in [
+        "template", "tamplate", "draft", "widget"
+    ])
     has_field = any(kw in prompt_lower for kw in [
         " to", "'to'", '"to"', "recipient", "subject", "body", "content", "tone"
     ])
-    return has_edit_action and (has_email_surface or has_field)
+    return (has_field_edit_action and (has_email_surface or has_field)) or (has_attachment_action and has_template_surface)
 
 
 def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target_model: str) -> Optional[str]:
@@ -1980,7 +2054,15 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
         return None
 
     updates = _extract_email_draft_updates(clean_prompt)
-    if not updates:
+    is_attachment_template_request = _is_above_attachment_request(clean_prompt)
+    attach_context = _latest_attachable_history_context(history, clean_prompt) if is_attachment_template_request else {}
+    attachment_choice = _attachment_choice_from_prompt(clean_prompt, attach_context) if is_attachment_template_request else "unknown"
+    if is_attachment_template_request and attachment_choice == "ambiguous":
+        return (
+            "I found both an image and text in the recent chat. "
+            "Should I use the image only, the text only, both, or a summary of the relevant text with the image attached?"
+        )
+    if not updates and not (is_attachment_template_request and attach_context.get("has_text")):
         return None
 
     draft = _extract_latest_email_draft(history) or {}
@@ -1994,9 +2076,16 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
             "attachment_filename": "attachment.png",
         }
 
+    if is_attachment_template_request and attach_context.get("has_text") and not updates.get("body"):
+        text_context = attach_context.get("text", "")
+        if attachment_choice == "summary":
+            draft["body"] = "Summary of relevant previous text: " + text_context[:900]
+        else:
+            draft["body"] = text_context
+
     draft.update({key: value for key, value in updates.items() if value is not None})
     draft.setdefault("tone", "modern")
-    draft.setdefault("subject", "Requested Image and Description")
+    draft.setdefault("subject", "Requested Content")
     draft.setdefault("body", "")
 
     if not draft.get("attachment_content"):
@@ -2006,7 +2095,7 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
             draft["attachment_content"] = resolved[0]
             draft["attachment_filename"] = resolved[1] if len(resolved) > 1 else draft.get("attachment_filename", "attachment.png")
 
-    if not draft.get("recipient"):
+    if not draft.get("recipient") and not is_attachment_template_request:
         return "Which recipient should I put in the email template?"
 
     return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
@@ -2031,6 +2120,17 @@ def _clean_email_image_description(clean_prompt: str, history: list) -> str:
     if not description or description.lower() in {"a", "an", "the"}:
         return "a vibrant creative abstract image with rich colors and a polished modern style"
     return description
+
+
+def _requested_image_attachment_count(prompt_lower: str) -> int:
+    if not any(kw in prompt_lower for kw in ["image", "images", "photo", "photos", "picture", "pictures", "pic", "pics"]):
+        return 1
+    if re.search(r'\b(?:both|two|2|couple|pair)\b', prompt_lower):
+        return 2
+    match = re.search(r'\b(\d+)\s+(?:images|photos|pictures|pics)\b', prompt_lower)
+    if match:
+        return max(1, min(6, int(match.group(1))))
+    return 1
 
 
 def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, target_model: str = "gemma2:2b", status_callback=None, chunk_callback=None) -> Optional[str]:
@@ -2121,6 +2221,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             
         attachment_url = None
         filename = "attachment.png"
+        attachments = []
         description = ""
         raw_attachment_text = ""
         wants_empty_body = any(kw in p for kw in [
@@ -2150,13 +2251,26 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 
         # Step B: Resolve chat history reference if no image generation was requested
         if not attachment_url and attachment_choice in {"image", "both", "summary", "unknown"}:
-            from app.logic.tools import resolve_chat_image
-            resolved = resolve_chat_image(clean_prompt, history)
-            if isinstance(resolved, tuple) and resolved[0] is not None:
-                attachment_url = resolved[0]
-                filename = resolved[1] if len(resolved) > 1 else filename
-            elif isinstance(resolved, str):
-                attachment_url = resolved
+            requested_count = _requested_image_attachment_count(p)
+            if requested_count > 1:
+                from app.logic.tools import resolve_chat_images
+                resolved_images = resolve_chat_images(clean_prompt, history, max_images=requested_count)
+                attachments = [
+                    {"content": img_data, "filename": img_filename}
+                    for img_data, img_filename in resolved_images
+                    if img_data
+                ]
+                if attachments:
+                    attachment_url = attachments[0]["content"]
+                    filename = attachments[0].get("filename") or filename
+            if not attachments:
+                from app.logic.tools import resolve_chat_image
+                resolved = resolve_chat_image(clean_prompt, history)
+                if isinstance(resolved, tuple) and resolved[0] is not None:
+                    attachment_url = resolved[0]
+                    filename = resolved[1] if len(resolved) > 1 else filename
+                elif isinstance(resolved, str):
+                    attachment_url = resolved
 
         if is_above_attachment and attachment_choice in {"text", "both", "summary"}:
             text_context = attach_context.get("text", "")
@@ -2247,6 +2361,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 body=body,
                 attachment_content=attachment_url or "",
                 attachment_filename=filename,
+                attachments=attachments,
                 raw_attachment_text="" if raw_attachment_text == body else raw_attachment_text
             )
         except AgentFastExit as e:

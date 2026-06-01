@@ -134,7 +134,7 @@ async function checkUpscaleStatus(jobId) {
 /**
  * Send an email directly via the backend API.
  */
-async function sendEmailDirect(recipient, subject, body, tone, attachmentContent = null, attachmentFilename = 'report.txt', adminKey = null) {
+async function sendEmailDirect(recipient, subject, body, tone, attachmentContent = null, attachmentFilename = 'report.txt', adminKey = null, attachments = null) {
     const res = await fetch(apiUrl('/api/send_email_direct'), {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -145,6 +145,7 @@ async function sendEmailDirect(recipient, subject, body, tone, attachmentContent
             tone,
             attachment_content: attachmentContent,
             attachment_filename: attachmentFilename,
+            attachments: attachments,
             admin_key: adminKey
         })
     });

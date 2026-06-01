@@ -163,6 +163,70 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(email_tool.call_args.kwargs["body"], "")
         self.assertEqual(email_tool.call_args.kwargs["attachment_content"], "base64")
 
+    def test_attach_two_recent_images_uses_multi_attachment_payload(self):
+        import base64
+        import json
+        from app.logic import agents
+
+        png_a = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"a" * 80).decode("utf-8")
+        png_b = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"b" * 80).decode("utf-8")
+        history = [
+            {
+                "role": "assistant",
+                "content": (
+                    'EMAIL_DRAFT_PAYLOAD:{"recipient":"aniruddha@example.com","subject":"Draft",'
+                    '"body":"Please see attached.","tone":"modern","attachment_content":null,'
+                    '"attachment_filename":"attachment.png"}'
+                ),
+            },
+            {"role": "user", "content": "uploaded two images", "img": [png_a, png_b]},
+        ]
+        intent = {"is_local": True, "requires_tools": True, "complexity": "single", "is_sensitive": False}
+
+        with patch("app.logic.tools.resolve_chat_images", return_value=[(png_a, "one.png"), (png_b, "two.png")]):
+            with patch.object(agents.requests, "post", side_effect=TimeoutError("skip local drafting")):
+                result = agents._try_direct_tool_execution(
+                    "now attach this two images in the email",
+                    intent,
+                    history=history,
+                    target_model="gemma4:e2b",
+                )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "aniruddha@example.com")
+        self.assertEqual(payload["attachment_content"], png_a)
+        self.assertEqual(payload["attachment_filename"], "one.png")
+        self.assertEqual([att["filename"] for att in payload["attachments"]], ["one.png", "two.png"])
+        self.assertEqual([att["content"] for att in payload["attachments"]], [png_a, png_b])
+
+    def test_simulated_email_logs_multiple_attachment_names(self):
+        import base64
+        from app.logic import tools
+
+        png_a = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"a" * 80).decode("utf-8")
+        png_b = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"b" * 80).decode("utf-8")
+        attachments = [
+            {"content": png_a, "filename": "one.png"},
+            {"content": png_b, "filename": "two.png"},
+        ]
+
+        opened = mock_open()
+        with patch.dict(os.environ, {"EMAIL_MODE": "SIMULATE"}, clear=False):
+            with patch.object(tools, "load_dotenv", return_value=False):
+                with patch("builtins.open", opened):
+                    result = tools.send_or_simulate_email(
+                        recipient="aniruddha@example.com",
+                        subject="Images",
+                        body="Please see attached.",
+                        attachments=attachments,
+                    )
+
+        self.assertIn("SIMULATE SUCCESS", result)
+        written = "".join(call.args[0] for call in opened().write.call_args_list)
+        self.assertIn("one.png", written)
+        self.assertIn("two.png", written)
+
     def test_attach_above_asks_when_image_and_text_are_both_recent(self):
         from app.logic import agents
 
@@ -298,6 +362,30 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["body"], "here is a sketch of a elegant woman")
         self.assertEqual(payload["subject"], "Requested Image and Description")
         self.assertEqual(payload["attachment_content"], "base64-image")
+        self.assertNotIn("send_email_tool", result)
+
+    def test_attached_text_to_email_template_returns_widget_without_cloud_json(self):
+        from app.logic import agents
+        import json
+
+        attached_text = "Detailed Explanation of the Python Code\n\nThis code demonstrates FAISS indexing."
+        prompt = f'[Attached Context 1]\n"""\n{attached_text}\n"""\n\nattach this to email template'
+        history = [{"role": "user", "content": prompt}]
+        intent = {"is_local": False, "requires_tools": True, "complexity": "single", "is_sensitive": False}
+
+        with patch.object(agents, "_execute_cloud", side_effect=AssertionError("cloud should not run")):
+            result = agents.run_helper_agent(
+                prompt,
+                target_model="gemma4-openrouter",
+                history=history,
+                user_id="user@example.com",
+                intent=intent,
+            )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "")
+        self.assertEqual(payload["body"], attached_text)
         self.assertNotIn("send_email_tool", result)
 
     def test_log_prompt_image_email_regression(self):
@@ -438,6 +526,59 @@ class HardeningTests(unittest.TestCase):
             "document.body.setAttribute('data-theme', window.__initialThemeIsDark ? 'dark' : 'light')",
             template,
         )
+
+    def test_refresh_clears_pending_prompt_composer_context(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        app_js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("function clearPendingComposerDrafts()", app_js)
+        self.assertIn("key.startsWith('helper_pending_prompt_')", app_js)
+        self.assertIn("state.attachedContexts = []", app_js)
+        self.assertIn("state.currentImages = []", app_js)
+        self.assertIn("clearPendingComposerDrafts();", app_js)
+
+    def test_prompt_context_drag_drop_has_model_safe_limits(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        app_js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("const MAX_ATTACHED_CONTEXTS = 6", app_js)
+        self.assertIn("const MAX_CONTEXT_CHARS = 6000", app_js)
+        self.assertIn("const MAX_TOTAL_CONTEXT_CHARS = 18000", app_js)
+        self.assertIn("function addAttachedContext(text", app_js)
+        self.assertIn("addAttachedContext(textVal)", app_js)
+        self.assertIn("Context truncated to keep this request within the model limit", app_js)
+
+    def test_context_assembly_skips_current_prompt_in_history(self):
+        from app.logic import agents
+
+        prompt = (
+            '[Attached Context 1]\n"""\nFirst large context\n"""\n\n'
+            '[Attached Context 2]\n"""\nSecond large context\n"""\n\n'
+            'compare these contexts'
+        )
+        intent = {"requires_tools": False, "is_local": False}
+        history = [
+            {"role": "user", "content": "Earlier message"},
+            {"role": "user", "content": prompt},
+        ]
+
+        with patch.object(agents, "query_memory", return_value=[]):
+            context = agents._assemble_context(
+                prompt,
+                img_data=None,
+                history=history,
+                intent=intent,
+                user_id="user@example.com",
+            )
+
+        self.assertIn("Earlier message", context["history_context"])
+        self.assertNotIn("First large context", context["history_context"])
+        self.assertNotIn("Second large context", context["history_context"])
+        self.assertEqual(context["final_prompt"], prompt)
 
     def test_upscale_status_returns_registry_ready(self):
         from app import main
@@ -744,6 +885,33 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(data["subject"], "Regarding your request")
         self.assertEqual(data["body"], "I'm happy to help. Please let me know what you'd like me to do next.")
         self.assertEqual(data["tone"], "modern")
+
+    def test_harden_result_converts_cloud_send_email_tool_json_plan(self):
+        from app.logic.agents import _harden_result
+        import json
+
+        raw_nested_input = """
+        [
+          {
+            "send_email_tool": {
+              "recipient": "recipient@example.com",
+              "subject": "Current Affairs Update",
+              "body": "Here is the requested content.",
+              "attachment_content": null,
+              "tone": "modern"
+            }
+          }
+        ]
+        """
+
+        result = _harden_result(raw_nested_input, None, target_model="gemma4-openrouter")
+
+        self.assertIn("EMAIL_DRAFT_PAYLOAD:", result)
+        self.assertNotIn("send_email_tool", result)
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "recipient@example.com")
+        self.assertEqual(payload["subject"], "Current Affairs Update")
+        self.assertEqual(payload["body"], "Here is the requested content.")
 
     def test_visual_typo_intent_detection(self):
         from app.logic.agents import _detect_intent
