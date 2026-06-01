@@ -1,0 +1,320 @@
+/* Premium Typing & Status Indicators for The All Time Helper */
+
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    width: fit-content;
+}
+
+.typing-indicator span {
+    width: 6px;
+    height: 6px;
+    background: var(--accent-blue);
+    border-radius: 50%;
+    display: inline-block;
+    animation: typing-bounce 1.4s infinite ease-in-out both;
+    box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+
+[data-theme="light"] .typing-indicator span {
+    box-shadow: 0 0 12px rgba(37, 99, 235, 0.5);
+    background: #2563eb;
+}
+
+@keyframes typing-bounce {
+    0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
+    40% { transform: scale(1.2); opacity: 1; }
+}
+
+.status-msg {
+    font-size: 0.85rem;
+    color: var(--text-sub);
+    font-family: 'Outfit', sans-serif;
+    font-style: italic;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: status-fade 2s infinite ease-in-out;
+}
+
+.status-msg svg {
+    animation: status-spin 2s linear infinite;
+    opacity: 0.7;
+    filter: drop-shadow(0 0 5px var(--accent-glow));
+}
+
+@keyframes status-fade {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+@keyframes status-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Glassmorphism for the thinking bubble */
+.b-msg.thinking-state .txt {
+    background: var(--bubble-b-bg);
+    border: 1px dashed var(--accent-blue);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: 0 0 20px var(--accent-glow);
+}
+
+[data-theme="light"] .b-msg.thinking-state .txt {
+    box-shadow: 0 0 25px rgba(37, 99, 235, 0.25);
+    border-style: solid;
+}
+
+/* Specialist Badge and Active Indicators */
+.specialist-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-family: 'Outfit', sans-serif;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    transition: all 0.3s ease;
+    box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+    border: 1px solid transparent;
+    margin-top: 8px;
+    animation: badge-pulse 2s infinite ease-in-out;
+}
+
+.pulse-indicator {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    animation: indicator-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes badge-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+}
+
+@keyframes indicator-pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* Specialist Color Themes */
+.specialist-badge.developer {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
+    border-color: rgba(34, 197, 94, 0.3);
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.2);
+}
+.specialist-badge.developer .pulse-indicator {
+    background: #22c55e;
+    box-shadow: 0 0 8px #22c55e;
+}
+
+.specialist-badge.artist {
+    background: rgba(236, 72, 153, 0.15);
+    color: #f472b6;
+    border-color: rgba(236, 72, 153, 0.3);
+    box-shadow: 0 0 12px rgba(236, 72, 153, 0.2);
+}
+.specialist-badge.artist .pulse-indicator {
+    background: #ec4899;
+    box-shadow: 0 0 8px #ec4899;
+}
+
+.specialist-badge.secretary {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border-color: rgba(245, 158, 11, 0.3);
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.2);
+}
+.specialist-badge.secretary .pulse-indicator {
+    background: #f59e0b;
+    box-shadow: 0 0 8px #f59e0b;
+}
+
+.specialist-badge.manager {
+    background: rgba(99, 102, 241, 0.15);
+    color: #818cf8;
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+}
+.specialist-badge.manager .pulse-indicator {
+    background: #6366f1;
+    box-shadow: 0 0 8px #6366f1;
+}
+
+.specialist-badge.generalist {
+    background: rgba(14, 165, 233, 0.15);
+    color: #38bdf8;
+    border-color: rgba(14, 165, 233, 0.3);
+    box-shadow: 0 0 12px rgba(14, 165, 233, 0.2);
+}
+.specialist-badge.generalist .pulse-indicator {
+    background: #0ea5e9;
+    box-shadow: 0 0 8px #0ea5e9;
+}
+
+/* --- Page Loader Overlay --- */
+#page-loader-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: radial-gradient(circle at 50% 50%, rgba(10, 10, 15, 0.95) 0%, #050508 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999999;
+    transition: opacity 0.8s cubic-bezier(0.25, 1, 0.5, 1), visibility 0.8s;
+    backdrop-filter: blur(16px);
+}
+
+[data-theme="light"] #page-loader-overlay {
+    background: radial-gradient(circle at 50% 50%, rgba(248, 250, 252, 0.98) 0%, #f1f5f9 100%);
+}
+
+#page-loader-overlay.fade-out {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+.loader-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    max-width: 320px;
+    width: 90%;
+    padding: 40px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    box-shadow: 0 30px 70px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(10px);
+    animation: loader-card-intro 1s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+[data-theme="light"] .loader-content {
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    box-shadow: 0 30px 60px rgba(31, 38, 135, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+@keyframes loader-card-intro {
+    from { transform: translateY(30px) scale(0.9); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.loader-mascot-wrapper {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    margin-bottom: 25px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.loader-logo {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    z-index: 2;
+    animation: loader-logo-pulse 2s infinite ease-in-out;
+}
+
+@keyframes loader-logo-pulse {
+    0%, 100% { transform: scale(1); filter: drop-shadow(0 0 5px var(--accent-glow)); }
+    50% { transform: scale(1.08); filter: drop-shadow(0 0 20px var(--accent-glow)); }
+}
+
+.loader-ring {
+    position: absolute;
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    border: 3px solid transparent;
+    border-top-color: var(--accent-blue);
+    border-bottom-color: rgba(99, 102, 241, 0.2);
+    animation: loader-spin 1.5s cubic-bezier(0.5, 0.1, 0.4, 0.9) infinite;
+    z-index: 1;
+}
+
+[data-theme="light"] .loader-ring {
+    border-top-color: #2563eb;
+    border-bottom-color: rgba(37, 99, 235, 0.1);
+}
+
+@keyframes loader-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loader-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 2px;
+    color: var(--text-main);
+    background: var(--greet-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+}
+
+.loader-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 15px;
+    position: relative;
+}
+
+[data-theme="light"] .loader-progress-bar {
+    background: rgba(0, 0, 0, 0.05);
+}
+
+.loader-progress-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 12%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, var(--accent-blue), transparent);
+    transition: width 0.18s linear, opacity 0.2s ease;
+    transform-origin: left center;
+}
+
+[data-theme="light"] .loader-progress-fill {
+    background: linear-gradient(90deg, transparent, #2563eb, transparent);
+}
+
+.loader-status {
+    font-size: 0.8rem;
+    font-weight: 400;
+    color: var(--text-sub);
+    min-height: 1.2rem;
+    animation: loader-text-pulse 1.8s infinite ease-in-out;
+}
+
+@keyframes loader-text-pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}

@@ -1,0 +1,26 @@
+langchain
+langchain-groq
+langchain-community
+crewai
+chromadb
+duckduckgo-search
+ddgs
+pydantic>=2.0.0
+fastapi
+python-dotenv
+openai
+requests
+# FIX #9: Previously missing dependencies
+uvicorn
+bcrypt
+PyJWT
+pyngrok
+litellm
+opencv-python
+numpy
+httpx
+Pillow
+tenacity
+jinja2
+anyio
+python-multipart
