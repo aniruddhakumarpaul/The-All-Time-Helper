@@ -19,6 +19,8 @@
 - Page refresh starts the prompt composer fresh: pending prompt text, drag/drop attached contexts, and unsent image attachments are cleared on frontend startup while saved chat history remains persisted.
 - Prompt-bar drag/drop contexts are bounded before send to keep multi-context requests model-safe; current submitted prompts are skipped when building backend history context to avoid duplicating attached-context payloads.
 - Email image-attachment drafts support a backward-compatible `attachments` array for multi-image requests while preserving the legacy first-attachment fields used by older widgets and send paths.
+- Frontend chat persistence must never block user actions: if `localStorage` hits quota, the app falls back to a more aggressively redacted snapshot and keeps the send flow live.
+- Email preview rendering strips executable script tags before writing into the sandboxed iframe.
 
 This file records the current high-level architectural decisions.
 

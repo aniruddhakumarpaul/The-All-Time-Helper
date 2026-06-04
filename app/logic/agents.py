@@ -2133,7 +2133,7 @@ def _requested_image_attachment_count(prompt_lower: str) -> int:
     return 1
 
 
-def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, target_model: str = "gemma2:2b", status_callback=None, chunk_callback=None) -> Optional[str]:
+def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, target_model: str = "gemma2:2b", status_callback=None, chunk_callback=None, img_data: Any = None) -> Optional[str]:
     """
     Attempts to execute deterministic tool workflows directly.
     Returns the string result if a tool was executed, otherwise None.
@@ -2249,28 +2249,48 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 logger.error(f"[Direct Tool] image_generate_tool failed inside email flow: {e}")
                 return f"ERROR: Image generation failed before email drafting: {str(e)}"
                 
-        # Step B: Resolve chat history reference if no image generation was requested
+        # Step B: Resolve current request images or chat history reference if no image generation was requested
         if not attachment_url and attachment_choice in {"image", "both", "summary", "unknown"}:
-            requested_count = _requested_image_attachment_count(p)
-            if requested_count > 1:
-                from app.logic.tools import resolve_chat_images
-                resolved_images = resolve_chat_images(clean_prompt, history, max_images=requested_count)
-                attachments = [
-                    {"content": img_data, "filename": img_filename}
-                    for img_data, img_filename in resolved_images
-                    if img_data
-                ]
+            if img_data:
+                current_imgs = [img_data] if isinstance(img_data, str) else img_data
+                for idx, item in enumerate(current_imgs):
+                    content = ""
+                    fname = f"attachment_{idx+1}.png"
+                    if isinstance(item, str):
+                        content = item
+                    elif hasattr(item, "data"):
+                        content = item.data
+                        fname = getattr(item, "name", fname)
+                    elif isinstance(item, dict) and "data" in item:
+                        content = item["data"]
+                        fname = item.get("name", fname)
+                    if content:
+                        attachments.append({"content": content, "filename": fname})
                 if attachments:
                     attachment_url = attachments[0]["content"]
                     filename = attachments[0].get("filename") or filename
+
             if not attachments:
-                from app.logic.tools import resolve_chat_image
-                resolved = resolve_chat_image(clean_prompt, history)
-                if isinstance(resolved, tuple) and resolved[0] is not None:
-                    attachment_url = resolved[0]
-                    filename = resolved[1] if len(resolved) > 1 else filename
-                elif isinstance(resolved, str):
-                    attachment_url = resolved
+                requested_count = _requested_image_attachment_count(p)
+                if requested_count > 1:
+                    from app.logic.tools import resolve_chat_images
+                    resolved_images = resolve_chat_images(clean_prompt, history, max_images=requested_count)
+                    attachments = [
+                        {"content": img_data, "filename": img_filename}
+                        for img_data, img_filename in resolved_images
+                        if img_data
+                    ]
+                    if attachments:
+                        attachment_url = attachments[0]["content"]
+                        filename = attachments[0].get("filename") or filename
+                if not attachments:
+                    from app.logic.tools import resolve_chat_image
+                    resolved = resolve_chat_image(clean_prompt, history)
+                    if isinstance(resolved, tuple) and resolved[0] is not None:
+                        attachment_url = resolved[0]
+                        filename = resolved[1] if len(resolved) > 1 else filename
+                    elif isinstance(resolved, str):
+                        attachment_url = resolved
 
         if is_above_attachment and attachment_choice in {"text", "both", "summary"}:
             text_context = attach_context.get("text", "")
@@ -2501,7 +2521,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         intent = _detect_intent(intent_prompt, target_model, history)
     
     # Fast Path Direct Tool Execution (for local models to bypass ReAct loop failures)
-    direct_res = _try_direct_tool_execution(user_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback)
+    direct_res = _try_direct_tool_execution(user_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback, img_data=img_data)
     if direct_res is not None:
         return direct_res
     

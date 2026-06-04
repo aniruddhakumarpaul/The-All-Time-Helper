@@ -189,17 +189,23 @@ def _normalize_attachments(attachment_content: Any = None, attachment_filename: 
         for idx, att in enumerate(attachments):
             if not isinstance(att, dict):
                 continue
-            prepared = _prepare_attachment(
-                att.get("content") or att.get("attachment_content"),
-                att.get("filename") or att.get("attachment_filename") or f"attachment_{idx + 1}.png",
-                fallback=f"attachment_{idx + 1}",
-            )
+            content = att.get("content") or att.get("attachment_content") or att.get("data")
+            filename = att.get("filename") or att.get("attachment_filename") or att.get("name") or f"attachment_{idx + 1}.png"
+            prepared = _prepare_attachment(content, filename, fallback=f"attachment_{idx + 1}")
             if prepared:
                 normalized.append(prepared)
-    elif attachment_content:
-        prepared = _prepare_attachment(attachment_content, attachment_filename, fallback="attachment")
-        if prepared:
-            normalized.append(prepared)
+    
+    if attachment_content:
+        already_exists = False
+        for item in normalized:
+            if item.get("content") == attachment_content:
+                already_exists = True
+                break
+        if not already_exists:
+            prepared = _prepare_attachment(attachment_content, attachment_filename, fallback="attachment")
+            if prepared:
+                normalized.insert(0, prepared)
+                
     return normalized
 
 def resolve_chat_image(reference: str, history: List[dict]) -> Optional[tuple]:
@@ -702,7 +708,7 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
         "attachment_content": attachment_content,
         "attachment_filename": attachment_filename
     }
-    if len(normalized_attachments) > 1:
+    if normalized_attachments:
         draft["attachments"] = normalized_attachments
     
     # Serialized draft payload

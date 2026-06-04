@@ -8,7 +8,7 @@ import re
 import cv2
 import numpy as np
 import os
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Union
 from app.database import get_db
 from app.repository import ChatRepository
@@ -39,11 +39,18 @@ class PreviewEmailRequest(BaseModel):
     tone: str = "modern"
 
 
+class Attachment(BaseModel):
+    name: str
+    type: str
+    size: Optional[int] = None
+    data: str  # Base64 encoded payload
+
 class ChatRequest(BaseModel):
     prompt: str
     history: List[dict] = []
     model: str = "gemma4:e2b"
     img: Optional[Union[str, List[str]]] = None
+    attachments: List[Attachment] = Field(default_factory=list)
     name: str = "Human"
     sys: dict = {}
     persona: bool = False
@@ -100,6 +107,23 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     history = req.history
     sys_config = req.sys
     
+    # Convert req.img to attachments if attachments is empty for backward compatibility
+    attachments = req.attachments
+    if not attachments and img:
+        if isinstance(img, str):
+            attachments = [Attachment(name="image.png", type="image/png", data=img)]
+        elif isinstance(img, list):
+            attachments = [Attachment(name=f"image_{i}.png", type="image/png", data=im) for i, im in enumerate(img)]
+
+    # Extract base64 image data from all image attachments and pass them as a list/str to ask_the_helper
+    img_data_for_agent = None
+    if attachments:
+        img_data_for_agent = [att.data for att in attachments if att.type.startswith("image/")]
+        if len(img_data_for_agent) == 1:
+            img_data_for_agent = img_data_for_agent[0]
+        elif not img_data_for_agent:
+            img_data_for_agent = None
+
     # NEW: Handle Admin Key securely via ContextVar, NOT in the LLM prompt
     # FIX #3: Also pass key explicitly to avoid ContextVar thread-propagation issues
     admin_key_value = None
@@ -177,9 +201,9 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 rag_triggers = ["architecture", "code", "function", "file", "logic", "decide", "decision", "plan", "why did", "project", "helper", "memory", "database", "implement", "design"]
                 needs_rag = not intent.get("requires_tools") and any(tg in p_lower for tg in rag_triggers)
                 
-                if intent.get("requires_tools") or req.img or needs_rag:
+                if intent.get("requires_tools") or img_data_for_agent or needs_rag:
                     yield json.dumps({"status": "Initializing Neural Core...", "active_agent": active_agent, "job_id": job_id}).encode() + b'\n'
-                    if req.img:
+                    if img_data_for_agent:
                         yield json.dumps({"status": "Vision Pipeline Processing Image...", "active_agent": active_agent, "job_id": job_id}).encode() + b'\n'
                     else:
                         yield json.dumps({"status": "Scanning Semantic Memory...", "active_agent": active_agent, "job_id": job_id}).encode() + b'\n'
@@ -212,7 +236,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                     if _admin_key_for_thread:
                         admin_auth_context.set(_admin_key_for_thread)
                     return ask_the_helper(
-                        prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
+                        prompt, img_data_for_agent, target_model, sys_config, history, req.persona, abort_event, current_user,
                         status_callback=status_callback, chunk_callback=chunk_callback, intent=intent
                     )
 

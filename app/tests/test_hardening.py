@@ -1035,6 +1035,46 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
         self.assertEqual(result.strip(), raw_json_input.strip())
 
+    def test_multiple_attachments_handling(self):
+        from app.routes.chat import ChatRequest, Attachment
+        from app.logic.tools import _normalize_attachments
+        from app.logic import agents
+        import json
+
+        # 1. Test ChatRequest parsing of multiple attachments
+        req_data = {
+            "prompt": "now attach this two images in the email",
+            "attachments": [
+                {"name": "img1.png", "type": "image/png", "data": "base64img1"},
+                {"name": "img2.png", "type": "image/png", "data": "base64img2"}
+            ]
+        }
+        req = ChatRequest(**req_data)
+        self.assertEqual(len(req.attachments), 2)
+        self.assertEqual(req.attachments[0].name, "img1.png")
+        self.assertEqual(req.attachments[1].data, "base64img2")
+
+        # 2. Test backward compatibility: img conversion to attachments
+        req_compat = ChatRequest(prompt="test", img="base64img_single")
+        attachments = req_compat.attachments
+        if not attachments and req_compat.img:
+            if isinstance(req_compat.img, str):
+                attachments = [Attachment(name="image.png", type="image/png", data=req_compat.img)]
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0].data, "base64img_single")
+
+        # 3. Test _normalize_attachments combines primary and list attachments
+        attachments_list = [
+            {"filename": "img1.png", "content": "base64img1"},
+            {"filename": "img2.png", "content": "base64img2"}
+        ]
+        with patch("app.logic.tools._prepare_attachment", side_effect=lambda content, filename, fallback: {"content": content, "filename": filename}):
+            normalized = _normalize_attachments("primary_b64", "primary.txt", attachments_list)
+            self.assertEqual(len(normalized), 3)
+            self.assertEqual(normalized[0]["filename"], "primary.txt")
+            self.assertEqual(normalized[1]["filename"], "img1.png")
+            self.assertEqual(normalized[2]["filename"], "img2.png")
+
     @staticmethod
     def _chat_db():
         db = sqlite3.connect(":memory:")

@@ -196,11 +196,34 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
         <div class="txt">
             ${contextHtml}
             <div id="msg-text-${idx}" class="msg-text">${content}</div>
-            ${i ? (Array.isArray(i) ? i : [i]).map(item => `
-                <div class="chat-img-preview-container" onclick="window.openImageModal('data:image/png;base64,${item}')" draggable="true" ondragstart="window.handleImageDragStart(event, '${item}')">
-                    <img src="data:image/png;base64,${item}" class="chat-img-preview" style="cursor: grab;">
-                </div>
-            `).join('') : ''}
+            ${i ? (Array.isArray(i) ? i : [i]).map(item => {
+                const isMetadata = typeof item === 'object' && item !== null;
+                const isOmitted = typeof item === 'string' && item.startsWith('[');
+                if (isOmitted) {
+                    return `
+                        <div class="chat-attachment-omitted" style="padding: 8px 12px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); border-radius: 8px; font-size: 0.8rem; margin: 8px 0; color: var(--text-sub);">
+                            💾 ${item}
+                        </div>
+                    `;
+                }
+                if (isMetadata) {
+                    return `
+                        <div class="chat-attachment-chip" style="display: inline-flex; align-items: center; gap: 8px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glass-border); padding: 8px 12px; border-radius: 10px; color: var(--text-main); font-size: 0.85rem; margin: 8px 4px 8px 0;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color: var(--accent-blue);">
+                                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+                            </svg>
+                            <span style="font-weight: 500;">${escapeHTML(item.name || 'attachment.png')}</span>
+                            ${item.size ? `<span style="opacity: 0.6; font-size: 0.75rem;">(${Math.round(item.size / 10.24) / 100} KB)</span>` : ''}
+                        </div>
+                    `;
+                }
+                const src = item.startsWith('data:') ? item : `data:image/png;base64,${item}`;
+                return `
+                    <div class="chat-img-preview-container" onclick="window.openImageModal('${src}')" draggable="true" ondragstart="window.handleImageDragStart(event, '${item}')">
+                        <img src="${src}" class="chat-img-preview" style="cursor: grab;">
+                    </div>
+                `;
+            }).join('') : ''}
             ${watermark}
             ${tools}
         </div>
@@ -480,8 +503,8 @@ function renderBotMessage(el, content, idx) {
                 const rawAttachments = Array.isArray(draft.attachments) ? draft.attachments : [];
                 const normalized = rawAttachments
                     .map((attachment, index) => ({
-                        content: attachment?.content || attachment?.attachment_content || '',
-                        filename: attachment?.filename || attachment?.attachment_filename || `attachment_${index + 1}.png`
+                        content: attachment?.content || attachment?.attachment_content || attachment?.data || '',
+                        filename: attachment?.filename || attachment?.attachment_filename || attachment?.name || `attachment_${index + 1}.png`
                     }))
                     .filter(attachment => String(attachment.content || '').trim());
                 if (!normalized.length && draft.attachment_content) {
@@ -639,10 +662,11 @@ function renderBotMessage(el, content, idx) {
                 const toneVal = card.querySelector('.email-tone-select').value;
                 try {
                     const html = await api.renderEmailPreview(bodyVal, toneVal);
+                    const safeHtml = String(html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
                     const doc = iframe.contentDocument || iframe.contentWindow.document;
                     if (doc) {
                         doc.open();
-                        doc.write(html);
+                        doc.write(safeHtml);
                         doc.close();
                     }
                 } catch (err) {

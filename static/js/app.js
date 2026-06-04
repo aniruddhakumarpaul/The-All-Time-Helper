@@ -41,11 +41,38 @@ function deletedChatsStorageKey() {
     return state.user && state.user.email ? 'helper_deleted_chats_v2_' + state.user.email : '';
 }
 
+function safeStorageSetItem(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (err) {
+        console.error(`Failed to write ${key} to localStorage:`, err);
+        return false;
+    }
+}
+
+function safeStorageGetItem(key) {
+    try {
+        return localStorage.getItem(key);
+    } catch (err) {
+        console.error(`Failed to read ${key} from localStorage:`, err);
+        return null;
+    }
+}
+
+function safeStorageRemoveItem(key) {
+    try {
+        localStorage.removeItem(key);
+    } catch (err) {
+        console.error(`Failed to remove ${key} from localStorage:`, err);
+    }
+}
+
 function readDeletedChatIds() {
     const key = deletedChatsStorageKey();
     if (!key) return [];
     try {
-        const raw = localStorage.getItem(key);
+        const raw = safeStorageGetItem(key);
         const ids = raw ? JSON.parse(raw) : [];
         return Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : [];
     } catch (err) {
@@ -57,14 +84,18 @@ function writeDeletedChatIds(ids) {
     const key = deletedChatsStorageKey();
     if (!key) return;
     const unique = Array.from(new Set((ids || []).filter(id => typeof id === 'string')));
-    if (unique.length) localStorage.setItem(key, JSON.stringify(unique));
-    else localStorage.removeItem(key);
+    try {
+        if (unique.length) safeStorageSetItem(key, JSON.stringify(unique));
+        else safeStorageRemoveItem(key);
+    } catch (err) {
+        console.error("Failed to write deleted chat IDs to localStorage:", err);
+    }
 }
 
 function clearPendingComposerDrafts() {
     Object.keys(localStorage)
         .filter(key => key.startsWith('helper_pending_prompt_'))
-        .forEach(key => localStorage.removeItem(key));
+        .forEach(key => safeStorageRemoveItem(key));
     state.attachedContexts = [];
     state.currentImages = [];
 }
@@ -254,11 +285,163 @@ function touchChat(chatId = state.activeId) {
     return chat;
 }
 
+function getCleanChatsForStorage() {
+    if (!state.chats) return [];
+    return state.chats.map(chat => {
+        const cleanedMs = (chat.ms || []).map(msg => {
+            const cleanedMsg = { ...msg };
+            
+            // 1. Strip raw base64 image payload from msg.i
+            if (cleanedMsg.i) {
+                if (Array.isArray(cleanedMsg.i)) {
+                    cleanedMsg.i = cleanedMsg.i.map((item, idx) => {
+                        if (typeof item === 'string' && item.length > 1000) {
+                            return `[Image ${idx + 1} data URL omitted for storage]`;
+                        }
+                        return item;
+                    });
+                } else if (typeof cleanedMsg.i === 'string' && cleanedMsg.i.length > 1000) {
+                    cleanedMsg.i = "[Image data URL omitted for storage]";
+                }
+            }
+            
+            // 2. Strip raw base64 data from attachments field
+            if (cleanedMsg.attachments) {
+                cleanedMsg.attachments = cleanedMsg.attachments.map(att => {
+                    const cleanedAtt = { ...att };
+                    if (cleanedAtt.data) {
+                        delete cleanedAtt.data;
+                    }
+                    return cleanedAtt;
+                });
+            }
+
+            // 3. Strip raw base64 data from EMAIL_DRAFT_PAYLOAD inside msg.c
+            if (typeof cleanedMsg.c === 'string' && cleanedMsg.c.includes('EMAIL_DRAFT_PAYLOAD:')) {
+                const parts = cleanedMsg.c.split('EMAIL_DRAFT_PAYLOAD:', 2);
+                const prefix = parts[0];
+                const jsonText = extractEmailDraftJson(cleanedMsg.c);
+                if (jsonText) {
+                    try {
+                        const draft = JSON.parse(jsonText);
+                        
+                        // Clean attachment_content
+                        if (draft.attachment_content && String(draft.attachment_content).length > 1000) {
+                            draft.attachment_content = "[Attachment content omitted for storage]";
+                        }
+                        
+                        // Clean attachments array
+                        if (Array.isArray(draft.attachments)) {
+                            draft.attachments = draft.attachments.map(att => {
+                                const cleanAtt = { ...att };
+                                if (cleanAtt.content && String(cleanAtt.content).length > 1000) {
+                                    cleanAtt.content = "[Attachment content omitted for storage]";
+                                }
+                                if (cleanAtt.attachment_content && String(cleanAtt.attachment_content).length > 1000) {
+                                    cleanAtt.attachment_content = "[Attachment content omitted for storage]";
+                                }
+                                if (cleanAtt.data && String(cleanAtt.data).length > 1000) {
+                                    cleanAtt.data = "[Attachment content omitted for storage]";
+                                }
+                                return cleanAtt;
+                            });
+                        }
+                        
+                        cleanedMsg.c = `${prefix}EMAIL_DRAFT_PAYLOAD:${JSON.stringify(draft)}`;
+                    } catch (e) {
+                        console.error("Error cleaning EMAIL_DRAFT_PAYLOAD for storage", e);
+                    }
+                }
+            }
+            
+            return cleanedMsg;
+        });
+        
+        return {
+            ...chat,
+            ms: cleanedMs
+        };
+    });
+}
+
+function getAggressivelyCleanChatsForStorage() {
+    if (!state.chats) return [];
+    return state.chats.map(chat => {
+        const cleanedMs = (chat.ms || []).slice(-30).map(msg => {
+            const cleanedMsg = { ...msg };
+
+            if (cleanedMsg.i) {
+                cleanedMsg.i = Array.isArray(cleanedMsg.i)
+                    ? cleanedMsg.i.map((_, idx) => `[Image ${idx + 1} omitted for storage]`)
+                    : "[Image omitted for storage]";
+            }
+
+            if (cleanedMsg.attachments) {
+                cleanedMsg.attachments = cleanedMsg.attachments.map(att => ({
+                    name: att?.name || att?.filename || att?.attachment_filename || 'attachment',
+                    type: att?.type || '',
+                    size: att?.size || null
+                }));
+            }
+
+            if (typeof cleanedMsg.c === 'string' && cleanedMsg.c.includes('EMAIL_DRAFT_PAYLOAD:')) {
+                const parts = cleanedMsg.c.split('EMAIL_DRAFT_PAYLOAD:', 2);
+                const prefix = parts[0];
+                const jsonText = extractEmailDraftJson(cleanedMsg.c);
+                if (jsonText) {
+                    try {
+                        const draft = JSON.parse(jsonText);
+                        if (draft.attachment_content) {
+                            draft.attachment_content = "[Attachment omitted for storage]";
+                        }
+                        if (Array.isArray(draft.attachments)) {
+                            draft.attachments = draft.attachments.map(att => ({
+                                filename: att?.filename || att?.attachment_filename || att?.name || 'attachment',
+                                type: att?.type || '',
+                                size: att?.size || null
+                            }));
+                        }
+                        cleanedMsg.c = `${prefix}EMAIL_DRAFT_PAYLOAD:${JSON.stringify(draft)}`;
+                    } catch (e) {
+                        console.error("Error aggressively cleaning EMAIL_DRAFT_PAYLOAD for storage", e);
+                    }
+                }
+            }
+
+            if (typeof cleanedMsg.c === 'string' && cleanedMsg.c.length > 4000) {
+                cleanedMsg.c = `${cleanedMsg.c.slice(0, 4000)}\n\n[Message truncated for storage]`;
+            }
+
+            return cleanedMsg;
+        });
+
+        return {
+            id: chat.id,
+            title: chat.title,
+            updatedAt: chat.updatedAt || chat.updated_at || Date.now(),
+            updated_at: chat.updated_at || chat.updatedAt || Date.now(),
+            ms: cleanedMs
+        };
+    });
+}
+
 function saveLocalChats() {
     const key = chatStorageKey();
     if (!key) return;
     normalizeAllChats();
-    localStorage.setItem(key, JSON.stringify(state.chats));
+    try {
+        const cleanedChats = getCleanChatsForStorage();
+        if (!safeStorageSetItem(key, JSON.stringify(cleanedChats))) {
+            safeStorageSetItem(key, JSON.stringify(getAggressivelyCleanChatsForStorage()));
+        }
+    } catch (err) {
+        console.error("Failed to save chats to localStorage:", err);
+        try {
+            safeStorageSetItem(key, JSON.stringify(getAggressivelyCleanChatsForStorage()));
+        } catch (retryErr) {
+            console.error("Failed to save aggressively cleaned chats:", retryErr);
+        }
+    }
 }
 
 function mergeChatsByNewest(localChats, cloudChats) {
@@ -279,10 +462,14 @@ function flushCloudSync() {
     if (!state.user) return Promise.resolve();
     clearTimeout(persistTimer);
     persistTimer = null;
-    saveLocalChats();
+    try {
+        saveLocalChats();
+    } catch (err) {
+        console.error("Local chat save failed before cloud sync:", err);
+    }
 
     const payload = {
-        chats: state.chats.map(chat => normalizeChat({ ...chat, ms: Array.isArray(chat.ms) ? chat.ms : [] })),
+        chats: getCleanChatsForStorage(),
         deleted_chat_ids: readDeletedChatIds()
     };
 
@@ -313,7 +500,11 @@ function flushCloudSync() {
 }
 
 function requestChatPersist({ immediate = false } = {}) {
-    saveLocalChats();
+    try {
+        saveLocalChats();
+    } catch (err) {
+        console.error("Local chat save failed during requestChatPersist:", err);
+    }
     if (immediate) return flushCloudSync();
     clearTimeout(persistTimer);
     persistTimer = setTimeout(() => flushCloudSync(), CHAT_SYNC_DEBOUNCE_MS);
@@ -348,7 +539,7 @@ function startNewChat() {
 function loadChat(id) {
     state.set('activeId', id);
     state.set('activeJobId', null);
-    localStorage.setItem('helper_active_chat_v2', id);
+    safeStorageSetItem('helper_active_chat_v2', id);
     const chat = state.chats.find(c => c.id === id);
     if (!chat) {
         startNewChat();
@@ -364,7 +555,7 @@ function loadChat(id) {
     if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) ui.toggleSidebar();
     
     // Restore pending prompt if one was typed but not sent during the current page session.
-    const pendingPrompt = localStorage.getItem('helper_pending_prompt_' + id);
+    const pendingPrompt = safeStorageGetItem('helper_pending_prompt_' + id);
     const promptEl = document.getElementById('prompt');
     if (promptEl) {
         promptEl.value = pendingPrompt || '';
@@ -375,7 +566,7 @@ function loadChat(id) {
     ui.checkAuthMode();
 
     // Restore scroll position
-    const savedScroll = localStorage.getItem('helper_scroll_pos_' + id);
+    const savedScroll = safeStorageGetItem('helper_scroll_pos_' + id);
     const chatArea = document.getElementById('chat-area');
     if (chatArea) {
         if (savedScroll !== null) {
@@ -393,10 +584,10 @@ function loadChat(id) {
 async function loadUserChats() {
     if (!state.user || !state.user.email) return;
     const key = chatStorageKey();
-    let localStr = localStorage.getItem(key);
-    if (!localStr && localStorage.getItem('helper_chats_v2')) {
-        localStr = localStorage.getItem('helper_chats_v2');
-        localStorage.setItem(key, localStr); localStorage.removeItem('helper_chats_v2');
+    let localStr = safeStorageGetItem(key);
+    if (!localStr && safeStorageGetItem('helper_chats_v2')) {
+        localStr = safeStorageGetItem('helper_chats_v2');
+        safeStorageSetItem(key, localStr); safeStorageRemoveItem('helper_chats_v2');
     }
     let localChats = [];
     if (localStr) {
@@ -406,7 +597,7 @@ async function loadUserChats() {
             localChats = [];
         }
         state.chats = mergeChatsByNewest(localChats, []); window.chats = state.chats; ui.renderHist();
-        const sId = localStorage.getItem('helper_active_chat_v2');
+        const sId = safeStorageGetItem('helper_active_chat_v2');
         if (sId && state.chats.find(c => c.id === sId)) loadChat(sId);
     }
     try {
@@ -416,7 +607,7 @@ async function loadUserChats() {
             window.chats = state.chats;
             saveLocalChats();
             ui.renderHist();
-            const sId = localStorage.getItem('helper_active_chat_v2');
+            const sId = safeStorageGetItem('helper_active_chat_v2');
             if (sId && state.chats.find(c => c.id === sId)) loadChat(sId);
         }
     } catch (e) { console.error("Cloud fetch failed:", e); }
@@ -486,11 +677,11 @@ async function handleAuth(t) {
             if (t === 'signup' || (t === 'login' && data.unverified)) ui.switchAuth('otp');
             else {
                 state.set('user', data.user);
-                localStorage.setItem('helper_user_v2', JSON.stringify(data.user));
-                if (data.token) localStorage.setItem('helper_token_v2', data.token);
+                safeStorageSetItem('helper_user_v2', JSON.stringify(data.user));
+                if (data.token) safeStorageSetItem('helper_token_v2', data.token);
                 document.getElementById('auth-overlay').style.display = 'none';
                 loadUserChats(); ui.updUI();
-                if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
+                if (!safeStorageGetItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
                 ui.smartFocus('prompt');
             }
         } else alert(data.error || 'Check credentials');
@@ -604,8 +795,8 @@ async function send() {
     if (!state.activeId) state.set('activeId', Date.now().toString());
 
     // Clear state persistence keys for this chat on send
-    localStorage.removeItem('helper_pending_prompt_' + state.activeId);
-    localStorage.removeItem('helper_scroll_pos_' + state.activeId);
+    safeStorageRemoveItem('helper_pending_prompt_' + state.activeId);
+    safeStorageRemoveItem('helper_scroll_pos_' + state.activeId);
 
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) {
@@ -635,8 +826,15 @@ async function send() {
     const base64List = hasImages ? state.currentImages.map(img => img.base64) : [];
     const uiImgPayload = base64List.length === 1 ? base64List[0] : (base64List.length > 1 ? base64List : null);
 
+    const attachmentsToSend = hasImages ? state.currentImages.map(img => ({
+        name: img.name || 'image.png',
+        type: img.type || 'image/png',
+        size: img.size || null,
+        data: img.base64
+    })) : [];
+
     ui.addMsg('u', finalPrompt, uiImgPayload, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: finalPrompt, i: uiImgPayload, masked: isMasked });
+    chat.ms.push({ r: 'u', c: finalPrompt, i: uiImgPayload, attachments: attachmentsToSend, masked: isMasked });
     touchChat(chat.id);
     requestChatPersist({ immediate: false });
     mascot.triggerBotReaction(p || "Attached Context");
@@ -667,7 +865,7 @@ async function send() {
 
     try {
         const res = await api.streamChat({
-            prompt: finalPrompt, history: chat.ms, model: state.selectedModel, img: uiImgPayload, name: state.user.name,
+            prompt: finalPrompt, history: chat.ms, model: state.selectedModel, img: uiImgPayload, attachments: attachmentsToSend, name: state.user.name,
             persona: document.getElementById('persona-toggle').checked, isMasked,
             sys: {
                 english: document.getElementById('t-eng').classList.contains('on'),
@@ -814,7 +1012,7 @@ async function retrieveContext(text) {
 
 // --- Theme Engine ---
 window.applyThemeChoice = function (choice) {
-    localStorage.setItem('helper_theme_pref', choice);
+    safeStorageSetItem('helper_theme_pref', choice);
     const iconMap = { light: '☀️', dark: '🌙', system: '🌓' };
     const labels = { light: 'Light', dark: 'Dark', system: 'System' };
     const ti = document.getElementById('current-theme-icon'); if (ti) ti.innerText = iconMap[choice] || '🌓';
@@ -832,8 +1030,8 @@ window.toggleThemeMenu = function (e, menuId) {
     document.querySelectorAll('.set-row').forEach(r => r.classList.remove('row-elevated'));
     if (!vis) { menu.style.display = 'flex'; const pr = menu.closest('.set-row'); if (pr) pr.classList.add('row-elevated'); }
 };
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { if (localStorage.getItem('helper_theme_pref') === 'system') ui.setThemeUI(e.matches ? 'dark' : 'light'); });
-function initTheme() { window.applyThemeChoice(localStorage.getItem('helper_theme_pref') || 'system'); }
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { if (safeStorageGetItem('helper_theme_pref') === 'system') ui.setThemeUI(e.matches ? 'dark' : 'light'); });
+function initTheme() { window.applyThemeChoice(safeStorageGetItem('helper_theme_pref') || 'system'); }
 
 // --- Auto-resize ---
 window.autoRes = function (el) { if (!el) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; };
@@ -1012,7 +1210,14 @@ function previewImg(i) {
                     const base64 = e.target.result.split(',')[1];
                     const blobUrl = URL.createObjectURL(file);
                     state.currentImages = state.currentImages || [];
-                    state.currentImages.push({ id, base64, blobUrl });
+                    state.currentImages.push({
+                        id,
+                        base64,
+                        blobUrl,
+                        name: file.name,
+                        type: file.type,
+                        size: file.size
+                    });
                     renderAttachmentsPreview();
                     ui.selModel('gemma4:e2b', 'Gemma 4');
                 };
@@ -1068,22 +1273,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
-        const savedUser = localStorage.getItem('helper_user_v2');
+        const savedUser = safeStorageGetItem('helper_user_v2');
         if (savedUser) {
             try {
                 state.set('user', JSON.parse(savedUser));
                 document.getElementById('auth-overlay').style.display = 'none';
                 await loadUserChats();
-                if (localStorage.getItem('helper_active_modal_v2') === 'settings') ui.openSettings();
+                if (safeStorageGetItem('helper_active_modal_v2') === 'settings') ui.openSettings();
                 ui.updUI();
-                if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
+                if (!safeStorageGetItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
                 ui.smartFocus('prompt');
             } catch (err) {
                 console.warn('Failed to restore saved user state, clearing local auth cache:', err);
-                localStorage.removeItem('helper_user_v2');
-                localStorage.removeItem('helper_token_v2');
-                localStorage.removeItem('helper_active_chat_v2');
-                localStorage.removeItem('helper_active_modal_v2');
+                safeStorageRemoveItem('helper_user_v2');
+                safeStorageRemoveItem('helper_token_v2');
+                safeStorageRemoveItem('helper_active_chat_v2');
+                safeStorageRemoveItem('helper_active_modal_v2');
                 document.getElementById('auth-overlay').style.display = 'flex';
                 ui.renderHist();
                 document.getElementById('l-email')?.focus();
@@ -1102,7 +1307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.autoRes(promptIn); 
                 sendBtn?.classList.toggle('pulsing', promptIn.value.trim().length > 0); 
                 if (state.activeId) {
-                    localStorage.setItem('helper_pending_prompt_' + state.activeId, promptIn.value);
+                    safeStorageSetItem('helper_pending_prompt_' + state.activeId, promptIn.value);
                 }
             });
             promptIn.addEventListener('keydown', handleChatKey);
@@ -1112,7 +1317,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (chatArea) {
             chatArea.addEventListener('scroll', () => {
                 if (state.activeId) {
-                    localStorage.setItem('helper_scroll_pos_' + state.activeId, chatArea.scrollTop);
+                    safeStorageSetItem('helper_scroll_pos_' + state.activeId, chatArea.scrollTop);
                 }
             });
         }
