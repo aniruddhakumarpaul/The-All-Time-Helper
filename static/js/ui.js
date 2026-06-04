@@ -367,19 +367,10 @@ function cancelEdit(idx) {
 }
 
 function previewImg(i) {
-    if (i.files && i.files[0]) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            state.currentImg = e.target.result.split(',')[1];
-            if (state.currentBlobUrl) URL.revokeObjectURL(state.currentBlobUrl);
-            state.currentBlobUrl = URL.createObjectURL(i.files[0]);
-            const area = document.getElementById('img-preview-area');
-            area.style.display = 'flex';
-            area.innerHTML = `<div class="img-thumb-wrap"><img src="${state.currentBlobUrl}" class="img-thumb"><button class="img-remove-btn" onclick="clearImgPreview()">✕</button></div>`;
-            selModel('moondream', 'Moondream (Vision)');
-        };
-        reader.readAsDataURL(i.files[0]);
+    if (typeof window !== 'undefined' && window.previewImg && window.previewImg !== previewImg) {
+        return window.previewImg(i);
     }
+    console.warn('Image upload is not initialized yet.');
 }
 
 function clearImgPreview() {
@@ -503,10 +494,15 @@ function renderBotMessage(el, content, idx) {
                 const rawAttachments = Array.isArray(draft.attachments) ? draft.attachments : [];
                 const normalized = rawAttachments
                     .map((attachment, index) => ({
+                        id: attachment?.id || '',
                         content: attachment?.content || attachment?.attachment_content || attachment?.data || '',
-                        filename: attachment?.filename || attachment?.attachment_filename || attachment?.name || `attachment_${index + 1}.png`
+                        filename: attachment?.filename || attachment?.attachment_filename || attachment?.name || `attachment_${index + 1}.png`,
+                        name: attachment?.name || attachment?.filename || `attachment_${index + 1}.png`,
+                        type: attachment?.type || attachment?.content_type || '',
+                        size: attachment?.size || null,
+                        sha256: attachment?.sha256 || ''
                     }))
-                    .filter(attachment => String(attachment.content || '').trim());
+                    .filter(attachment => attachment.id || String(attachment.content || '').trim());
                 if (!normalized.length && draft.attachment_content) {
                     normalized.push({
                         content: draft.attachment_content,
@@ -526,7 +522,11 @@ function renderBotMessage(el, content, idx) {
                 const attachmentIsDataUrl = /^data:/i.test(attachmentText);
                 const attachmentLooksBase64 = !attachmentIsUrl && !attachmentIsDataUrl && attachmentText.length >= 64 && /^[A-Za-z0-9+/=\s]+$/.test(attachmentText);
                 const attachmentCanPreview = attachmentIsDataUrl || attachmentLooksBase64;
-                const attachmentSizeLabel = attachmentIsUrl
+                const attachmentSizeLabel = attachment.size
+                    ? `${Math.round(attachment.size / 10.24) / 100} KB`
+                    : attachment.id
+                        ? 'stored securely'
+                        : attachmentIsUrl
                     ? 'not downloaded'
                     : attachmentCanPreview
                         ? `${Math.round((attachmentIsDataUrl ? attachmentText.length : attachmentText.replace(/\s/g, '').length * 0.75) / 10.24) / 100} KB`
@@ -590,7 +590,7 @@ function renderBotMessage(el, content, idx) {
                 ` : ''}
                 <div class="email-preview-header">Live HTML Preview</div>
                 <div class="email-iframe-wrapper">
-                    <iframe class="email-preview-iframe" sandbox="allow-same-origin"></iframe>
+                    <iframe class="email-preview-iframe" sandbox=""></iframe>
                 </div>
                 <div class="email-actions">
                     <button class="email-widget-btn send-email-btn">
@@ -663,12 +663,7 @@ function renderBotMessage(el, content, idx) {
                 try {
                     const html = await api.renderEmailPreview(bodyVal, toneVal);
                     const safeHtml = String(html || '').replace(/<script[\s\S]*?<\/script>/gi, '');
-                    const doc = iframe.contentDocument || iframe.contentWindow.document;
-                    if (doc) {
-                        doc.open();
-                        doc.write(safeHtml);
-                        doc.close();
-                    }
+                    iframe.srcdoc = safeHtml;
                 } catch (err) {
                     console.error("Error updating preview:", err);
                 }

@@ -1075,6 +1075,208 @@ class HardeningTests(unittest.TestCase):
             self.assertEqual(normalized[1]["filename"], "img1.png")
             self.assertEqual(normalized[2]["filename"], "img2.png")
 
+    def test_attachment_store_saves_and_resolves_user_image(self):
+        import base64
+        import tempfile
+        from app.logic import attachment_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "one.png",
+                    "image/png",
+                    self._png_bytes(),
+                    "owner@example.com",
+                )
+                self.assertIn("id", saved)
+                self.assertEqual(saved["name"], "one.png")
+                self.assertEqual(saved["type"], "image/png")
+
+                metadata = attachment_store.resolve_attachment_metadata(saved["id"], "owner@example.com")
+                self.assertEqual(metadata["sha256"], saved["sha256"])
+
+                resolved = attachment_store.resolve_attachment_reference(saved, "owner@example.com")
+                self.assertEqual(base64.b64decode(resolved["content"]), self._png_bytes())
+                self.assertEqual(resolved["filename"], "one.png")
+
+                with self.assertRaises(attachment_store.AttachmentStoreError):
+                    attachment_store.resolve_attachment_metadata(saved["id"], "other@example.com")
+
+    def test_chat_attachment_model_accepts_file_ids_without_data(self):
+        from app.routes.chat import ChatRequest
+
+        req = ChatRequest(
+            prompt="attach these",
+            attachments=[{"id": "abc123", "name": "one.png", "type": "image/png", "size": 123}],
+        )
+
+        self.assertEqual(req.attachments[0].id, "abc123")
+        self.assertIsNone(req.attachments[0].data)
+
+    def test_direct_tool_preserves_current_attachment_id_metadata(self):
+        from app.logic import agents
+        from app.logic.exceptions import AgentFastExit
+        import json
+
+        payload = (
+            "EMAIL_DRAFT_PAYLOAD:"
+            + json.dumps({
+                "recipient": "user@example.com",
+                "subject": "Images",
+                "body": "Please find the requested image attached.",
+                "tone": "modern",
+                "attachment_content": None,
+                "attachment_filename": "one.png",
+                "attachments": [{"id": "file-1", "filename": "one.png", "type": "image/png", "size": 123}],
+            })
+        )
+        img_data = [
+            {"id": "file-1", "name": "one.png", "type": "image/png", "size": 123, "path": "ignored"},
+            {"id": "file-2", "name": "two.png", "type": "image/png", "size": 456, "path": "ignored"},
+        ]
+
+        with patch.object(agents.tools.send_email_tool, "func", side_effect=AgentFastExit(payload)) as email_tool:
+            with patch("app.logic.agents.requests.post", side_effect=RuntimeError("skip local model")):
+                result = agents._try_direct_tool_execution(
+                    "email user@example.com and attach these two images",
+                    {"requires_tools": True, "is_local": True, "force_direct_tool": True},
+                    history=[],
+                    target_model="gemma4:e2b",
+                    img_data=img_data,
+                )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        sent_attachments = email_tool.call_args.kwargs["attachments"]
+        self.assertEqual([att["id"] for att in sent_attachments], ["file-1", "file-2"])
+        self.assertEqual([att["filename"] for att in sent_attachments], ["one.png", "two.png"])
+        self.assertNotIn("content", sent_attachments[0])
+
+    def test_send_email_tool_keeps_file_id_draft_metadata_only(self):
+        import json
+        from app.logic import tools
+        from app.logic.exceptions import AgentFastExit
+
+        with self.assertRaises(AgentFastExit) as ctx:
+            tools.send_email_tool.func(
+                recipient="user@example.com",
+                subject="Images",
+                body="Attached.",
+                attachments=[{"id": "file-1", "name": "one.png", "type": "image/png", "size": 123}],
+            )
+
+        payload = json.loads(ctx.exception.result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertIsNone(payload["attachment_content"])
+        self.assertEqual(payload["attachments"][0]["id"], "file-1")
+        self.assertNotIn("content", payload["attachments"][0])
+
+    def test_send_or_simulate_email_resolves_attachment_id(self):
+        import tempfile
+        from app.logic import attachment_store, tools
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "one.png",
+                    "image/png",
+                    self._png_bytes(),
+                    "owner@example.com",
+                )
+                cwd = os.getcwd()
+                try:
+                    os.chdir(tmp)
+                    with patch.dict(os.environ, {"EMAIL_MODE": "SIMULATE"}, clear=False):
+                        result = tools.send_or_simulate_email(
+                            "user@example.com",
+                            "Subject",
+                            "Body",
+                            attachments=[saved],
+                            owner="owner@example.com",
+                        )
+                    with open("simulated_emails.log", "r", encoding="utf-8") as f:
+                        written = f.read()
+                finally:
+                    os.chdir(cwd)
+
+        self.assertIn("SIMULATE SUCCESS", result)
+        self.assertIn("one.png", written)
+        self.assertIn(str(len(self._png_bytes())), written)
+
+    def test_live_email_uses_mixed_root_and_alternative_body(self):
+        import tempfile
+        from app.logic import attachment_store, tools
+
+        class FakeSMTP:
+            sent_messages = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def starttls(self):
+                pass
+
+            def login(self, *_args):
+                pass
+
+            def send_message(self, msg):
+                self.sent_messages.append(msg)
+
+        FakeSMTP.sent_messages = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "one.png",
+                    "image/png",
+                    self._png_bytes(),
+                    "owner@example.com",
+                )
+                with patch.dict(
+                    os.environ,
+                    {
+                        "EMAIL_MODE": "LIVE",
+                        "SENDER_EMAIL": "sender@example.com",
+                        "SENDER_PWD": "secret",
+                    },
+                    clear=False,
+                ):
+                    with patch("app.logic.tools.smtplib.SMTP", FakeSMTP):
+                        result = tools.send_or_simulate_email(
+                            "user@example.com",
+                            "Subject",
+                            "Body",
+                            attachments=[saved],
+                            owner="owner@example.com",
+                        )
+
+        self.assertIn("LIVE SUCCESS", result)
+        msg = FakeSMTP.sent_messages[0]
+        self.assertEqual(msg.get_content_subtype(), "mixed")
+        payload = msg.get_payload()
+        self.assertEqual(payload[0].get_content_subtype(), "alternative")
+        self.assertEqual(payload[1].get_filename(), "one.png")
+        self.assertEqual(payload[1].get_content_type(), "image/png")
+
+    def test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe(self):
+        from pathlib import Path
+
+        app_js = Path("static/js/app.js").read_text(encoding="utf-8")
+        api_js = Path("static/js/api.js").read_text(encoding="utf-8")
+        ui_js = Path("static/js/ui.js").read_text(encoding="utf-8")
+
+        self.assertIn("uploadAttachments", api_js)
+        self.assertIn("new FormData()", api_js)
+        self.assertIn("await waitForPendingImageUploads()", app_js)
+        self.assertIn("historyForApi", app_js)
+        self.assertIn("img: null", app_js)
+        self.assertIn('iframe.srcdoc = safeHtml', ui_js)
+        self.assertIn('sandbox=""', ui_js)
+        self.assertNotIn('sandbox="allow-same-origin"', ui_js)
+
     @staticmethod
     def _chat_db():
         db = sqlite3.connect(":memory:")

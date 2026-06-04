@@ -21,6 +21,9 @@
 - Email image-attachment drafts support a backward-compatible `attachments` array for multi-image requests while preserving the legacy first-attachment fields used by older widgets and send paths.
 - Frontend chat persistence must never block user actions: if `localStorage` hits quota, the app falls back to a more aggressively redacted snapshot and keeps the send flow live.
 - Email preview rendering strips executable script tags before writing into the sandboxed iframe.
+- User-selected image uploads use a temporary backend attachment store and pass file IDs through chat/email flows; base64 JSON remains accepted only for legacy history, generated assets, and fallback paths.
+- Email drafts may contain ID-only attachment metadata, but SMTP/send simulation resolves those IDs server-side under the authenticated owner before MIME assembly.
+- Email preview iframes keep scripts disabled and use `srcdoc` without `allow-same-origin`; do not add `allow-scripts` for preview rendering.
 
 This file records the current high-level architectural decisions.
 

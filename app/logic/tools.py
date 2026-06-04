@@ -3,9 +3,10 @@ import smtplib
 import time
 from email.mime.text import MIMEText
 from crewai.tools import tool
-from app.logic.memory import query_memory, log_insight
+from app.logic.memory import query_memory, log_insight, user_context
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
+from app.logic.attachment_store import AttachmentStoreError, resolve_attachment_reference
 from contextvars import ContextVar
 from typing import Optional, List, Any, Tuple
 import base64
@@ -125,11 +126,16 @@ def _attachment_size_bytes(attachment_content: Optional[str]) -> int:
 def _attachment_label(attachments: list, fallback_filename: str = "report.txt") -> str:
     if not attachments:
         return f"{fallback_filename} (0 bytes)"
-    return ", ".join(
-        f"{att.get('filename') or fallback_filename} ({_attachment_size_bytes(att.get('content'))} bytes)"
-        for att in attachments
-        if isinstance(att, dict)
-    )
+    labels = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            continue
+        filename = att.get("filename") or att.get("name") or fallback_filename
+        size = att.get("size")
+        if size is None:
+            size = _attachment_size_bytes(att.get("content"))
+        labels.append(f"{filename} ({size} bytes)")
+    return ", ".join(labels)
 
 
 def _prepare_attachment(content: Any, filename: str = "report.txt", fallback: str = "attachment") -> Optional[dict]:
@@ -183,16 +189,61 @@ def _prepare_attachment(content: Any, filename: str = "report.txt", fallback: st
     return {"content": content_str, "filename": attachment_filename}
 
 
-def _normalize_attachments(attachment_content: Any = None, attachment_filename: str = "report.txt", attachments: Optional[list] = None) -> list:
+def _normalize_attachments(
+    attachment_content: Any = None,
+    attachment_filename: str = "report.txt",
+    attachments: Optional[list] = None,
+    owner: Optional[str] = None,
+    resolve_ids: bool = True,
+) -> list:
     normalized = []
     if attachments:
         for idx, att in enumerate(attachments):
             if not isinstance(att, dict):
                 continue
-            content = att.get("content") or att.get("attachment_content") or att.get("data")
             filename = att.get("filename") or att.get("attachment_filename") or att.get("name") or f"attachment_{idx + 1}.png"
+            content_type = att.get("content_type") or att.get("type")
+            if att.get("id"):
+                if resolve_ids:
+                    try:
+                        resolved = resolve_attachment_reference(att, owner or user_context.get(None))
+                    except AttachmentStoreError as e:
+                        logger.error(f"[Email Attachment] Failed to resolve attachment id {att.get('id')}: {e}")
+                        raise
+                    prepared = _prepare_attachment(
+                        resolved.get("content"),
+                        resolved.get("filename") or filename,
+                        fallback=f"attachment_{idx + 1}",
+                    )
+                    if prepared:
+                        prepared.update({
+                            "id": resolved.get("id"),
+                            "name": resolved.get("name") or resolved.get("filename") or filename,
+                            "content_type": resolved.get("content_type") or resolved.get("type") or content_type,
+                            "type": resolved.get("type") or resolved.get("content_type") or content_type,
+                            "size": resolved.get("size"),
+                            "sha256": resolved.get("sha256"),
+                        })
+                        normalized.append(prepared)
+                else:
+                    normalized.append({
+                        "id": att.get("id"),
+                        "filename": filename,
+                        "name": att.get("name") or filename,
+                        "content_type": content_type,
+                        "type": content_type,
+                        "size": att.get("size"),
+                        "sha256": att.get("sha256"),
+                    })
+                continue
+            content = att.get("content") or att.get("attachment_content") or att.get("data")
             prepared = _prepare_attachment(content, filename, fallback=f"attachment_{idx + 1}")
             if prepared:
+                if content_type:
+                    prepared["content_type"] = content_type
+                    prepared["type"] = content_type
+                if att.get("size") is not None:
+                    prepared["size"] = att.get("size")
                 normalized.append(prepared)
     
     if attachment_content:
@@ -603,6 +654,7 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
     # Internal variables to match previous implementation and maintain backward compatibility
     attachment_filename = kwargs.get("attachment_filename", "report.txt")
     attachments = kwargs.get("attachments") or []
+    owner = kwargs.get("owner") or user_context.get(None)
     chat_image_reference = kwargs.get("chat_image_reference", "")
     raw_attachment_text = kwargs.get("raw_attachment_text", "")
     
@@ -695,10 +747,16 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
         except Exception as e:
             logger.error(f"[Email Tool] Error running type detection on attachment: {e}")
 
-    normalized_attachments = _normalize_attachments(attachment_content, attachment_filename, attachments)
+    normalized_attachments = _normalize_attachments(
+        attachment_content,
+        attachment_filename,
+        attachments,
+        owner=owner,
+        resolve_ids=False,
+    )
     if normalized_attachments:
-        attachment_content = normalized_attachments[0]["content"]
-        attachment_filename = normalized_attachments[0]["filename"]
+        attachment_content = normalized_attachments[0].get("content")
+        attachment_filename = normalized_attachments[0].get("filename") or attachment_filename
 
     draft = {
         "recipient": recipient,
@@ -716,7 +774,7 @@ def send_email_tool(recipient: str, subject: str, body: str, attachment_content:
     payload = f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
     raise AgentFastExit(payload)
 
-def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = "modern", attachment_content: str = None, attachment_filename: str = "report.txt", attachments: Optional[list] = None) -> str:
+def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = "modern", attachment_content: str = None, attachment_filename: str = "report.txt", attachments: Optional[list] = None, owner: Optional[str] = None) -> str:
     """Direct dispatch function. Integrates live SMTP or writes to simulated_emails.log."""
     load_dotenv()
     smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -732,10 +790,16 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
     if not recipients:
         return f"ERROR: No valid recipients found in '{recipient}'"
 
-    normalized_attachments = _normalize_attachments(attachment_content, attachment_filename, attachments)
+    normalized_attachments = _normalize_attachments(
+        attachment_content,
+        attachment_filename,
+        attachments,
+        owner=owner or user_context.get(None),
+        resolve_ids=True,
+    )
     if normalized_attachments:
-        attachment_content = normalized_attachments[0]["content"]
-        attachment_filename = normalized_attachments[0]["filename"]
+        attachment_content = normalized_attachments[0].get("content")
+        attachment_filename = normalized_attachments[0].get("filename") or attachment_filename
 
     results = []
     
@@ -761,14 +825,16 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                     if not personalized_body.startswith(f"Dear {first_name}"):
                         personalized_body = f"Dear {first_name},\n\n" + personalized_body
                     
-                    msg = MIMEMultipart('alternative')
+                    msg = MIMEMultipart('mixed')
                     msg['Subject'] = subject
                     msg['From'] = f"The All Time Helper <{sender_email}>"
                     msg['To'] = target
                     
-                    msg.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
+                    alternative = MIMEMultipart('alternative')
+                    alternative.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
                     html_content = _build_html_body(personalized_body, tone)
-                    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
+                    alternative.attach(MIMEText(html_content, 'html', 'utf-8'))
+                    msg.attach(alternative)
 
                     for attachment in normalized_attachments:
                         current_content = attachment.get("content")
@@ -796,10 +862,13 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                             # Extension already corrected in send_email_tool before draft payload
                             pass
 
+                        content_type = attachment.get("content_type") or attachment.get("type")
                         maintype, subtype = 'application', 'octet-stream'
-                        if current_filename:
+                        if content_type and "/" in str(content_type):
+                            maintype, subtype = str(content_type).split("/", 1)
+                        elif current_filename:
                             ext = current_filename.lower().split('.')[-1]
-                            if ext in ['png', 'jpg', 'jpeg', 'gif']:
+                            if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
                                 maintype = 'image'
                                 subtype = 'jpeg' if ext == 'jpg' else ext
                             elif ext == 'pdf':
@@ -812,7 +881,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                         part = MIMEBase(maintype, subtype)
                         part.set_payload(att_bytes)
                         encoders.encode_base64(part)
-                        part.add_header('Content-Disposition', f'attachment; filename="{current_filename}"')
+                        part.add_header('Content-Disposition', 'attachment', filename=current_filename)
                         msg.attach(part)
                         
                     server.send_message(msg)

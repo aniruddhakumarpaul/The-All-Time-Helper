@@ -684,6 +684,81 @@ def save_uploaded_image(img_base64: str) -> str:
         return None
 
 
+def _image_items(img_data: Any) -> list:
+    if not img_data:
+        return []
+    if isinstance(img_data, (str, bytes, dict)):
+        return [img_data]
+    if isinstance(img_data, (list, tuple)):
+        return list(img_data)
+    return [img_data]
+
+
+def _image_base64_from_item(item: Any) -> Optional[str]:
+    if item is None:
+        return None
+    if isinstance(item, bytes):
+        return base64.b64encode(item).decode("utf-8")
+    if isinstance(item, str):
+        value = item.strip()
+        if os.path.exists(value):
+            with open(value, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        return value
+    if isinstance(item, dict):
+        if item.get("data") or item.get("content") or item.get("attachment_content"):
+            return str(item.get("data") or item.get("content") or item.get("attachment_content"))
+        path = item.get("path")
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+    elif hasattr(item, "data"):
+        return getattr(item, "data")
+    return None
+
+
+def _image_source_for_vision(item: Any) -> Optional[str]:
+    if isinstance(item, dict) and item.get("path"):
+        return item.get("path")
+    return _image_base64_from_item(item)
+
+
+def _attachment_meta_from_image_item(item: Any, idx: int) -> Optional[dict]:
+    fallback = f"attachment_{idx + 1}.png"
+    if isinstance(item, dict):
+        filename = item.get("filename") or item.get("attachment_filename") or item.get("name") or fallback
+        content_type = item.get("content_type") or item.get("type") or "image/png"
+        meta = {
+            "filename": filename,
+            "name": item.get("name") or filename,
+            "type": content_type,
+            "content_type": content_type,
+        }
+        if item.get("size") is not None:
+            meta["size"] = item.get("size")
+        if item.get("id"):
+            meta["id"] = item.get("id")
+            if item.get("sha256"):
+                meta["sha256"] = item.get("sha256")
+            return meta
+        content = item.get("content") or item.get("attachment_content") or item.get("data")
+        if content:
+            meta["content"] = content
+            return meta
+        if item.get("path"):
+            meta["path"] = item.get("path")
+            return meta
+        return None
+    if hasattr(item, "data"):
+        content = getattr(item, "data", None)
+        if content:
+            filename = getattr(item, "name", fallback)
+            return {"content": content, "filename": filename, "name": filename, "type": "image/png", "content_type": "image/png"}
+    content = _image_base64_from_item(item)
+    if content:
+        return {"content": content, "filename": fallback, "name": fallback, "type": "image/png", "content_type": "image/png"}
+    return None
+
 
 def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
     """Expands ambiguous prompts (e.g. '1.', 'it') by analyzing recent conversation context."""
@@ -1243,12 +1318,12 @@ def _assemble_context(user_prompt, img_data, history, intent, user_id=None, stat
         prompt_with_img = user_prompt
  
         if img_data:
-            # Normalize to list of base64 image strings
-            imgs = [img_data] if isinstance(img_data, str) else img_data
+            imgs = _image_items(img_data)
             
             local_urls = []
             for item in imgs:
-                local_url = save_uploaded_image(item)
+                image_base64 = _image_base64_from_item(item)
+                local_url = save_uploaded_image(image_base64) if image_base64 else None
                 if local_url:
                     local_urls.append(local_url)
             
@@ -1259,11 +1334,14 @@ def _assemble_context(user_prompt, img_data, history, intent, user_id=None, stat
             if is_referring_to_image:
                 descs = []
                 for item in imgs:
+                    image_base64 = _image_base64_from_item(item)
+                    vision_source = _image_source_for_vision(item)
                     if not intent["is_local"]:
-                        desc = process_image_cloud(item, get_next_groq_key()) or process_image_local(item)
+                        desc = process_image_cloud(image_base64, get_next_groq_key()) if image_base64 else None
+                        desc = desc or (process_image_local(image_base64) if image_base64 else None)
                     else:
-                        vision_result = vision_sys.analyze_chat_images([item], clean_prompt)
-                        desc = vision_result["description"] if vision_result else process_image_local(item)
+                        vision_result = vision_sys.analyze_chat_images([vision_source], clean_prompt) if vision_source else None
+                        desc = vision_result["description"] if vision_result else (process_image_local(image_base64) if image_base64 else None)
                     if desc:
                         descs.append(desc)
                 
@@ -2252,22 +2330,13 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         # Step B: Resolve current request images or chat history reference if no image generation was requested
         if not attachment_url and attachment_choice in {"image", "both", "summary", "unknown"}:
             if img_data:
-                current_imgs = [img_data] if isinstance(img_data, str) else img_data
+                current_imgs = _image_items(img_data)
                 for idx, item in enumerate(current_imgs):
-                    content = ""
-                    fname = f"attachment_{idx+1}.png"
-                    if isinstance(item, str):
-                        content = item
-                    elif hasattr(item, "data"):
-                        content = item.data
-                        fname = getattr(item, "name", fname)
-                    elif isinstance(item, dict) and "data" in item:
-                        content = item["data"]
-                        fname = item.get("name", fname)
-                    if content:
-                        attachments.append({"content": content, "filename": fname})
+                    prepared = _attachment_meta_from_image_item(item, idx)
+                    if prepared:
+                        attachments.append(prepared)
                 if attachments:
-                    attachment_url = attachments[0]["content"]
+                    attachment_url = attachments[0].get("content") or attachments[0].get("id") or attachments[0].get("path")
                     filename = attachments[0].get("filename") or filename
 
             if not attachments:

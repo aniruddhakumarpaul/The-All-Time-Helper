@@ -30,6 +30,11 @@ function getAuthHeaders() {
     return { ...HEADERS_BASE, 'Authorization': `Bearer ${token}` };
 }
 
+function getAuthHeadersNoContentType() {
+    const token = localStorage.getItem('helper_token_v2') || '';
+    return { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' };
+}
+
 function checkAuthStatus(res) {
     if (res && res.status === 401) {
         if (typeof window !== 'undefined' && typeof window.signOut === 'function') {
@@ -77,6 +82,27 @@ async function streamChat(payload, signal) {
         signal
     });
     return checkAuthStatus(res);
+}
+
+/**
+ * Upload user-selected attachments once and return lightweight file metadata.
+ */
+async function uploadAttachments(files) {
+    const form = new FormData();
+    Array.from(files || []).forEach(file => {
+        form.append('files', file, file.name || 'attachment');
+    });
+    const res = await fetch(apiUrl('/api/attachments'), {
+        method: 'POST',
+        headers: getAuthHeadersNoContentType(),
+        body: form
+    });
+    checkAuthStatus(res);
+    const data = await res.json();
+    if (!res.ok || data.success === false) {
+        throw new Error(data.detail || data.error || 'Attachment upload failed');
+    }
+    return data.attachments || [];
 }
 
 /**
@@ -180,5 +206,5 @@ async function renderEmailPreview(body, tone) {
     return await res.text();
 }
 
-const api = { handleAuth, streamChat, fetchChats, syncChats, retrieveContext, checkUpscaleStatus, sendEmailDirect, cancelChatJob, renderEmailPreview };
+const api = { handleAuth, streamChat, uploadAttachments, fetchChats, syncChats, retrieveContext, checkUpscaleStatus, sendEmailDirect, cancelChatJob, renderEmailPreview };
 export { api };

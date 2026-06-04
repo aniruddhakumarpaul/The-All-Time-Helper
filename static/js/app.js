@@ -141,6 +141,95 @@ function addAttachedContext(text, { render = true } = {}) {
     return true;
 }
 
+function imageAttachmentForStorage(img) {
+    if (!img) return null;
+    const legacyData = img.base64 || img.data || img.content || null;
+    const item = {
+        id: img.id || null,
+        name: img.name || img.filename || 'image.png',
+        type: img.type || img.content_type || 'image/png',
+        size: img.size || null
+    };
+    if (legacyData && !img.id) item.data = legacyData;
+    return item;
+}
+
+function imagePayloadForDisplay(img) {
+    if (!img) return null;
+    const payload = imageAttachmentForStorage(img);
+    if (!payload) return null;
+    if ((img.base64 || img.data || img.content) && !img.id) payload.data = img.base64 || img.data || img.content;
+    return payload;
+}
+
+async function enqueueImageFile(file) {
+    if (!file || !String(file.type || '').startsWith('image/')) return null;
+    const localId = `img-${Date.now()}-${Math.random()}`;
+    const entry = {
+        id: localId,
+        localId,
+        blobUrl: URL.createObjectURL(file),
+        name: file.name || 'image.png',
+        type: file.type || 'image/png',
+        size: file.size || null,
+        uploading: true,
+        uploadError: null
+    };
+    state.currentImages = state.currentImages || [];
+    state.currentImages.push(entry);
+    renderAttachmentsPreview();
+    ui.selModel('gemma4:e2b', 'Gemma 4');
+
+    entry.uploadPromise = api.uploadAttachments([file])
+        .then(uploaded => {
+            const meta = uploaded && uploaded[0];
+            if (!meta || !meta.id) throw new Error('Attachment upload did not return a file id.');
+            Object.assign(entry, {
+                id: meta.id,
+                name: meta.name || entry.name,
+                type: meta.type || entry.type,
+                size: meta.size || entry.size,
+                sha256: meta.sha256 || null,
+                uploading: false,
+                uploadError: null
+            });
+            return entry;
+        })
+        .catch(err => {
+            entry.uploading = false;
+            entry.uploadError = err?.message || 'Upload failed';
+            throw err;
+        })
+        .finally(() => renderAttachmentsPreview());
+    return entry;
+}
+
+async function waitForPendingImageUploads() {
+    const images = state.currentImages || [];
+    const pending = images.filter(img => img.uploadPromise && img.uploading).map(img => img.uploadPromise);
+    if (pending.length) {
+        await Promise.all(pending);
+    }
+    const failed = images.find(img => img.uploadError || (!img.id && !img.base64));
+    if (failed) {
+        throw new Error(failed.uploadError || `Attachment upload failed for ${failed.name || 'image.png'}.`);
+    }
+}
+
+function redactMessageAttachmentsForApi(message) {
+    if (!message || typeof message !== 'object') return message;
+    const clone = { ...message };
+    if (Array.isArray(clone.attachments)) {
+        clone.attachments = clone.attachments.map(imageAttachmentForStorage).filter(Boolean);
+    }
+    if (Array.isArray(clone.i)) {
+        clone.i = clone.i.map(imagePayloadForDisplay).filter(Boolean);
+    } else if (clone.i && typeof clone.i === 'object') {
+        clone.i = imagePayloadForDisplay(clone.i);
+    }
+    return clone;
+}
+
 function normalizeMessageContent(content) {
     if (typeof content !== 'string') return content;
     let normalized = content.trim();
@@ -728,15 +817,29 @@ async function submitEdit(idx, container) {
     state.currentImages = [];
     state.attachedContexts = [];
 
-    // Populate state.currentImages with the original message's image(s)
-    if (originalMsg && originalMsg.i) {
-        const imgs = Array.isArray(originalMsg.i) ? originalMsg.i : [originalMsg.i];
-        imgs.forEach(base64 => {
-            state.currentImages.push({
-                id: `img-${Date.now()}-${Math.random()}`,
-                base64: base64,
-                blobUrl: null
-            });
+    // Populate state.currentImages with the original message's image attachment metadata.
+    if (originalMsg && (originalMsg.attachments || originalMsg.i)) {
+        const imgs = originalMsg.attachments || originalMsg.i;
+        (Array.isArray(imgs) ? imgs : [imgs]).forEach(item => {
+            if (!item) return;
+            if (typeof item === 'string') {
+                state.currentImages.push({
+                    id: `img-${Date.now()}-${Math.random()}`,
+                    base64: item,
+                    blobUrl: null,
+                    type: 'image/png',
+                    name: 'image.png'
+                });
+            } else if (typeof item === 'object') {
+                state.currentImages.push({
+                    id: item.id || `img-${Date.now()}-${Math.random()}`,
+                    base64: item.data || item.base64 || item.content || null,
+                    blobUrl: null,
+                    name: item.name || item.filename || 'image.png',
+                    type: item.type || item.content_type || 'image/png',
+                    size: item.size || null
+                });
+            }
         });
     }
 
@@ -823,18 +926,22 @@ async function send() {
         finalPrompt = `${formattedContexts}\n\n${p || "Review the attached context above."}`;
     }
 
-    const base64List = hasImages ? state.currentImages.map(img => img.base64) : [];
-    const uiImgPayload = base64List.length === 1 ? base64List[0] : (base64List.length > 1 ? base64List : null);
+    if (hasImages) {
+        try {
+            await waitForPendingImageUploads();
+        } catch (err) {
+            alert(err?.message || 'One or more attachments failed to upload. Please remove the failed attachment and try again.');
+            return;
+        }
+    }
 
-    const attachmentsToSend = hasImages ? state.currentImages.map(img => ({
-        name: img.name || 'image.png',
-        type: img.type || 'image/png',
-        size: img.size || null,
-        data: img.base64
-    })) : [];
+    const imageDisplayPayload = hasImages ? state.currentImages.map(imagePayloadForDisplay).filter(Boolean) : null;
+    const attachmentsToSend = hasImages ? state.currentImages.map(imageAttachmentForStorage).filter(Boolean) : [];
+    const historyForApi = chat.ms.map(redactMessageAttachmentsForApi);
 
-    ui.addMsg('u', finalPrompt, uiImgPayload, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: finalPrompt, i: uiImgPayload, attachments: attachmentsToSend, masked: isMasked });
+    ui.addMsg('u', finalPrompt, imageDisplayPayload, chat.ms.length, null, isMasked);
+    chat.ms.push({ r: 'u', c: finalPrompt, i: imageDisplayPayload, attachments: attachmentsToSend, masked: isMasked });
+    historyForApi.push(redactMessageAttachmentsForApi(chat.ms[chat.ms.length - 1]));
     touchChat(chat.id);
     requestChatPersist({ immediate: false });
     mascot.triggerBotReaction(p || "Attached Context");
@@ -865,7 +972,7 @@ async function send() {
 
     try {
         const res = await api.streamChat({
-            prompt: finalPrompt, history: chat.ms, model: state.selectedModel, img: uiImgPayload, attachments: attachmentsToSend, name: state.user.name,
+            prompt: finalPrompt, history: historyForApi, model: state.selectedModel, img: null, attachments: attachmentsToSend, name: state.user.name,
             persona: document.getElementById('persona-toggle').checked, isMasked,
             sys: {
                 english: document.getElementById('t-eng').classList.contains('on'),
@@ -1159,8 +1266,14 @@ function renderAttachmentsPreview() {
             const thumb = document.createElement('div');
             thumb.className = 'img-thumb-wrap';
             thumb.id = img.id;
+            const legacyData = img.base64 || img.data || img.content || '';
+            const src = img.blobUrl || (legacyData ? `data:${img.type || 'image/png'};base64,${legacyData}` : '');
+            const status = img.uploading
+                ? '<span class="attachment-upload-status">Uploading...</span>'
+                : (img.uploadError ? `<span class="attachment-upload-error">${escapeHTML(img.uploadError)}</span>` : '');
             thumb.innerHTML = `
-                <img src="${img.blobUrl || 'data:image/png;base64,' + img.base64}" class="img-thumb">
+                ${src ? `<img src="${src}" class="img-thumb">` : `<div class="context-thumb-icon">${escapeHTML(img.name || 'image.png')}</div>`}
+                ${status}
                 <button class="img-remove-btn" onclick="window.removeAttachment('${img.id}')">✕</button>
             `;
             area.appendChild(thumb);
@@ -1189,10 +1302,10 @@ function renderAttachmentsPreview() {
 }
 
 function removeAttachment(id) {
-    if (id.startsWith('img-')) {
-        const found = state.currentImages.find(img => img.id === id);
+    const found = (state.currentImages || []).find(img => img.id === id || img.localId === id);
+    if (found) {
         if (found && found.blobUrl) URL.revokeObjectURL(found.blobUrl);
-        state.currentImages = state.currentImages.filter(img => img.id !== id);
+        state.currentImages = state.currentImages.filter(img => img.id !== id && img.localId !== id);
     } else if (id.startsWith('text-')) {
         state.attachedContexts = state.attachedContexts.filter(ctx => ctx.id !== id);
     }
@@ -1203,26 +1316,7 @@ function previewImg(i) {
     if (i.files) {
         for (let idx = 0; idx < i.files.length; idx++) {
             const file = i.files[idx];
-            if (file.type.startsWith('image/')) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const id = `img-${Date.now()}-${Math.random()}`;
-                    const base64 = e.target.result.split(',')[1];
-                    const blobUrl = URL.createObjectURL(file);
-                    state.currentImages = state.currentImages || [];
-                    state.currentImages.push({
-                        id,
-                        base64,
-                        blobUrl,
-                        name: file.name,
-                        type: file.type,
-                        size: file.size
-                    });
-                    renderAttachmentsPreview();
-                    ui.selModel('gemma4:e2b', 'Gemma 4');
-                };
-                reader.readAsDataURL(file);
-            }
+            enqueueImageFile(file);
         }
     }
 }
@@ -1356,19 +1450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (e.dataTransfer.files && e.dataTransfer.files[0]) {
                     for (let i = 0; i < e.dataTransfer.files.length; i++) {
                         const file = e.dataTransfer.files[i];
-                        if (file.type.startsWith('image/')) {
-                            const reader = new FileReader();
-                            reader.onload = (ev) => {
-                                const id = `img-${Date.now()}-${Math.random()}`;
-                                const base64 = ev.target.result.split(',')[1];
-                                const blobUrl = URL.createObjectURL(file);
-                                state.currentImages = state.currentImages || [];
-                                state.currentImages.push({ id, base64, blobUrl });
-                                renderAttachmentsPreview();
-                                ui.selModel('gemma4:e2b', 'Gemma 4');
-                            };
-                            reader.readAsDataURL(file);
-                        }
+                        enqueueImageFile(file);
                     }
                     return;
                 }

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, HTTPException, Body
+from fastapi import APIRouter, Depends, Request, HTTPException, Body, UploadFile, File
 from fastapi.responses import StreamingResponse, HTMLResponse
 import sqlite3
 import json
@@ -18,6 +18,7 @@ from app.logic.neural_explainer import explain_neural_context
 from app.logic.agents import ask_the_helper
 from app.logger import logger
 from app.inference_queue import inference_queue
+from app.logic.attachment_store import AttachmentStoreError, resolve_attachment_metadata, save_attachment_bytes
 import asyncio
 import threading
 import queue
@@ -40,10 +41,11 @@ class PreviewEmailRequest(BaseModel):
 
 
 class Attachment(BaseModel):
-    name: str
-    type: str
+    id: Optional[str] = None
+    name: str = "attachment"
+    type: str = "application/octet-stream"
     size: Optional[int] = None
-    data: str  # Base64 encoded payload
+    data: Optional[str] = None  # Legacy base64 encoded payload
 
 class ChatRequest(BaseModel):
     prompt: str
@@ -64,10 +66,51 @@ class RetrieveRequest(BaseModel):
 class CancelJobRequest(BaseModel):
     job_id: str
 
+
+def _model_to_dict(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_none=True)
+    return model.dict(exclude_none=True)
+
+
+def _resolve_chat_attachments(attachments: List[Attachment], owner: str) -> List[dict]:
+    resolved = []
+    for att in attachments or []:
+        item = _model_to_dict(att)
+        if item.get("id"):
+            metadata = resolve_attachment_metadata(item["id"], owner)
+            item.update({
+                "id": metadata["id"],
+                "name": item.get("name") or metadata["name"],
+                "filename": item.get("filename") or item.get("name") or metadata["name"],
+                "type": item.get("type") or metadata["type"],
+                "content_type": item.get("content_type") or item.get("type") or metadata["content_type"],
+                "size": metadata["size"],
+                "sha256": metadata["sha256"],
+                "path": metadata["path"],
+            })
+        resolved.append(item)
+    return resolved
+
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
     return {"success": True, "chats": chats_array}
+
+
+@router.post("/api/attachments")
+async def upload_attachments(files: List[UploadFile] = File(...), current_user: str = Depends(get_current_user)):
+    try:
+        uploaded = []
+        for file in files:
+            data = await file.read()
+            uploaded.append(save_attachment_bytes(file.filename or "attachment", file.content_type or "", data, current_user))
+        return {"success": True, "attachments": uploaded}
+    except AttachmentStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Attachment upload failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Attachment upload failed.")
 
 @router.post("/sync_chats")
 def sync_chats(payload: Any = Body(...), current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
@@ -115,10 +158,18 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         elif isinstance(img, list):
             attachments = [Attachment(name=f"image_{i}.png", type="image/png", data=im) for i, im in enumerate(img)]
 
-    # Extract base64 image data from all image attachments and pass them as a list/str to ask_the_helper
+    try:
+        resolved_attachments = _resolve_chat_attachments(attachments, current_user)
+    except AttachmentStoreError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Extract image attachment references and pass them as structured data to ask_the_helper
     img_data_for_agent = None
-    if attachments:
-        img_data_for_agent = [att.data for att in attachments if att.type.startswith("image/")]
+    if resolved_attachments:
+        img_data_for_agent = [
+            att for att in resolved_attachments
+            if str(att.get("type") or att.get("content_type") or "").startswith("image/")
+        ]
         if len(img_data_for_agent) == 1:
             img_data_for_agent = img_data_for_agent[0]
         elif not img_data_for_agent:
@@ -348,7 +399,8 @@ def send_email_direct(req: SendEmailRequest, current_user: str = Depends(get_cur
             tone=req.tone,
             attachment_content=req.attachment_content,
             attachment_filename=req.attachment_filename,
-            attachments=req.attachments
+            attachments=req.attachments,
+            owner=current_user
         )
         
         # Determine status
