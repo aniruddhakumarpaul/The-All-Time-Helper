@@ -24,6 +24,8 @@
 - User-selected image uploads use a temporary backend attachment store and pass file IDs through chat/email flows; base64 JSON remains accepted only for legacy history, generated assets, and fallback paths.
 - Email drafts may contain ID-only attachment metadata, but SMTP/send simulation resolves those IDs server-side under the authenticated owner before MIME assembly.
 - Email preview iframes keep scripts disabled and use `srcdoc` without `allow-same-origin`; do not add `allow-scripts` for preview rendering.
+- Editing a user prompt is a frontend-owned rewrite: truncate local chat state at the edited message, persist that boundary immediately, then resubmit the edited prompt through the normal `/chat` backend route.
+- Dragging an email widget into the prompt context bar stores structured draft context and serializes it as `EMAIL_DRAFT_CONTEXT` only at send time, so the next email widget can reuse existing recipient, subject, body, tone, and attachment metadata without clipping JSON as ordinary text.
 
 This file records the current high-level architectural decisions.
 

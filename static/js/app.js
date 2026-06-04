@@ -14,6 +14,15 @@ const MAX_TOTAL_CONTEXT_CHARS = 18000;
 let persistTimer = null;
 let cloudSyncChain = Promise.resolve();
 
+function escapeHTML(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function finishPageLoader(message = 'Ready') {
     if (typeof window.finishPageLoader === 'function') {
         window.finishPageLoader(message);
@@ -104,16 +113,28 @@ function normalizeAttachedContextText(text) {
     return String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 }
 
+function serializeAttachedContext(ctx) {
+    if (ctx?.kind === 'email_draft' && ctx.draft) {
+        return `EMAIL_DRAFT_CONTEXT:${JSON.stringify(ctx.draft).replace(/"""/g, "'''")}`;
+    }
+    return String(ctx?.text || '');
+}
+
 function attachedContextTotalChars() {
-    return (state.attachedContexts || []).reduce((total, ctx) => total + String(ctx.text || '').length, 0);
+    return (state.attachedContexts || []).reduce((total, ctx) => {
+        if (ctx?.kind === 'email_draft') return total;
+        return total + String(ctx.text || '').length;
+    }, 0);
 }
 
 function addAttachedContext(text, { render = true } = {}) {
     const normalized = normalizeAttachedContextText(text);
     if (!normalized) return false;
+    const emailDraft = parseEmailDraftContext(normalized);
 
     state.attachedContexts = state.attachedContexts || [];
-    if (state.attachedContexts.some(ctx => normalizeAttachedContextText(ctx.text) === normalized)) {
+    const normalizedKey = emailDraft ? `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}` : normalized;
+    if (state.attachedContexts.some(ctx => normalizeAttachedContextText(serializeAttachedContext(ctx)) === normalizedKey)) {
         if (render) renderAttachmentsPreview();
         return true;
     }
@@ -123,20 +144,29 @@ function addAttachedContext(text, { render = true } = {}) {
         return false;
     }
 
-    const currentTotal = attachedContextTotalChars();
-    const remainingTotal = Math.max(0, MAX_TOTAL_CONTEXT_CHARS - currentTotal);
-    if (remainingTotal <= 0) {
-        alert('Attached context is already at the safe limit for one model request.');
-        return false;
-    }
-
-    const limit = Math.min(MAX_CONTEXT_CHARS, remainingTotal);
-    const clipped = normalized.length > limit
-        ? `${normalized.slice(0, limit).trimEnd()}\n\n[Context truncated to keep this request within the model limit.]`
-        : normalized;
-
     const id = `text-${Date.now()}-${Math.random()}`;
-    state.attachedContexts.push({ id, text: clipped });
+    if (emailDraft) {
+        const subject = emailDraft.subject || 'Untitled email';
+        state.attachedContexts.push({
+            id,
+            kind: 'email_draft',
+            draft: emailDraft,
+            text: `Email draft: ${subject}`
+        });
+    } else {
+        const currentTotal = attachedContextTotalChars();
+        const remainingTotal = Math.max(0, MAX_TOTAL_CONTEXT_CHARS - currentTotal);
+        if (remainingTotal <= 0) {
+            alert('Attached context is already at the safe limit for one model request.');
+            return false;
+        }
+
+        const limit = Math.min(MAX_CONTEXT_CHARS, remainingTotal);
+        const clipped = normalized.length > limit
+            ? `${normalized.slice(0, limit).trimEnd()}\n\n[Context truncated to keep this request within the model limit.]`
+            : normalized;
+        state.attachedContexts.push({ id, text: clipped });
+    }
     if (render) renderAttachmentsPreview();
     return true;
 }
@@ -246,8 +276,12 @@ function normalizeMessageContent(content) {
 }
 
 function extractEmailDraftJson(content) {
-    if (typeof content !== 'string' || !content.includes('EMAIL_DRAFT_PAYLOAD:')) return null;
-    const payloadPart = content.split('EMAIL_DRAFT_PAYLOAD:', 2)[1] || '';
+    return extractJsonAfterMarker(content, 'EMAIL_DRAFT_PAYLOAD:');
+}
+
+function extractJsonAfterMarker(content, marker) {
+    if (typeof content !== 'string' || !content.includes(marker)) return null;
+    const payloadPart = content.split(marker, 2)[1] || '';
     const startIdx = payloadPart.indexOf('{');
     if (startIdx === -1) return null;
 
@@ -276,6 +310,17 @@ function extractEmailDraftJson(content) {
         }
     }
     return null;
+}
+
+function parseEmailDraftContext(text) {
+    const jsonText = extractJsonAfterMarker(text, 'EMAIL_DRAFT_CONTEXT:');
+    if (!jsonText) return null;
+    try {
+        const draft = JSON.parse(jsonText);
+        return draft && typeof draft === 'object' ? draft : null;
+    } catch (err) {
+        return null;
+    }
 }
 
 function isCompleteToolResult(content) {
@@ -343,6 +388,41 @@ function formatMessageForExport(message) {
         ].filter((line, idx) => line || idx === 5 || idx === 7).join('\n').trim();
     } catch (err) {
         return content;
+    }
+}
+
+function compactEmailDraftForContext(draft) {
+    if (!draft || typeof draft !== 'object') return null;
+    const compact = {
+        recipient: draft.recipient || '',
+        subject: draft.subject || '',
+        body: draft.body || '',
+        tone: draft.tone || 'modern',
+        attachment_filename: draft.attachment_filename || ''
+    };
+    if (Array.isArray(draft.attachments) && draft.attachments.length) {
+        compact.attachments = draft.attachments.map((attachment, index) => ({
+            id: attachment?.id || '',
+            name: attachment?.name || attachment?.filename || attachment?.attachment_filename || `attachment_${index + 1}`,
+            filename: attachment?.filename || attachment?.attachment_filename || attachment?.name || `attachment_${index + 1}`,
+            type: attachment?.type || attachment?.content_type || '',
+            size: attachment?.size || null,
+            sha256: attachment?.sha256 || ''
+        })).filter(attachment => attachment.id || attachment.name || attachment.filename);
+    }
+    return compact;
+}
+
+function buildEmailDraftDragContext(message) {
+    const emailJson = extractEmailDraftJson(message?.c || '');
+    if (!emailJson) return null;
+    try {
+        const draft = compactEmailDraftForContext(JSON.parse(emailJson));
+        if (!draft) return null;
+        return `EMAIL_DRAFT_CONTEXT:${JSON.stringify(draft).replace(/"""/g, "'''")}`;
+    } catch (err) {
+        console.error("Failed to build email draft drag context:", err);
+        return null;
     }
 }
 
@@ -783,7 +863,7 @@ async function submitEdit(idx, container) {
     const newText = container.querySelector('textarea').value.trim();
     if (!newText) return;
     let chat = state.chats.find(c => c.id === state.activeId);
-    if (!chat) return;
+    if (!chat || !Array.isArray(chat.ms) || !chat.ms[idx] || chat.ms[idx].r !== 'u') return;
 
     // Show spinner on the Save & Submit button
     const saveBtn = container.querySelector('.edit-btn');
@@ -856,6 +936,13 @@ async function submitEdit(idx, container) {
     }
 
     chat.ms = chat.ms.slice(0, idx);
+    const firstUserIdx = chat.ms.findIndex(msg => msg && msg.r === 'u');
+    if (idx === 0 || firstUserIdx === -1) {
+        const titleText = newText || "Edited Chat";
+        chat.title = titleText.substring(0, 35).trim() || "Edited Chat";
+    }
+    touchChat(chat.id);
+    await requestChatPersist({ immediate: true });
 
     // Save current images and contexts to restore
     const savedImages = [...state.currentImages];
@@ -885,7 +972,7 @@ async function submitEdit(idx, container) {
 
     mascot.triggerBotReaction(newText);
     document.getElementById('prompt').value = newText;
-    send();
+    await send();
 }
 
 // --- Core: Send Message ---
@@ -922,7 +1009,7 @@ async function send() {
 
     let finalPrompt = p;
     if (hasContexts) {
-        const formattedContexts = state.attachedContexts.map((ctx, idx) => `[Attached Context ${idx + 1}]\n"""\n${ctx.text}\n"""`).join('\n\n');
+        const formattedContexts = state.attachedContexts.map((ctx, idx) => `[Attached Context ${idx + 1}]\n"""\n${serializeAttachedContext(ctx)}\n"""`).join('\n\n');
         finalPrompt = `${formattedContexts}\n\n${p || "Review the attached context above."}`;
     }
 
@@ -1158,7 +1245,10 @@ function initSidebarSwipe() {
 function handleMessageDragStart(e, idx) {
     const textEl = document.getElementById(`msg-text-${idx}`);
     if (textEl) {
-        e.dataTransfer.setData("text/plain", textEl.innerText);
+        const chat = state.chats.find(c => c.id === state.activeId);
+        const msg = chat?.ms?.[idx];
+        const dragContext = buildEmailDraftDragContext(msg) || textEl.innerText;
+        e.dataTransfer.setData("text/plain", dragContext);
         const msgEl = textEl.closest('.msg');
         if (msgEl) {
             if (e.dataTransfer.setDragImage) {
@@ -1282,7 +1372,10 @@ function renderAttachmentsPreview() {
     
     if (hasContexts) {
         state.attachedContexts.forEach(ctx => {
-            const displaySnippet = ctx.text.length > 25 ? ctx.text.substring(0, 25).trim() + '...' : ctx.text.trim();
+            const rawLabel = ctx.kind === 'email_draft'
+                ? `Email draft: ${ctx.draft?.subject || 'Untitled'}`
+                : String(ctx.text || '').trim();
+            const displaySnippet = rawLabel.length > 40 ? rawLabel.substring(0, 40).trim() + '...' : rawLabel;
             const chip = document.createElement('div');
             chip.className = 'context-thumb-wrap';
             chip.id = ctx.id;
@@ -1293,7 +1386,7 @@ function renderAttachmentsPreview() {
                         <polyline points="14 2 14 8 20 8"></polyline>
                     </svg>
                 </div>
-                <span class="context-thumb-text">Context: "${displaySnippet}"</span>
+                <span class="context-thumb-text">${escapeHTML(displaySnippet)}</span>
                 <button class="img-remove-btn" onclick="window.removeAttachment('${ctx.id}')">✕</button>
             `;
             area.appendChild(chip);

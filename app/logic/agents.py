@@ -149,6 +149,64 @@ def _extract_attached_context_text(prompt: str) -> str:
     return _preserve_structured_text("\n\n".join(match.strip() for match in matches if match.strip()))
 
 
+def _extract_json_after_marker(text: str, marker: str) -> Optional[dict]:
+    span = _json_span_after_marker(text, marker)
+    if not span:
+        return None
+    payload = str(text)
+    start_idx, end_idx = span
+    try:
+        parsed = json.loads(payload[start_idx:end_idx])
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _json_span_after_marker(text: str, marker: str) -> Optional[tuple]:
+    raw = str(text or "")
+    marker_idx = raw.find(marker)
+    if marker_idx == -1:
+        return None
+    payload = raw[marker_idx + len(marker):]
+    start_idx = payload.find("{")
+    if start_idx == -1:
+        return None
+    absolute_start = marker_idx + len(marker) + start_idx
+    depth = 0
+    in_string = False
+    escaped = False
+    for idx in range(start_idx, len(payload)):
+        ch = payload[idx]
+        if escaped:
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return absolute_start, marker_idx + len(marker) + idx + 1
+    return None
+
+
+def _remove_json_marker_payload(text: str, marker: str) -> str:
+    raw = str(text or "")
+    marker_idx = raw.find(marker)
+    span = _json_span_after_marker(raw, marker)
+    if marker_idx == -1 or not span:
+        return raw
+    _start, end_idx = span
+    return raw[:marker_idx] + raw[end_idx:]
+
+
 def _normalize_prompt_for_intent(prompt: str) -> str:
     """Light normalization used only for intent classification."""
     cleaned = clean_user_prompt(prompt)
@@ -774,6 +832,13 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
     # Clean the prompt to isolate user-typed message from attached contexts for checking
     clean_p = clean_user_prompt(user_prompt)
     p = clean_p.strip().lower()
+
+    attachment_choice = _attachment_choice_reply(p)
+    if attachment_choice:
+        pending_request = _pending_attachment_choice_request(history, clean_p)
+        if pending_request:
+            logger.debug(f"[Context] Resolved attachment choice '{clean_p}' against previous request")
+            return f"{pending_request}\n\nAttachment choice: {_attachment_choice_instruction(attachment_choice)}"
     
     # 1. Numbered selection detection
     is_numeric = re.match(r'^(1|2|3|4|5|one|two|three|four|five|first|second|third|the first|the second)(\.)?$', p)
@@ -830,6 +895,54 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
                 logger.debug("[Context] Resolved Admin Key provision")
                 return f"ADMIN_KEY_PROVIDED: {user_prompt}. ACTION: Use this key to CALL the send_email_tool NOW and finish the previous request."
     return user_prompt
+
+
+def _is_attachment_choice_clarification_text(content: str) -> bool:
+    c = str(content or "").lower()
+    return "i found both an image and text" in c and "image only" in c and "summary" in c
+
+
+def _attachment_choice_reply(prompt_lower: str) -> Optional[str]:
+    p = re.sub(r'[^a-z\s]', ' ', str(prompt_lower or "").lower())
+    p = re.sub(r'\s+', ' ', p).strip()
+    if p in {"both", "use both", "attach both", "text and image", "image and text"}:
+        return "both"
+    if p in {"image", "image only", "only image", "the image", "use image", "attach image"}:
+        return "image"
+    if p in {"text", "text only", "only text", "the text", "use text", "content"}:
+        return "text"
+    if p in {"summary", "summarize", "summarise", "summary with image", "summarize with image"}:
+        return "summary"
+    return None
+
+
+def _attachment_choice_instruction(choice: str) -> str:
+    return {
+        "both": "Update the email template using both the image attachments and the recent text.",
+        "image": "Update the email template using the image attachments only.",
+        "text": "Update the email template using the recent text only.",
+        "summary": "Update the email template using the image attachments and a summary of the recent text.",
+    }.get(choice, "Use the relevant recent attachment context.")
+
+
+def _pending_attachment_choice_request(history: list, current_prompt: str = "") -> Optional[str]:
+    if not history:
+        return None
+    current_clean = clean_user_prompt(current_prompt).strip()
+    saw_clarification = False
+    for msg in reversed(history[-8:]):
+        role = (msg.get("role") or msg.get("r") or "").lower()
+        content = _history_content(msg)
+        if current_clean and content.strip() == current_clean:
+            continue
+        if role in ["assistant", "a", "bot", "b"] and _is_attachment_choice_clarification_text(content):
+            saw_clarification = True
+            continue
+        if saw_clarification and role in ["user", "u", "human"]:
+            clean_content = clean_user_prompt(content).strip()
+            if clean_content:
+                return clean_content
+    return None
 
 
 def _history_msg_data(message: dict) -> tuple:
@@ -1961,22 +2074,70 @@ def _last_email_from_history(history: list, current_prompt: str = "") -> Optiona
 
 
 def _latest_attachable_history_context(history: list, current_prompt: str = "") -> dict:
-    context = {"has_image": False, "has_text": False, "text": ""}
+    context = {"has_image": False, "has_text": False, "text": "", "images": []}
     if not history:
         return context
 
     current_clean = clean_user_prompt(current_prompt).strip()
+
+    def add_image_ref(item, fallback_name: str = "attachment.png"):
+        if not item:
+            return
+        refs = item if isinstance(item, list) else [item]
+        for idx, ref in enumerate(refs):
+            if not ref:
+                continue
+            if isinstance(ref, dict):
+                content_type = ref.get("content_type") or ref.get("type") or "image/png"
+                if content_type and not str(content_type).startswith("image/"):
+                    continue
+                candidate = {
+                    "id": ref.get("id"),
+                    "name": ref.get("name") or ref.get("filename") or fallback_name,
+                    "filename": ref.get("filename") or ref.get("name") or fallback_name,
+                    "type": content_type,
+                    "content_type": content_type,
+                    "size": ref.get("size"),
+                    "sha256": ref.get("sha256"),
+                }
+                content = ref.get("content") or ref.get("attachment_content") or ref.get("data")
+                if content and not candidate.get("id"):
+                    candidate["content"] = content
+                key = candidate.get("id") or candidate.get("content") or candidate.get("filename")
+            else:
+                candidate = {
+                    "content": ref,
+                    "name": fallback_name,
+                    "filename": fallback_name,
+                    "type": "image/png",
+                    "content_type": "image/png",
+                }
+                key = str(ref)[:128]
+            if key and all((img.get("id") or img.get("content") or img.get("filename")) != key for img in context["images"]):
+                context["images"].append(candidate)
+
     for msg in reversed(history):
         content = _history_content(msg)
         if current_clean and content.strip() == current_clean:
             continue
 
-        if msg.get("img") or msg.get("i") or re.search(r'!\[[^\]]*\]\([^)]+\)', content):
+        attachments = msg.get("attachments") or []
+        for idx, attachment in enumerate(attachments if isinstance(attachments, list) else [attachments]):
+            add_image_ref(attachment, f"attachment_{idx + 1}.png")
+
+        if msg.get("img") or msg.get("i"):
+            add_image_ref(msg.get("img") or msg.get("i"), "upload.png")
+
+        if context["images"] or re.search(r'!\[[^\]]*\]\([^)]+\)', content):
             context["has_image"] = True
+
+        if _is_attachment_choice_clarification_text(content):
+            continue
 
         attached_text = _extract_attached_context_text(content)
         text = attached_text if attached_text else re.sub(r'!\[[^\]]*\]\([^)]+\)', ' ', content)
-        text = re.sub(r'EMAIL_DRAFT_PAYLOAD:\s*\{[\s\S]*?\}', ' ', text)
+        text = _remove_json_marker_payload(text, "EMAIL_DRAFT_PAYLOAD:")
+        text = _remove_json_marker_payload(text, "EMAIL_DRAFT_CONTEXT:")
         text = re.sub(r'```[\s\S]*?```', ' ', text)
         text = _preserve_structured_text(text)
         if re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text) and len(re.sub(r'\s+', ' ', text).split()) <= 8:
@@ -2001,7 +2162,7 @@ def _is_above_attachment_request(prompt: str) -> bool:
         "attach", "attachment", "include", "add", "put", "use"
     ])
     has_reference = any(kw in prompt_lower for kw in [
-        "above", "previous", "last", "that", "this", "it", "same"
+        "above", "previous", "last", "that", "this", "it", "same", "them", "these", "those", "together"
     ])
     has_email_context = any(kw in prompt_lower for kw in [
         "email", "mail", "template", "tamplate", "draft", "send"
@@ -2048,25 +2209,16 @@ def _attachment_choice_from_prompt(prompt: str, attach_context: dict) -> str:
     return "unknown"
 
 
-def _extract_latest_email_draft(history: list) -> Optional[dict]:
+def _extract_latest_email_draft(history: list, markers: tuple = ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:")) -> Optional[dict]:
     if not history:
         return None
 
     for msg in reversed(history):
         content = _history_content(msg)
-        if "EMAIL_DRAFT_PAYLOAD:" not in content:
-            continue
-        payload = content.split("EMAIL_DRAFT_PAYLOAD:", 1)[1].strip()
-        start_idx = payload.find("{")
-        end_idx = payload.rfind("}")
-        if start_idx == -1 or end_idx <= start_idx:
-            continue
-        try:
-            draft = json.loads(payload[start_idx:end_idx + 1])
-            if isinstance(draft, dict):
+        for marker in markers:
+            draft = _extract_json_after_marker(content, marker)
+            if draft:
                 return draft
-        except Exception:
-            continue
     return None
 
 
@@ -2124,10 +2276,16 @@ def _is_email_draft_edit_request(prompt_lower: str) -> bool:
 
 
 def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target_model: str) -> Optional[str]:
-    if not _is_email_draft_edit_request(clean_prompt.lower()):
+    prompt_lower = clean_prompt.lower()
+    draft_context = _extract_latest_email_draft(history, markers=("EMAIL_DRAFT_CONTEXT:",)) or {}
+    draft = draft_context or (_extract_latest_email_draft(history) or {})
+    has_draft_context = bool(draft_context)
+    has_attachment_action = any(kw in prompt_lower for kw in ["attach", "attachment", "include", "add", "use"])
+    has_email_surface = any(kw in prompt_lower for kw in ["email", "mail", "template", "tamplate", "draft", "widget"])
+    if not _is_email_draft_edit_request(prompt_lower) and not (has_draft_context and has_attachment_action and has_email_surface):
         return None
     if _looks_like_structured_technical_text(clean_prompt) and not any(
-        kw in clean_prompt.lower() for kw in ["email", "mail", "send", "attach", "attachment", "template", "draft"]
+        kw in prompt_lower for kw in ["email", "mail", "send", "attach", "attachment", "template", "draft"]
     ):
         return None
 
@@ -2140,10 +2298,9 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
             "I found both an image and text in the recent chat. "
             "Should I use the image only, the text only, both, or a summary of the relevant text with the image attached?"
         )
-    if not updates and not (is_attachment_template_request and attach_context.get("has_text")):
+    if not updates and not (is_attachment_template_request and (attach_context.get("has_text") or has_draft_context)):
         return None
 
-    draft = _extract_latest_email_draft(history) or {}
     if not draft:
         draft = {
             "recipient": _last_email_from_history(history, clean_prompt) or "",
@@ -2154,7 +2311,7 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
             "attachment_filename": "attachment.png",
         }
 
-    if is_attachment_template_request and attach_context.get("has_text") and not updates.get("body"):
+    if is_attachment_template_request and attach_context.get("has_text") and attachment_choice in {"text", "both", "summary", "ambiguous", "unknown"} and not updates.get("body"):
         text_context = attach_context.get("text", "")
         if attachment_choice == "summary":
             draft["body"] = "Summary of relevant previous text: " + text_context[:900]
@@ -2166,7 +2323,22 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
     draft.setdefault("subject", "Requested Content")
     draft.setdefault("body", "")
 
-    if not draft.get("attachment_content"):
+    if is_attachment_template_request and attachment_choice in {"image", "both", "summary", "ambiguous", "unknown"} and attach_context.get("images"):
+        image_attachments = []
+        for image in attach_context.get("images", []):
+            item = {k: v for k, v in image.items() if v is not None}
+            if item.get("id") or item.get("content"):
+                image_attachments.append(item)
+        if image_attachments:
+            draft["attachments"] = image_attachments
+            first = image_attachments[0]
+            draft["attachment_content"] = first.get("content")
+            draft["attachment_filename"] = first.get("filename") or first.get("name") or draft.get("attachment_filename", "attachment.png")
+    elif attachment_choice == "text":
+        draft["attachment_content"] = None
+        draft.pop("attachments", None)
+
+    if not draft.get("attachment_content") and not draft.get("attachments"):
         from app.logic.tools import resolve_chat_image
         resolved = resolve_chat_image("above image", history)
         if isinstance(resolved, tuple) and resolved[0] is not None:
@@ -2573,12 +2745,14 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
 
     # 1. Context Reconstruction (Harden against ambiguous prompts like '1.' or 'it')
     routing_prompt = _reconstruct_contextual_prompt(user_prompt, history)
+    direct_prompt = routing_prompt
     intent_prompt = _normalize_prompt_for_intent(routing_prompt)
 
     # 2. Intent Detection (use pre-computed if available)
     visual_continuation_prompt = _resolve_visual_task_continuation(user_prompt, history)
     if visual_continuation_prompt:
         user_prompt = visual_continuation_prompt
+        direct_prompt = user_prompt
         intent = {
             "is_sensitive": False,
             "requires_tools": True,
@@ -2590,7 +2764,7 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         intent = _detect_intent(intent_prompt, target_model, history)
     
     # Fast Path Direct Tool Execution (for local models to bypass ReAct loop failures)
-    direct_res = _try_direct_tool_execution(user_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback, img_data=img_data)
+    direct_res = _try_direct_tool_execution(direct_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback, img_data=img_data)
     if direct_res is not None:
         return direct_res
     

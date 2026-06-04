@@ -249,6 +249,50 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("image only", result)
         self.assertIn("summary", result)
 
+    def test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text(self):
+        from app.logic import agents
+        import json
+
+        img_a = {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050}
+        img_b = {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430}
+        history = [
+            {
+                "r": "u",
+                "c": (
+                    '[Attached Context 1]\n"""\nTO\nSUBJECT\nEMAIL TONE\nBODY\nLIVE HTML PREVIEW\n"""\n\n'
+                    "attach all this thing together and then we will send a mail to some one"
+                ),
+                "i": [img_a, img_b],
+                "attachments": [img_a, img_b],
+            },
+            {
+                "r": "b",
+                "c": (
+                    "I found both an image and text in the recent chat. "
+                    "Should I use the image only, the text only, both, or a summary of the relevant text with the image attached?"
+                ),
+            },
+        ]
+
+        reconstructed = agents._reconstruct_contextual_prompt("both", history)
+        self.assertIn("attach all this thing together", reconstructed)
+        self.assertIn("using both", reconstructed)
+
+        result = agents._try_direct_tool_execution(
+            reconstructed,
+            {"requires_tools": False, "is_local": False, "complexity": "direct"},
+            history=history,
+            target_model="gemma4-openrouter",
+        )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertIsNone(payload["attachment_content"])
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+        self.assertEqual(payload["attachments"][0]["name"], "image_proxy.png")
+        self.assertIn("TO", payload["body"])
+        self.assertNotIn("I found both an image and text", payload["body"])
+
     def test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing(self):
         from app.logic import agents
 
@@ -387,6 +431,53 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["recipient"], "")
         self.assertEqual(payload["body"], attached_text)
         self.assertNotIn("send_email_tool", result)
+
+    def test_dragged_email_widget_context_seeds_next_email_widget(self):
+        from app.logic import agents
+        import json
+
+        draft_body = (
+            "Detailed Explanation of the Python Code: Vector Database and FAISS Indexing\n\n"
+            "def generate_product_catalog():\n"
+            "    catalog.append({\"id\": i, \"description\": desc, \"category\": cat})\n"
+            "    return catalog\n"
+        )
+        draft_context = {
+            "recipient": "",
+            "subject": "Vector Database and FAISS Indexing",
+            "body": draft_body,
+            "tone": "formal",
+        }
+        img_a = {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050}
+        img_b = {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430}
+        prompt = (
+            '[Attached Context 1]\n"""\n'
+            f'EMAIL_DRAFT_CONTEXT:{json.dumps(draft_context)}\n'
+            '"""\n\nattach them together then we will send a mail to someone'
+        )
+        history = [{"role": "user", "content": prompt, "attachments": [img_a, img_b], "i": [img_a, img_b]}]
+        intent = {"is_local": False, "requires_tools": True, "complexity": "single", "is_sensitive": False}
+
+        with patch.object(agents, "_execute_cloud", side_effect=AssertionError("cloud should not run")):
+            result = agents.run_helper_agent(
+                prompt,
+                target_model="gemma4-openrouter",
+                history=history,
+                user_id="user@example.com",
+                intent=intent,
+            )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "")
+        self.assertEqual(payload["subject"], "Vector Database and FAISS Indexing")
+        self.assertEqual(payload["body"], draft_body)
+        self.assertEqual(payload["tone"], "formal")
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+
+        context = agents._latest_attachable_history_context(history, prompt)
+        self.assertNotIn("catalog.append", context["text"])
+        self.assertNotIn("\\n", context["text"])
 
     def test_log_prompt_image_email_regression(self):
         from app.logic import agents
@@ -1268,11 +1359,20 @@ class HardeningTests(unittest.TestCase):
         api_js = Path("static/js/api.js").read_text(encoding="utf-8")
         ui_js = Path("static/js/ui.js").read_text(encoding="utf-8")
 
+        self.assertIn("function escapeHTML(value)", app_js)
         self.assertIn("uploadAttachments", api_js)
         self.assertIn("new FormData()", api_js)
+        self.assertIn("function parseEmailDraftContext(text)", app_js)
+        self.assertIn("function serializeAttachedContext(ctx)", app_js)
+        self.assertIn("kind: 'email_draft'", app_js)
+        self.assertIn("ctx.kind === 'email_draft'", app_js)
+        self.assertIn("buildEmailDraftDragContext", app_js)
+        self.assertIn("EMAIL_DRAFT_CONTEXT:", app_js)
         self.assertIn("await waitForPendingImageUploads()", app_js)
         self.assertIn("historyForApi", app_js)
         self.assertIn("img: null", app_js)
+        self.assertIn("await requestChatPersist({ immediate: true })", app_js)
+        self.assertIn("await send();", app_js)
         self.assertIn('iframe.srcdoc = safeHtml', ui_js)
         self.assertIn('sandbox=""', ui_js)
         self.assertNotIn('sandbox="allow-same-origin"', ui_js)
