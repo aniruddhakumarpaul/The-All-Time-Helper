@@ -67,6 +67,47 @@ class CancelJobRequest(BaseModel):
     job_id: str
 
 
+def _extract_email_draft_from_context_text(text: str) -> Optional[dict]:
+    raw = str(text or "")
+    for marker in ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:"):
+        marker_idx = raw.find(marker)
+        if marker_idx == -1:
+            continue
+
+        payload = raw[marker_idx + len(marker):]
+        start_idx = payload.find("{")
+        if start_idx == -1:
+            continue
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start_idx, len(payload)):
+            ch = payload[idx]
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(payload[start_idx:idx + 1])
+                        return parsed if isinstance(parsed, dict) else None
+                    except Exception:
+                        return None
+    return None
+
+
 def _model_to_dict(model: BaseModel) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_none=True)
@@ -126,6 +167,14 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
     # Set context for isolation
     token = user_context.set(current_user)
     try:
+        draft = _extract_email_draft_from_context_text(req.text)
+        if draft:
+            return {
+                "success": True,
+                "kind": "email_draft",
+                "draft": draft,
+            }
+
         results = query_memory(req.text, n_results=req.n)
         
         # New: Generate an AI explanation for the snippets

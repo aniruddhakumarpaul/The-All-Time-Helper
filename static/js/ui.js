@@ -603,6 +603,7 @@ function renderBotMessage(el, content, idx) {
                 </div>
             `;
             el.appendChild(card);
+            card.__emailDraft = draft;
             if (window.initUpscaleImagePolling) {
                 window.initUpscaleImagePolling(el);
             }
@@ -612,6 +613,7 @@ function renderBotMessage(el, content, idx) {
                 draft.subject = card.querySelector('.email-subject-input')?.value.trim() || '';
                 draft.body = card.querySelector('.email-body-input')?.value || '';
                 draft.tone = card.querySelector('.email-tone-select')?.value || 'modern';
+                card.__emailDraft = draft;
                 if (window.updateSavedBotMessage) {
                     window.updateSavedBotMessage(idx, `EMAIL_DRAFT_PAYLOAD:${JSON.stringify(draft)}`, { immediate });
                 }
@@ -646,6 +648,7 @@ function renderBotMessage(el, content, idx) {
                     draft.attachment_content = base64;
                     draft.attachment_filename = filename;
                     draft.attachments = [{ content: base64, filename }];
+                    card.__emailDraft = draft;
                     if (window.updateSavedBotMessage) {
                         window.updateSavedBotMessage(idx, `EMAIL_DRAFT_PAYLOAD:${JSON.stringify(draft)}`, { immediate: false });
                     }
@@ -812,6 +815,34 @@ function renderBotMessage(el, content, idx) {
     }
 }
 
+function collectEmailDraftForDrag(card) {
+    if (!card) return null;
+    const draft = card.__emailDraft && typeof card.__emailDraft === 'object' ? { ...card.__emailDraft } : {};
+    const recipient = card.querySelector('.email-to-input')?.value.trim();
+    const subject = card.querySelector('.email-subject-input')?.value.trim();
+    const body = card.querySelector('.email-body-input')?.value;
+    const tone = card.querySelector('.email-tone-select')?.value;
+
+    if (recipient !== undefined) draft.recipient = recipient || '';
+    if (subject !== undefined) draft.subject = subject || '';
+    if (body !== undefined) draft.body = body || '';
+    if (tone !== undefined) draft.tone = tone || 'modern';
+
+    if (Array.isArray(draft.attachments) && draft.attachments.length) {
+        draft.attachments = draft.attachments.map((attachment, index) => ({
+            id: attachment?.id || '',
+            content: attachment?.content || attachment?.attachment_content || attachment?.data || '',
+            name: attachment?.name || attachment?.filename || `attachment_${index + 1}.png`,
+            filename: attachment?.filename || attachment?.name || `attachment_${index + 1}.png`,
+            type: attachment?.type || attachment?.content_type || '',
+            size: attachment?.size || null,
+            sha256: attachment?.sha256 || ''
+        })).filter(attachment => attachment.id || String(attachment.content || '').trim() || attachment.filename);
+    }
+
+    return draft;
+}
+
 const ui = {
     smartFocus, switchAuth, updUI, signOut, toggleDropdown, selModel,
     toggleSidebar, openSettings, closeSettings,    toggleSet,
@@ -822,7 +853,8 @@ const ui = {
     openImageModal, closeImageModal,
     showNeuralContext, closeNeuralContext,
     setThemeUI, handleDragStart, handleDragEnd,
-    renderBotMessage
+    renderBotMessage,
+    collectEmailDraftForDrag
 };
 
 export { ui };

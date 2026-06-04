@@ -91,7 +91,18 @@ function initMascotDrop(retrieveContextFn) {
     m.ondrop = async (e) => {
         e.preventDefault();
         m.classList.remove('mascot-drop-active');
-        const txt = e.dataTransfer.getData('text/plain');
+        const dt = e.dataTransfer;
+        const draftMime = dt.types && Array.from(dt.types).includes('application/x-helper-email-draft')
+            ? dt.getData('application/x-helper-email-draft')
+            : '';
+        const txt = dt.getData('text/plain');
+        const emailDraftText = draftMime || (txt && txt.startsWith('EMAIL_DRAFT_CONTEXT:') ? txt : '');
+        if (emailDraftText) {
+            if (typeof window.addAttachedContext === 'function') {
+                window.addAttachedContext(emailDraftText);
+            }
+            return;
+        }
         if (txt) retrieveContextFn(txt);
     };
 }

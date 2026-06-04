@@ -413,7 +413,17 @@ function compactEmailDraftForContext(draft) {
     return compact;
 }
 
-function buildEmailDraftDragContext(message) {
+function buildEmailDraftDragContext(message, widgetEl = null) {
+    const liveDraft = widgetEl && typeof ui.collectEmailDraftForDrag === 'function'
+        ? ui.collectEmailDraftForDrag(widgetEl)
+        : null;
+    if (liveDraft) {
+        const compact = compactEmailDraftForContext(liveDraft);
+        if (compact) {
+            return `EMAIL_DRAFT_CONTEXT:${JSON.stringify(compact).replace(/"""/g, "'''")}`;
+        }
+    }
+
     const emailJson = extractEmailDraftJson(message?.c || '');
     if (!emailJson) return null;
     try {
@@ -1247,7 +1257,8 @@ function handleMessageDragStart(e, idx) {
     if (textEl) {
         const chat = state.chats.find(c => c.id === state.activeId);
         const msg = chat?.ms?.[idx];
-        const dragContext = buildEmailDraftDragContext(msg) || textEl.innerText;
+        const widgetEl = textEl.closest('.msg')?.querySelector('.email-widget-container');
+        const dragContext = buildEmailDraftDragContext(msg, widgetEl) || textEl.innerText;
         e.dataTransfer.setData("text/plain", dragContext);
         const msgEl = textEl.closest('.msg');
         if (msgEl) {
@@ -1655,6 +1666,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.closeDeleteConfirm = ui.closeDeleteConfirm;
         window.clearImgPreview = clearImgPreview;
         window.clearContextPreview = clearContextPreview;
+        window.addAttachedContext = addAttachedContext;
         window.previewImg = previewImg;
         window.removeAttachment = removeAttachment;
         window.toggleSidebar = ui.toggleSidebar;

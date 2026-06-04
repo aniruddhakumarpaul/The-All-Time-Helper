@@ -671,6 +671,25 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("Second large context", context["history_context"])
         self.assertEqual(context["final_prompt"], prompt)
 
+    def test_retrieve_context_short_circuits_email_draft_markers(self):
+        from app.routes import chat
+
+        payload = (
+            'EMAIL_DRAFT_CONTEXT:{"recipient":"friend@example.com","subject":"Hello",'
+            '"body":"Body with { braces } and \\n line breaks","tone":"formal"}'
+        )
+
+        with patch.object(chat, "query_memory", side_effect=AssertionError("query_memory should not run")):
+            with patch.object(chat, "explain_neural_context", side_effect=AssertionError("explain_neural_context should not run")):
+                result = chat.retrieve_context(chat.RetrieveRequest(text=payload, n=3), current_user="user@example.com")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["kind"], "email_draft")
+        self.assertEqual(result["draft"]["recipient"], "friend@example.com")
+        self.assertEqual(result["draft"]["subject"], "Hello")
+        self.assertEqual(result["draft"]["tone"], "formal")
+        self.assertIn("Body with { braces }", result["draft"]["body"])
+
     def test_upscale_status_returns_registry_ready(self):
         from app import main
 
@@ -1367,7 +1386,11 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("kind: 'email_draft'", app_js)
         self.assertIn("ctx.kind === 'email_draft'", app_js)
         self.assertIn("buildEmailDraftDragContext", app_js)
+        self.assertIn("buildEmailDraftDragContext(message, widgetEl = null)", app_js)
         self.assertIn("EMAIL_DRAFT_CONTEXT:", app_js)
+        self.assertIn("card.__emailDraft = draft", ui_js)
+        self.assertIn("function collectEmailDraftForDrag(card)", ui_js)
+        self.assertIn("collectEmailDraftForDrag", ui_js)
         self.assertIn("await waitForPendingImageUploads()", app_js)
         self.assertIn("historyForApi", app_js)
         self.assertIn("img: null", app_js)

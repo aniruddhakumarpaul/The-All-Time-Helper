@@ -10,8 +10,17 @@ import { state } from './state.js';
 const HEADERS_BASE = { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '69420' };
 const DEFAULT_LOCAL_API_BASE = 'http://127.0.0.1:9000';
 
+function readInjectedApiBase() {
+    if (typeof document !== 'undefined') {
+        const rootBase = document.documentElement?.dataset?.helperApiBase || '';
+        const bodyBase = document.body?.dataset?.helperApiBase || '';
+        if (rootBase || bodyBase) return rootBase || bodyBase;
+    }
+    return typeof window !== 'undefined' ? (window.__HELPER_API_BASE__ || '') : '';
+}
+
 function resolveApiBase() {
-    const explicit = typeof window !== 'undefined' ? window.__HELPER_API_BASE__ : '';
+    const explicit = readInjectedApiBase();
     const stored = typeof window !== 'undefined' ? localStorage.getItem('helper_api_base_url') : '';
     const candidate = (stored || explicit || '').toString().trim().replace(/\/+$/, '');
     if (candidate) return candidate;

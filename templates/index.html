@@ -1,40 +1,39 @@
 <!DOCTYPE html> <!-- 1. DOCTYPE: Tells the browser that this is a modern HTML5 document. -->
-<html lang="en"> <!-- 2. HTML: The root element of every web page. "lang" defines the default language. -->
+<html lang="en" data-helper-api-base="{{ api_base_url | e }}"> <!-- 2. HTML: The root element of every web page. "lang" defines the default language. -->
 
 <head> <!-- 3. HEAD: Contains metadata, resources, and configuration that do NOT display directly on the page. -->
     <!-- 4. META CHARSETS: Defines character encoding (UTF-8 supports virtually all written languages/symbols). -->
     <meta charset="UTF-8">
-    
+
     <!-- 5. META VIEWPORT: A critical rule for mobile-responsive design. Controls the page's scale on different screen sizes. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    
+
     <!-- 6. TITLE: The title displayed on the browser tab or in search engine results. -->
     <title>The All Time Helper - Pro</title>
-    
+
     <!-- 7. SCRIPT & LINK tags import external files. "link" is typically for CSS stylesheet rules, "script" for JS logic. -->
     <!-- Marked.js: Markdown Parser (Converts raw MD text into structured HTML) -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    
+
     <!-- Highlight.js: Syntax Highlighter (Colors code blocks nicely) -->
     <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    
+
     <!-- Local Stylesheets: Custom CSS styles specifically designed for this application -->
     <link rel="stylesheet" href="/static/css/style_v3.css?v=150">
     <link rel="stylesheet" href="/static/css/animations.css?v=2">
     <meta name="referrer" content="no-referrer">
     <link rel="preload" href="/static/img/logo.png" as="image">
     <link rel="preload" href="/static/img/logo(2).jpg" as="image">
-    
+
     <!-- Inline SCRIPT: Small JavaScript that runs immediately before the page loads to prevent "flash" of unauth states and themes -->
     <script>
         (function () {
-            window.__HELPER_API_BASE__ = {{ api_base_url | tojson }};
             if (localStorage.getItem('helper_user_v2')) {
                 document.documentElement.classList.add('is-authenticated');
             }
-            
+
             // Immediately apply theme before rendering
             const pref = localStorage.getItem('helper_theme_pref') || 'system';
             let isDark = true;
@@ -73,7 +72,7 @@
         </div>
     </div>
     <script>
-        (function() {
+        (function () {
             const statusText = document.getElementById('loader-status-text');
             const progressFill = document.querySelector('.loader-progress-fill');
             const loader = document.getElementById('page-loader-overlay');
@@ -99,7 +98,7 @@
                 window.__pageLoaderRaf = window.requestAnimationFrame(updateLoader);
             };
 
-            window.finishPageLoader = function(message = 'Ready') {
+            window.finishPageLoader = function (message = 'Ready') {
                 if (window.__pageLoaderDone) return;
                 window.__pageLoaderDone = true;
                 window.__pageLoaderFinishedAt = performance.now();
@@ -398,11 +397,11 @@
             <div class="set-row">
                 <span>Default Email Tone</span>
                 <div class="theme-dropdown-wrapper">
-                    <button class="tool-btn" id="tone-btn-settings"
-                        onclick="window.toggleToneDropdownSettings(event)"
+                    <button class="tool-btn" id="tone-btn-settings" onclick="window.toggleToneDropdownSettings(event)"
                         style="background:rgba(255,255,255,0.05); padding: 5px 15px; border-radius: 10px; border: 1px solid var(--glass-border); color: var(--text-main); font-family: inherit; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px;">
                         <span id="current-tone-text-settings">Modern</span>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
                             <path d="M6 9l6 6 6-6"></path>
                         </svg>
                     </button>
