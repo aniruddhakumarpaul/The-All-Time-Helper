@@ -293,6 +293,78 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("TO", payload["body"])
         self.assertNotIn("I found both an image and text", payload["body"])
 
+    def test_attachment_choice_reply_accepts_natural_summary_phrases(self):
+        from app.logic import agents
+
+        self.assertEqual(
+            agents._attachment_choice_reply("a summary of the relevant text with the image attached"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("summary of relevant text with image attached"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("use a summary and attach the image"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("summarize the text and attach the image"),
+            "summary",
+        )
+        self.assertEqual(agents._attachment_choice_reply("image only"), "image")
+        self.assertEqual(agents._attachment_choice_reply("text only"), "text")
+        self.assertEqual(agents._attachment_choice_reply("both"), "both")
+
+    def test_attachment_choice_followup_summary_builds_email_draft_with_existing_images(self):
+        from app.logic import agents
+        import json
+
+        img_a = {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050}
+        img_b = {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430}
+        history = [
+            {
+                "r": "u",
+                "c": (
+                    '[Attached Context 1]\n"""\n'
+                    "Detailed technical notes about Vector Database and FAISS Indexing.\n"
+                    "This should become summarized email body text.\n"
+                    '"""\n\nattach them together we will send an email to some one'
+                ),
+                "i": [img_a, img_b],
+                "attachments": [img_a, img_b],
+            },
+            {
+                "r": "b",
+                "c": (
+                    "I found both an image and text in the recent chat. "
+                    "Should I use the image only, the text only, both, or a summary of the relevant text with the image attached?"
+                ),
+            },
+        ]
+
+        reconstructed = agents._reconstruct_contextual_prompt(
+            "a summary of the relevant text with the image attached",
+            history,
+        )
+        self.assertIn("attach them together", reconstructed)
+        self.assertIn("summary of the recent text", reconstructed)
+
+        result = agents._try_direct_tool_execution(
+            reconstructed,
+            {"requires_tools": False, "is_local": False, "complexity": "direct"},
+            history=history,
+            target_model="gemma4-openrouter",
+        )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        self.assertNotIn("image_generate_tool", result)
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["subject"], "Requested Image and Description")
+        self.assertIn("Summary of relevant previous text", payload["body"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", payload["body"])
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+
     def test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing(self):
         from app.logic import agents
 
@@ -367,6 +439,27 @@ class HardeningTests(unittest.TestCase):
 
         self.assertNotIn("send_email_tool", result)
         self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
+        self.assertIn("invalid tool-call plan", result)
+
+    def test_direct_pasted_code_explanation_suppresses_inline_raw_tool_call_leak(self):
+        from app.logic import agents
+
+        prompt = (
+            "import os\n"
+            "def run_indexing():\n"
+            "    print('hello world')\n"
+            "\n"
+            "explain the above in details and syntax by syntax."
+        )
+        intent = {"requires_tools": False, "complexity": "direct", "is_local": False}
+        raw = (
+            "Okay, I will do that.\n"
+            "[image_generate_tool(description='a new image that should not be generated')]"
+        )
+
+        result = agents._harden_result(raw, None, target_model="gemma4-openrouter", intent=intent, user_prompt=prompt)
+
+        self.assertNotIn("image_generate_tool", result)
         self.assertIn("invalid tool-call plan", result)
 
     def test_email_template_field_update_returns_widget_not_tool_json(self):

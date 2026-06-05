@@ -465,6 +465,10 @@ function getVisibleUserMessageContent(msg) {
         : { cleanText: rawContent };
     let visible = stripInternalEmailDraftMarkers(String(parsed.cleanText || rawContent));
 
+    if (!visible) return '';
+
+    if (!visible) return '';
+
     if (!visible) {
         visible = 'Attached context';
     }

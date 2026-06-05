@@ -31,6 +31,7 @@
 - Dropping an email draft onto the mascot must attach the draft into prompt-context state locally when the drag payload is `application/x-helper-email-draft` or `EMAIL_DRAFT_CONTEXT:`; only ordinary text should continue to use `/retrieve_context`.
 - `/retrieve_context` must short-circuit `EMAIL_DRAFT_CONTEXT:` and `EMAIL_DRAFT_PAYLOAD:` markers into a direct email-draft response before semantic memory lookup so draft payloads do not hit `query_memory()` or neural explanation code.
 - User-visible user-message bubbles and edit fields must render `display_c` or sanitized visible text only; raw `EMAIL_DRAFT_CONTEXT:` and `EMAIL_DRAFT_PAYLOAD:` markers remain internal API/history payloads and must not leak back into the chat UI on reload or edit.
+- Natural replies to the image/text/summary email-attachment clarification, such as "a summary of the relevant text with the image attached", must resolve back into the deterministic email-draft flow and reuse existing attachments instead of falling through to visual image generation.
 - The backend API base URL is injected through a root HTML data attribute and read by the JS client at runtime, avoiding executable template expressions inside the inline script block so the template stays parser-friendly in the IDE.
 
 This file records the current high-level architectural decisions.

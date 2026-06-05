@@ -324,6 +324,8 @@ def _looks_like_raw_tool_call_leak(result: str) -> bool:
     leak_patterns = [
         rf"^\s*\[\s*(?:{tool_pattern})\s*\(",
         rf"^\s*(?:{tool_pattern})\s*\(",
+        rf"\[\s*(?:{tool_pattern})\s*\(",
+        rf"(?<![\w.])(?:{tool_pattern})\s*\(",
         rf"```(?:tool_code|python)?\s*\[\s*(?:{tool_pattern})\s*\(",
         rf"```(?:tool_code|python)?\s*(?:{tool_pattern})\s*\(",
     ]
@@ -913,6 +915,23 @@ def _attachment_choice_reply(prompt_lower: str) -> Optional[str]:
         return "text"
     if p in {"summary", "summarize", "summarise", "summary with image", "summarize with image"}:
         return "summary"
+
+    has_summary = any(term in p for term in ["summary", "summarize", "summarise"])
+    has_relevant_text = "relevant text" in p or "relivent text" in p
+    has_image = any(term in p for term in ["image", "photo", "picture", "pic"])
+    has_attachment = any(term in p for term in ["attach", "attached", "attachment"])
+    has_text = "text" in p or "content" in p
+
+    if (has_summary or has_relevant_text) and (has_image or has_attachment):
+        return "summary"
+    if has_summary:
+        return "summary"
+    if "both" in p or (has_image and has_text):
+        return "both"
+    if has_image and any(term in p for term in ["only", "just", "use", "attach"]):
+        return "image"
+    if has_text and any(term in p for term in ["only", "just", "use"]):
+        return "text"
     return None
 
 
