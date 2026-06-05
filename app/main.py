@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -132,11 +133,44 @@ if os.path.exists(templates_dir):
 app.include_router(auth.router)
 app.include_router(chat.router)
 
+
+def _normalize_pollinations_image_url(url: str) -> str:
+    """Normalize Pollinations image URLs before proxying."""
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+    if not url:
+        return url
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return url
+        if (parsed.hostname or "").lower() != "image.pollinations.ai":
+            return url
+
+        query_items = []
+        has_model = False
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "model":
+                has_model = True
+                if value.lower() == "turbo":
+                    value = "flux"
+            if key == "nologo" and value.lower() == "true":
+                continue
+            query_items.append((key, value))
+
+        if has_model and not any(key == "model" for key, _ in query_items):
+            query_items.append(("model", "flux"))
+
+        return urlunparse(parsed._replace(query=urlencode(query_items, doseq=True)))
+    except Exception:
+        return url
+
+
 @app.get("/api/image_proxy")
 async def image_proxy(url: str):
     """Proxies image requests to bypass CORS/Referrer blocks using 'requests'."""
     import requests
-    from fastapi.responses import Response
     import anyio
     from urllib.parse import urlparse
     
@@ -153,15 +187,28 @@ async def image_proxy(url: str):
         return Response(status_code=400)
     
     try:
+        normalized_url = _normalize_pollinations_image_url(url)
+
         def fetch():
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
             }
-            return requests.get(url, headers=headers, timeout=60.0, allow_redirects=True)
+            return requests.get(normalized_url, headers=headers, timeout=60.0, allow_redirects=True)
             
         response = await anyio.to_thread.run_sync(fetch)
-        
+
+        if (
+            parsed.hostname
+            and parsed.hostname.lower() == "image.pollinations.ai"
+            and response.status_code in {401, 402, 403}
+        ):
+            return Response(
+                content="Pollinations rejected this model or account/budget.",
+                media_type="text/plain",
+                status_code=response.status_code,
+            )
+
         if response.status_code != 200:
             print(f"DEBUG: Proxy failed for {url} with status {response.status_code}")
             return Response(status_code=response.status_code)

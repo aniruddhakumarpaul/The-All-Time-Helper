@@ -1368,6 +1368,76 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["subject"], "Current Affairs Update")
         self.assertEqual(payload["body"], "Here is the requested content.")
 
+    def test_harden_result_rewrites_pollinations_turbo_markdown(self):
+        from app.logic.agents import _harden_result
+
+        raw = (
+            "![generated](https://image.pollinations.ai/prompt/cat?"
+            "model=turbo&width=1024&height=1024&nologo=true&seed=7)"
+        )
+
+        result = _harden_result(raw, None, target_model="gemma4-openrouter")
+
+        self.assertIn("model=flux", result)
+        self.assertNotIn("model=turbo", result)
+        self.assertNotIn("nologo=true", result)
+
+    def test_image_proxy_returns_clear_pollinations_402_error(self):
+        from app import main
+        from unittest.mock import Mock
+
+        upstream = Mock()
+        upstream.status_code = 402
+        upstream.content = b""
+        upstream.headers = {}
+
+        requested_urls = []
+
+        def fake_get(url, **_kwargs):
+            requested_urls.append(url)
+            return upstream
+
+        async def run_test():
+            with patch("requests.get", side_effect=fake_get):
+                return await main.image_proxy(
+                    "https://image.pollinations.ai/prompt/cat?model=turbo&nologo=true&seed=1"
+                )
+
+        response = asyncio.run(run_test())
+
+        self.assertEqual(response.status_code, 402)
+        self.assertEqual(response.body.decode("utf-8"), "Pollinations rejected this model or account/budget.")
+        self.assertEqual(len(requested_urls), 1)
+        self.assertIn("model=flux", requested_urls[0])
+        self.assertNotIn("model=turbo", requested_urls[0])
+        self.assertNotIn("nologo=true", requested_urls[0])
+
+    def test_frontend_stops_retries_for_permanent_image_proxy_status(self):
+        from pathlib import Path
+
+        utils_js = Path("static/js/utils.js").read_text(encoding="utf-8")
+
+        status_set_idx = utils_js.index("const PERMANENT_IMAGE_ERROR_STATUSES = new Set([401, 402, 403, 404]);")
+        probe_idx = utils_js.index("probeImageProxyStatus(safeSource.url).then")
+        retry_idx = utils_js.index("img.retryCount = (img.retryCount || 0) + 1;")
+
+        self.assertLess(status_set_idx, probe_idx)
+        self.assertLess(probe_idx, retry_idx)
+        self.assertIn("PERMANENT_IMAGE_ERROR_STATUSES.has(Number(status))", utils_js)
+        self.assertIn("Pollinations rejected this model or account/budget.", utils_js)
+        self.assertIn("img.dataset.loaded = 'true';", utils_js)
+
+    def test_image_generate_tool_uses_flux_model_only(self):
+        from app.logic import tools
+
+        with patch("app.logic.tools.time.time", return_value=123):
+            with patch("app.logic.tools.UpscaleManager.start_upscale", return_value="job-1"):
+                result = tools.image_generate_tool.func("a glass city")
+
+        self.assertIn("image.pollinations.ai", result)
+        self.assertIn("model=flux", result)
+        self.assertNotIn("model=turbo", result)
+
     def test_visual_typo_intent_detection(self):
         from app.logic.agents import _detect_intent
         

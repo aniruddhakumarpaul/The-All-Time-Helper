@@ -271,6 +271,9 @@ def analyze_palm_lines(palm_description: str) -> str:
 # Previously it returned a conversational wrapper ("I have visualized...") which
 # caused the LLM to re-summarise and strip the critical '!' character,
 # converting the image into a broken hyperlink.
+POLLINATIONS_IMAGE_MODEL = "flux"
+POLLINATIONS_IMAGE_HOST = "image.pollinations.ai"
+
 @tool("image_generate_tool")
 def image_generate_tool(description: str) -> str:
     """AI IMAGE GENERATOR: Generates a high-definition AI image based on an artistic description.
@@ -290,7 +293,7 @@ def image_generate_tool(description: str) -> str:
         # We start the upscale task using the base url.
         # Then we append &uid=... to the URL so the frontend can extract the job ID
         # without the LLM stripping it off!
-        base_url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&seed={seed}"
+        base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
         upscale_id = UpscaleManager.start_upscale(base_url)
         
         image_url_with_uid = f"{base_url}&uid={upscale_id}"
@@ -299,7 +302,7 @@ def image_generate_tool(description: str) -> str:
         return f"![{clean_desc}]({image_url_with_uid})"
     except Exception as e:
         logger.error(f"[ART ENGINE] Failed to trigger upscale: {e}")
-        base_url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&seed={seed}"
+        base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
         return f"![{clean_desc}]({base_url})"
 
 
