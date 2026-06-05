@@ -436,6 +436,42 @@ function buildEmailDraftDragContext(message, widgetEl = null) {
     }
 }
 
+function stripInternalEmailDraftMarkers(text) {
+    if (typeof text !== 'string') return '';
+    let visible = text.trim();
+    if (!visible) return '';
+
+    for (const marker of ['EMAIL_DRAFT_CONTEXT:', 'EMAIL_DRAFT_PAYLOAD:']) {
+        const markerIdx = visible.indexOf(marker);
+        if (markerIdx !== -1) {
+            visible = visible.slice(0, markerIdx).trim();
+        }
+    }
+
+    return visible;
+}
+
+function getVisibleUserMessageContent(msg) {
+    if (!msg || typeof msg !== 'object') return '';
+    if (typeof msg.display_c === 'string' && msg.display_c.trim()) {
+        return stripInternalEmailDraftMarkers(msg.display_c) || 'Attached context';
+    }
+
+    const rawContent = String(msg.c || '');
+    if (!rawContent) return '';
+
+    const parsed = typeof window.parseAttachedContexts === 'function'
+        ? window.parseAttachedContexts(rawContent)
+        : { cleanText: rawContent };
+    let visible = stripInternalEmailDraftMarkers(String(parsed.cleanText || rawContent));
+
+    if (!visible) {
+        visible = 'Attached context';
+    }
+
+    return visible;
+}
+
 function normalizeChat(chat) {
     if (!chat || typeof chat !== 'object') return chat;
     if (!Array.isArray(chat.ms)) chat.ms = [];
@@ -729,7 +765,10 @@ function loadChat(id) {
     document.getElementById('welcome').style.display = 'none';
     ui.clearImgPreview();
     if (window.clearContextPreview) window.clearContextPreview();
-    chat.ms.forEach((m, idx) => ui.addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant', m.masked));
+    chat.ms.forEach((m, idx) => {
+        const visibleContent = m.r === 'u' ? getVisibleUserMessageContent(m) : m.c;
+        ui.addMsg(m.r, visibleContent, m.i, idx, m.m || 'AI Assistant', m.masked);
+    });
     ui.renderHist();
     if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) ui.toggleSidebar();
     
@@ -1017,10 +1056,16 @@ async function send() {
         if (authKws.some(kw => last.includes(kw))) isMasked = true;
     }
 
-    let finalPrompt = p;
+    let apiPrompt = p;
+    let displayPrompt = p;
     if (hasContexts) {
         const formattedContexts = state.attachedContexts.map((ctx, idx) => `[Attached Context ${idx + 1}]\n"""\n${serializeAttachedContext(ctx)}\n"""`).join('\n\n');
-        finalPrompt = `${formattedContexts}\n\n${p || "Review the attached context above."}`;
+        apiPrompt = `${formattedContexts}\n\n${p || "Review the attached context above."}`;
+        displayPrompt = p || (
+            hasImages ? "Attached context and images" : "Attached context"
+        );
+    } else if (hasImages && !displayPrompt) {
+        displayPrompt = "Attached images";
     }
 
     if (hasImages) {
@@ -1036,8 +1081,8 @@ async function send() {
     const attachmentsToSend = hasImages ? state.currentImages.map(imageAttachmentForStorage).filter(Boolean) : [];
     const historyForApi = chat.ms.map(redactMessageAttachmentsForApi);
 
-    ui.addMsg('u', finalPrompt, imageDisplayPayload, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: finalPrompt, i: imageDisplayPayload, attachments: attachmentsToSend, masked: isMasked });
+    ui.addMsg('u', displayPrompt, imageDisplayPayload, chat.ms.length, null, isMasked);
+    chat.ms.push({ r: 'u', c: apiPrompt, display_c: displayPrompt, i: imageDisplayPayload, attachments: attachmentsToSend, masked: isMasked });
     historyForApi.push(redactMessageAttachmentsForApi(chat.ms[chat.ms.length - 1]));
     touchChat(chat.id);
     requestChatPersist({ immediate: false });
@@ -1069,7 +1114,7 @@ async function send() {
 
     try {
         const res = await api.streamChat({
-            prompt: finalPrompt, history: historyForApi, model: state.selectedModel, img: null, attachments: attachmentsToSend, name: state.user.name,
+            prompt: apiPrompt, history: historyForApi, model: state.selectedModel, img: null, attachments: attachmentsToSend, name: state.user.name,
             persona: document.getElementById('persona-toggle').checked, isMasked,
             sys: {
                 english: document.getElementById('t-eng').classList.contains('on'),
@@ -1259,7 +1304,13 @@ function handleMessageDragStart(e, idx) {
         const msg = chat?.ms?.[idx];
         const widgetEl = textEl.closest('.msg')?.querySelector('.email-widget-container');
         const dragContext = buildEmailDraftDragContext(msg, widgetEl) || textEl.innerText;
-        e.dataTransfer.setData("text/plain", dragContext);
+        const emailDraft = parseEmailDraftContext(dragContext);
+        if (emailDraft) {
+            e.dataTransfer.setData("application/x-helper-email-draft", JSON.stringify(emailDraft));
+            e.dataTransfer.setData("text/plain", `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`);
+        } else {
+            e.dataTransfer.setData("text/plain", dragContext);
+        }
         const msgEl = textEl.closest('.msg');
         if (msgEl) {
             if (e.dataTransfer.setDragImage) {
@@ -1667,6 +1718,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.clearImgPreview = clearImgPreview;
         window.clearContextPreview = clearContextPreview;
         window.addAttachedContext = addAttachedContext;
+        window.getVisibleUserMessageContent = getVisibleUserMessageContent;
         window.previewImg = previewImg;
         window.removeAttachment = removeAttachment;
         window.toggleSidebar = ui.toggleSidebar;

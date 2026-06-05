@@ -337,8 +337,9 @@ function startEditPrompt(idx, btn) {
     const msg = chat.ms[idx];
     const txtDiv = document.getElementById(`msg-text-${idx}`);
     if (!txtDiv) { console.error("DEBUG: txtDiv not found"); return; }
-    const parsed = window.parseAttachedContexts(msg.c);
-    const oldText = parsed.cleanText;
+    const oldText = typeof window.getVisibleUserMessageContent === 'function'
+        ? window.getVisibleUserMessageContent(msg)
+        : window.parseAttachedContexts(msg.c).cleanText;
     txtDiv.innerHTML = `
         <textarea class="edit-area">${oldText}</textarea>
         <div class="edit-controls">
@@ -360,8 +361,10 @@ function cancelEdit(idx) {
                 txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
             }
         } else {
-            const parsed = window.parseAttachedContexts(msg.c);
-            txtDiv.innerHTML = parsed.cleanText.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const visible = typeof window.getVisibleUserMessageContent === 'function'
+                ? window.getVisibleUserMessageContent(msg)
+                : window.parseAttachedContexts(msg.c).cleanText;
+            txtDiv.innerHTML = visible.replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
     }
 }

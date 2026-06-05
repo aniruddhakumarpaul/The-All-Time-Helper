@@ -27,8 +27,10 @@
 - Editing a user prompt is a frontend-owned rewrite: truncate local chat state at the edited message, persist that boundary immediately, then resubmit the edited prompt through the normal `/chat` backend route.
 - Dragging an email widget into the prompt context bar stores structured draft context and serializes it as `EMAIL_DRAFT_CONTEXT` only at send time, so the next email widget can reuse existing recipient, subject, body, tone, and attachment metadata without clipping JSON as ordinary text.
 - Dragging an email widget into context must read the live rendered widget fields and attachment metadata from the widget DOM before serializing `EMAIL_DRAFT_CONTEXT`, so saved `EMAIL_DRAFT_PAYLOAD` text cannot reintroduce stale, fragmented, or escaped body content.
+- Email widget drag producers must emit `application/x-helper-email-draft` plus a `text/plain` `EMAIL_DRAFT_CONTEXT:` fallback so the mascot and prompt context handlers can treat email drafts as structured state instead of plain text.
 - Dropping an email draft onto the mascot must attach the draft into prompt-context state locally when the drag payload is `application/x-helper-email-draft` or `EMAIL_DRAFT_CONTEXT:`; only ordinary text should continue to use `/retrieve_context`.
 - `/retrieve_context` must short-circuit `EMAIL_DRAFT_CONTEXT:` and `EMAIL_DRAFT_PAYLOAD:` markers into a direct email-draft response before semantic memory lookup so draft payloads do not hit `query_memory()` or neural explanation code.
+- User-visible user-message bubbles and edit fields must render `display_c` or sanitized visible text only; raw `EMAIL_DRAFT_CONTEXT:` and `EMAIL_DRAFT_PAYLOAD:` markers remain internal API/history payloads and must not leak back into the chat UI on reload or edit.
 - The backend API base URL is injected through a root HTML data attribute and read by the JS client at runtime, avoiding executable template expressions inside the inline script block so the template stays parser-friendly in the IDE.
 
 This file records the current high-level architectural decisions.
