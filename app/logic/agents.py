@@ -122,6 +122,50 @@ def _is_rate_limit_error(error: Exception) -> bool:
     return "rate_limit" in message or "rate limit" in message or "429" in message or "too many requests" in message
 
 
+POLLINATIONS_IMAGE_HOST = getattr(tools, "POLLINATIONS_IMAGE_HOST", "image.pollinations.ai")
+POLLINATIONS_IMAGE_MODEL = getattr(tools, "POLLINATIONS_IMAGE_MODEL", "flux")
+_POLLINATIONS_MARKDOWN_IMAGE_RE = re.compile(r'(!\[[^\]]*\]\()([^)]+?)(\))')
+
+
+def _normalize_pollinations_image_url(raw_url: str) -> str:
+    normalized = str(raw_url or "").replace("&amp;", "&").strip()
+    if not normalized:
+        return normalized
+
+    try:
+        parsed = urllib.parse.urlparse(normalized)
+        if parsed.scheme not in ("http", "https"):
+            return normalized
+        if (parsed.hostname or "").lower() != POLLINATIONS_IMAGE_HOST:
+            return normalized
+
+        query_items = []
+        for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
+            if key == "model" and value.lower() == "turbo":
+                value = POLLINATIONS_IMAGE_MODEL
+            if key == "nologo" and value.lower() == "true":
+                continue
+            query_items.append((key, value))
+
+        return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query_items, doseq=True)))
+    except Exception:
+        return normalized
+
+
+def _rewrite_pollinations_markdown_images(text: str) -> str:
+    if not text or "image.pollinations.ai" not in text:
+        return text
+
+    def replace(match):
+        raw_url = match.group(2)
+        normalized_url = _normalize_pollinations_image_url(raw_url)
+        if normalized_url == raw_url:
+            return match.group(0)
+        return f"{match.group(1)}{normalized_url}{match.group(3)}"
+
+    return _POLLINATIONS_MARKDOWN_IMAGE_RE.sub(replace, text)
+
+
 def _cloud_rate_limit_message(model_id: str) -> str:
     if model_id == "gemma4-openrouter":
         return (
@@ -1587,6 +1631,8 @@ def _harden_result(result, sys_config, target_model="gemma4:e2b", intent=None, u
     for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
         if marker in str(result):
             result = str(result).split(marker)[0].strip()
+
+    result = _rewrite_pollinations_markdown_images(str(result))
 
     if (
         intent

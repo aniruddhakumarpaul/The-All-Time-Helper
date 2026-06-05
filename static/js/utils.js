@@ -270,6 +270,7 @@
         const ALLOWED_MARKDOWN_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
         const FORBIDDEN_MARKDOWN_TAGS = ['script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'select'];
         const DANGEROUS_URL_PATTERN = /^(?:javascript|data|vbscript|file):/i;
+        const PERMANENT_IMAGE_ERROR_STATUSES = new Set([401, 402, 403, 404]);
 
         function escapeMarkdownHtml(value) {
             return String(value || '')
@@ -288,6 +289,41 @@
             return String(rawUrl || '').replace(/&amp;/g, '&').trim();
         }
 
+        function normalizePollinationsImageUrl(rawUrl) {
+            const normalized = normalizeMarkdownUrl(rawUrl);
+            if (!normalized || DANGEROUS_URL_PATTERN.test(normalized)) return normalized;
+
+            try {
+                const parsed = new URL(normalized, window.location.origin);
+                if ((parsed.hostname || '').toLowerCase() === 'image.pollinations.ai') {
+                    const model = parsed.searchParams.get('model');
+                    if (model && model.toLowerCase() === 'turbo') {
+                        parsed.searchParams.set('model', 'flux');
+                    }
+                    if ((parsed.searchParams.get('nologo') || '').toLowerCase() === 'true') {
+                        parsed.searchParams.delete('nologo');
+                    }
+                    return parsed.href;
+                }
+
+                if (parsed.origin === window.location.origin && parsed.pathname === '/api/image_proxy') {
+                    const innerUrl = parsed.searchParams.get('url');
+                    if (innerUrl) {
+                        const normalizedInner = normalizePollinationsImageUrl(innerUrl);
+                        if (normalizedInner !== innerUrl) {
+                            parsed.searchParams.set('url', normalizedInner);
+                            return parsed.href;
+                        }
+                    }
+                    return parsed.href;
+                }
+            } catch (err) {
+                return normalized;
+            }
+
+            return normalized;
+        }
+
         function getSafeMarkdownLink(rawUrl) {
             const normalized = normalizeMarkdownUrl(rawUrl);
             if (!normalized || DANGEROUS_URL_PATTERN.test(normalized)) return '';
@@ -301,7 +337,7 @@
         }
 
         function getSafeImageSource(rawUrl) {
-            const normalized = normalizeMarkdownUrl(rawUrl)
+            const normalized = normalizePollinationsImageUrl(normalizeMarkdownUrl(rawUrl))
                 .replace(/&_r=\d+/, '')
                 .replace(/\?_r=\d+/, '');
             if (!normalized || DANGEROUS_URL_PATTERN.test(normalized)) return null;
@@ -331,6 +367,16 @@
                 return null;
             }
             return null;
+        }
+
+        async function probeImageProxyStatus(url) {
+            try {
+                const res = await fetch(`/api/image_proxy?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+                const message = res && !res.ok ? (await res.text()).trim() : '';
+                return { status: res ? res.status : 0, message };
+            } catch (err) {
+                return { status: 0, message: '' };
+            }
         }
 
         function appendSpinner(parent, message) {
@@ -495,8 +541,36 @@
             if (!img) return;
             const safeSource = getSafeImageSource(safeHref);
             if (!safeSource || safeSource.kind !== 'external') return;
-            img.retryCount = (img.retryCount || 0) + 1;
             const loadEl = document.getElementById('load-' + uniqueId);
+
+            if (img.dataset.proxyStatusChecked !== 'true') {
+                img.dataset.proxyStatusChecked = 'true';
+                probeImageProxyStatus(safeSource.url).then(({ status, message }) => {
+                    if (PERMANENT_IMAGE_ERROR_STATUSES.has(Number(status))) {
+                        if (loadEl) {
+                            const fallbackMessage = /image\.pollinations\.ai/i.test(safeSource.url)
+                                ? 'Pollinations rejected this model or account/budget.'
+                                : 'Image could not be loaded.';
+                            loadEl.textContent = '';
+                            const messageEl = document.createElement('div');
+                            messageEl.style.padding = '16px';
+                            messageEl.style.color = 'var(--text-sub)';
+                            messageEl.textContent = message || fallbackMessage;
+                            loadEl.appendChild(messageEl);
+                        }
+                        img.dataset.loaded = 'true';
+                        updateLastMessageImageState(img);
+                        return;
+                    }
+
+                    window.handleImgError(img, safeSource.url, uniqueId);
+                }).catch(() => {
+                    window.handleImgError(img, safeSource.url, uniqueId);
+                });
+                return;
+            }
+
+            img.retryCount = (img.retryCount || 0) + 1;
             
             console.log(`DEBUG: Image Error (Try ${img.retryCount}/25) for ${uniqueId}`);
 
