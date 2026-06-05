@@ -922,7 +922,9 @@ def _attachment_choice_reply(prompt_lower: str) -> Optional[str]:
     has_attachment = any(term in p for term in ["attach", "attached", "attachment"])
     has_text = "text" in p or "content" in p
 
-    if (has_summary or has_relevant_text) and (has_image or has_attachment):
+    if has_summary and (has_image or has_attachment or has_relevant_text):
+        return "summary"
+    if has_relevant_text and (has_image or has_attachment):
         return "summary"
     if has_summary:
         return "summary"
@@ -2153,6 +2155,33 @@ def _latest_attachable_history_context(history: list, current_prompt: str = "") 
         if _is_attachment_choice_clarification_text(content):
             continue
 
+        email_draft = _extract_latest_email_draft_from_content(content)
+        if email_draft:
+            context["email_draft"] = email_draft
+            draft_body = _preserve_structured_text(str(email_draft.get("body") or ""))
+            if draft_body and not context["has_text"]:
+                context["has_text"] = True
+                context["text"] = draft_body
+
+            attachments = email_draft.get("attachments")
+            if isinstance(attachments, list):
+                for idx, attachment in enumerate(attachments):
+                    add_image_ref(attachment, f"attachment_{idx + 1}.png")
+            elif email_draft.get("attachment_content"):
+                add_image_ref(
+                    {
+                        "content": email_draft.get("attachment_content"),
+                        "name": email_draft.get("attachment_filename") or "attachment.png",
+                        "filename": email_draft.get("attachment_filename") or "attachment.png",
+                        "type": email_draft.get("attachment_type") or "image/png",
+                        "content_type": email_draft.get("attachment_type") or "image/png",
+                    },
+                    email_draft.get("attachment_filename") or "attachment.png",
+                )
+
+            if context["images"]:
+                context["has_image"] = True
+
         attached_text = _extract_attached_context_text(content)
         text = attached_text if attached_text else re.sub(r'!\[[^\]]*\]\([^)]+\)', ' ', content)
         text = _remove_json_marker_payload(text, "EMAIL_DRAFT_PAYLOAD:")
@@ -2208,7 +2237,16 @@ def _attachment_choice_from_prompt(prompt: str, attach_context: dict) -> str:
     explicit_text = any(kw in prompt_lower for kw in ["text", "paragraph", "notes", "message"]) or (
         "content" in prompt_lower and not no_content_request
     )
-    wants_both = "both" in prompt_lower or "image and text" in prompt_lower or "text and image" in prompt_lower
+    wants_both = (
+        "both" in prompt_lower
+        or "image and text" in prompt_lower
+        or "text and image" in prompt_lower
+        or (
+            attach_context.get("has_image")
+            and attach_context.get("has_text")
+            and any(term in prompt_lower for term in ["together", "them", "these", "those"])
+        )
+    )
     wants_summary = "summary" in prompt_lower or "summarize" in prompt_lower or "relevant text" in prompt_lower or "relivent text" in prompt_lower
 
     if wants_summary:
@@ -2239,6 +2277,12 @@ def _extract_latest_email_draft(history: list, markers: tuple = ("EMAIL_DRAFT_CO
             if draft:
                 return draft
     return None
+
+
+def _extract_latest_email_draft_from_content(content: str) -> Optional[dict]:
+    if not content:
+        return None
+    return _extract_json_after_marker(content, "EMAIL_DRAFT_CONTEXT:") or _extract_json_after_marker(content, "EMAIL_DRAFT_PAYLOAD:")
 
 
 def _extract_quoted_value_for_field(prompt: str, field_name: str) -> Optional[str]:
@@ -2295,23 +2339,28 @@ def _is_email_draft_edit_request(prompt_lower: str) -> bool:
 
 
 def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target_model: str) -> Optional[str]:
-    prompt_lower = clean_prompt.lower()
+    prompt_text = clean_user_prompt(clean_prompt) or clean_prompt
+    prompt_lower = prompt_text.lower()
     draft_context = _extract_latest_email_draft(history, markers=("EMAIL_DRAFT_CONTEXT:",)) or {}
-    draft = draft_context or (_extract_latest_email_draft(history) or {})
+    latest_email_draft = _extract_latest_email_draft(history) or {}
+    draft = draft_context or latest_email_draft or {}
     has_draft_context = bool(draft_context)
+    clarification_choice = _attachment_choice_reply(prompt_lower)
     has_attachment_action = any(kw in prompt_lower for kw in ["attach", "attachment", "include", "add", "use"])
     has_email_surface = any(kw in prompt_lower for kw in ["email", "mail", "template", "tamplate", "draft", "widget"])
-    if not _is_email_draft_edit_request(prompt_lower) and not (has_draft_context and has_attachment_action and has_email_surface):
+    if not _is_email_draft_edit_request(prompt_lower) and not (
+        has_draft_context and ((has_attachment_action and has_email_surface) or clarification_choice)
+    ):
         return None
-    if _looks_like_structured_technical_text(clean_prompt) and not any(
+    if _looks_like_structured_technical_text(prompt_text) and not any(
         kw in prompt_lower for kw in ["email", "mail", "send", "attach", "attachment", "template", "draft"]
     ):
         return None
 
-    updates = _extract_email_draft_updates(clean_prompt)
-    is_attachment_template_request = _is_above_attachment_request(clean_prompt)
-    attach_context = _latest_attachable_history_context(history, clean_prompt) if is_attachment_template_request else {}
-    attachment_choice = _attachment_choice_from_prompt(clean_prompt, attach_context) if is_attachment_template_request else "unknown"
+    updates = _extract_email_draft_updates(prompt_text)
+    is_attachment_template_request = _is_above_attachment_request(prompt_text) or bool(has_draft_context and clarification_choice)
+    attach_context = _latest_attachable_history_context(history, prompt_text) if is_attachment_template_request else {}
+    attachment_choice = clarification_choice or (_attachment_choice_from_prompt(prompt_text, attach_context) if is_attachment_template_request else "unknown")
     if is_attachment_template_request and attachment_choice == "ambiguous":
         return (
             "I found both an image and text in the recent chat. "
@@ -2322,7 +2371,7 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
 
     if not draft:
         draft = {
-            "recipient": _last_email_from_history(history, clean_prompt) or "",
+            "recipient": _last_email_from_history(history, prompt_text) or "",
             "subject": "Requested Image and Description",
             "body": "",
             "tone": "modern",
@@ -2331,7 +2380,15 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
         }
 
     if is_attachment_template_request and attach_context.get("has_text") and attachment_choice in {"text", "both", "summary", "ambiguous", "unknown"} and not updates.get("body"):
-        text_context = attach_context.get("text", "")
+        summary_sources = [
+            draft_context.get("body"),
+            latest_email_draft.get("body"),
+            draft.get("body"),
+        ]
+        if isinstance(attach_context.get("email_draft"), dict):
+            summary_sources.append(attach_context["email_draft"].get("body"))
+        summary_sources.append(attach_context.get("text", ""))
+        text_context = next((str(item) for item in summary_sources if item is not None and str(item).strip()), "")
         if attachment_choice == "summary":
             draft["body"] = "Summary of relevant previous text: " + text_context[:900]
         else:
@@ -2440,7 +2497,11 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         'why does', 'why is', 'explain', 'describe', 'summarize', 'tell me', 
         'who is', 'who was', 'where is', 'when is', 'define', 'what\'s', 'how\'s'
     ]
-    if any(p_stripped.startswith(start) for start in conversational_starters):
+    is_email_draft_choice_reply = bool(
+        _attachment_choice_reply(p_stripped)
+        and _extract_latest_email_draft(history, markers=("EMAIL_DRAFT_CONTEXT:",))
+    )
+    if any(p_stripped.startswith(start) for start in conversational_starters) and not is_email_draft_choice_reply:
         return None
 
     draft_update = _try_update_email_draft_from_prompt(clean_prompt, history, target_model)

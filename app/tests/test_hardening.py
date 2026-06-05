@@ -525,6 +525,69 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["body"], attached_text)
         self.assertNotIn("send_email_tool", result)
 
+    def test_attachment_choice_reply_treats_natural_summary_reply_as_summary(self):
+        from app.logic.agents import _attachment_choice_reply
+
+        self.assertEqual(
+            _attachment_choice_reply("a summary of the relevant text with the image attached"),
+            "summary",
+        )
+
+    def test_summary_reply_uses_previous_email_draft_body_not_clarification(self):
+        from app.logic import agents
+        import json
+
+        draft_body = (
+            "Detailed Explanation of the Python Code: Vector Database and FAISS Indexing\n\n"
+            "This code demonstrates a vector database implementation using FAISS for multilingual indexing."
+        )
+        draft_context = {
+            "recipient": "",
+            "subject": "Requested Image and Description",
+            "body": draft_body,
+            "tone": "modern",
+            "attachments": [
+                {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050},
+                {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430},
+            ],
+        }
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    '[Attached Context 1]\n"""\n'
+                    f'EMAIL_DRAFT_CONTEXT:{json.dumps(draft_context)}\n'
+                    '"""\n\nattach them together then we will send a mail to some one'
+                ),
+                "attachments": draft_context["attachments"],
+                "i": draft_context["attachments"],
+            }
+        ]
+
+        result = agents._try_update_email_draft_from_prompt(
+            "a summary of the relevant text with the image attached",
+            history,
+            "gemma4-openrouter",
+        )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertIn("Summary of relevant previous text", payload["body"])
+        self.assertIn("Detailed Explanation of the Python Code", payload["body"])
+        self.assertNotIn("a summary of the relevant text with the image attached", payload["body"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", payload["body"])
+        self.assertNotIn('"recipient"', payload["body"])
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+
+        intent = {"is_local": False, "requires_tools": True, "complexity": "single", "is_sensitive": False}
+        direct_result = agents._try_direct_tool_execution(
+            "summarize the text and attach the image",
+            intent,
+            history,
+            target_model="gemma4-openrouter",
+        )
+        self.assertTrue(direct_result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+
     def test_dragged_email_widget_context_seeds_next_email_widget(self):
         from app.logic import agents
         import json
@@ -569,7 +632,9 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
 
         context = agents._latest_attachable_history_context(history, prompt)
-        self.assertNotIn("catalog.append", context["text"])
+        self.assertEqual(context["email_draft"]["body"], draft_body)
+        self.assertIn("catalog.append", context["text"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", context["text"])
         self.assertNotIn("\\n", context["text"])
 
     def test_log_prompt_image_email_regression(self):
