@@ -19,6 +19,18 @@ function escapeHTML(str) {
         .replace(/'/g, '&#39;');
 }
 
+function normalizePreviewImageSource(value) {
+    const raw = String(value || '').trim();
+    const dataUrlPattern = /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$/i;
+    if (dataUrlPattern.test(raw)) return raw.replace(/\s/g, '');
+
+    const compactBase64 = raw.replace(/\s/g, '');
+    if (/^[a-z0-9+/=]+$/i.test(compactBase64)) {
+        return `data:image/png;base64,${compactBase64}`;
+    }
+    return '';
+}
+
 function extractJsonAfterMarker(content, marker) {
     if (typeof content !== 'string' || !content.includes(marker)) return null;
     const payloadPart = content.split(marker, 2)[1] || '';
@@ -305,10 +317,11 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
                         </div>
                     `;
                 }
-                const src = item.startsWith('data:') ? item : `data:image/png;base64,${item}`;
+                const src = normalizePreviewImageSource(item);
+                if (!src) return '';
                 return `
-                    <div class="chat-img-preview-container" onclick="window.openImageModal('${src}')" draggable="true" ondragstart="window.handleImageDragStart(event, '${item}')">
-                        <img src="${src}" class="chat-img-preview" style="cursor: grab;">
+                    <div class="chat-img-preview-container" data-preview-src="${escapeHTML(src)}" data-preview-payload="${escapeHTML(item)}" draggable="true">
+                        <img src="${escapeHTML(src)}" class="chat-img-preview" style="cursor: grab;">
                     </div>
                 `;
             }).join('') : ''}
@@ -318,6 +331,12 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
     `;
 
     document.getElementById('chat-area').appendChild(div);
+    div.querySelectorAll('.chat-img-preview-container[data-preview-src]').forEach(container => {
+        container.addEventListener('click', () => window.openImageModal(container.dataset.previewSrc || ''));
+        container.addEventListener('dragstart', event => {
+            window.handleImageDragStart(event, container.dataset.previewPayload || '');
+        });
+    });
     const textEl = div.querySelector(`#msg-text-${idx}`);
     if (r === 'b') {
         renderBotMessage(textEl, c, idx);
@@ -445,6 +464,7 @@ function cancelEdit(idx) {
     if (txtDiv) {
         if (msg.r === 'b') {
             txtDiv.innerHTML = window.renderMarkdown(msg.c);
+            if (window.hydrateRenderedMarkdown) window.hydrateRenderedMarkdown(txtDiv);
             if (typeof hljs !== 'undefined') {
                 txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
             }
@@ -612,6 +632,7 @@ function renderBotMessage(el, content, idx) {
                 window.resetUpscaleImagePolling(el);
             }
             el.innerHTML = cleanedText ? window.renderMarkdown(cleanedText) : '';
+            if (window.hydrateRenderedMarkdown) window.hydrateRenderedMarkdown(el);
             if (window.initUpscaleImagePolling) {
                 window.initUpscaleImagePolling(el);
             }
@@ -918,6 +939,7 @@ function renderBotMessage(el, content, idx) {
                 window.resetUpscaleImagePolling(el);
             }
             el.innerHTML = cleanedText ? window.renderMarkdown(cleanedText) : '';
+            if (window.hydrateRenderedMarkdown) window.hydrateRenderedMarkdown(el);
             if (window.initUpscaleImagePolling) {
                 window.initUpscaleImagePolling(el);
             }
@@ -931,6 +953,7 @@ function renderBotMessage(el, content, idx) {
             window.resetUpscaleImagePolling(el);
         }
         el.innerHTML = window.renderMarkdown(content);
+        if (window.hydrateRenderedMarkdown) window.hydrateRenderedMarkdown(el);
         if (window.initUpscaleImagePolling) {
             window.initUpscaleImagePolling(el);
         }

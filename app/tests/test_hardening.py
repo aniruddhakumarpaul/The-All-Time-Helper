@@ -1625,6 +1625,61 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload[1].get_filename(), "one.png")
         self.assertEqual(payload[1].get_content_type(), "image/png")
 
+    def test_frontend_markdown_rendering_is_sanitized(self):
+        from pathlib import Path
+
+        index_html = Path("templates/index.html").read_text(encoding="utf-8")
+        ui_js = Path("static/js/ui.js").read_text(encoding="utf-8")
+        utils_js = Path("static/js/utils.js").read_text(encoding="utf-8")
+
+        marked_idx = index_html.index("https://cdn.jsdelivr.net/npm/marked/marked.min.js")
+        purify_idx = index_html.index("https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.7/purify.min.js")
+        utils_idx = index_html.index("/static/js/utils.js")
+        self.assertLess(marked_idx, purify_idx)
+        self.assertLess(purify_idx, utils_idx)
+        self.assertIn('integrity="sha512-78KH17QLT5e55GJqP76vutp1D2iAoy06WcYBXB6iBCsmO6wWzx0Qdg8EDpm8mKXv68BcvHOyeeP4wxAL0twJGQ=="', index_html)
+        self.assertIn('crossorigin="anonymous"', index_html)
+        self.assertIn('referrerpolicy="no-referrer"', index_html)
+
+        self.assertIn("function sanitizeMarkdownHtml(html)", utils_js)
+        self.assertIn("window.DOMPurify.sanitize(dirty, config)", utils_js)
+        self.assertIn("const rendered = marked.parse(text, { renderer: renderer });", utils_js)
+        self.assertIn("return sanitizeMarkdownHtml(rendered);", utils_js)
+        self.assertIn("renderer.html = function()", utils_js)
+        self.assertIn("return '';", utils_js)
+        self.assertIn("FORBID_TAGS: FORBIDDEN_MARKDOWN_TAGS", utils_js)
+        self.assertIn("FORBID_ATTR:", utils_js)
+        self.assertIn("'onerror'", utils_js)
+        self.assertIn("'onclick'", utils_js)
+        self.assertIn("DANGEROUS_URL_PATTERN", utils_js)
+        self.assertIn("javascript|data|vbscript|file", utils_js)
+        self.assertIn("ALLOWED_MARKDOWN_PROTOCOLS", utils_js)
+        self.assertIn("new Set(['http:', 'https:', 'mailto:'])", utils_js)
+
+        self.assertIn("function buildRenderedImageHtml(source, title, altText)", utils_js)
+        self.assertIn("document.createElement('img')", utils_js)
+        self.assertIn("img.alt = String(altText || 'AI Generated Image')", utils_js)
+        self.assertIn("img.title = String(title)", utils_js)
+        self.assertIn("img.dataset.retryUrl = safeSource.url", utils_js)
+        self.assertIn("return buildRenderedImageHtml(imgHref, title, imgText);", utils_js)
+        self.assertIn("addEventListener('click'", utils_js)
+        self.assertIn("addEventListener('load'", utils_js)
+        self.assertIn("addEventListener('error'", utils_js)
+        self.assertNotIn('class="code-btn copy-btn" onclick=', utils_js)
+        self.assertNotIn('class="code-btn download-btn" onclick=', utils_js)
+
+        self.assertIn("function normalizePreviewImageSource(value)", ui_js)
+        self.assertIn("data-preview-src", ui_js)
+        self.assertIn("data-preview-payload", ui_js)
+        self.assertNotIn("window.openImageModal('${src}')", ui_js)
+        self.assertNotIn("window.handleImageDragStart(event, '${item}')", ui_js)
+
+        render_assignments = ui_js.count("innerHTML = window.renderMarkdown") + ui_js.count("innerHTML = cleanedText ? window.renderMarkdown")
+        self.assertGreater(render_assignments, 0)
+        self.assertGreaterEqual(ui_js.count("window.hydrateRenderedMarkdown"), render_assignments)
+        self.assertIn('sandbox=""', ui_js)
+        self.assertNotIn('allow-scripts', ui_js)
+
     def test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe(self):
         from pathlib import Path
 

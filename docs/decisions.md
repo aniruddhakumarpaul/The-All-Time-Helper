@@ -37,6 +37,7 @@
 - Natural replies to the image/text/summary email-attachment clarification, such as "a summary of the relevant text with the image attached", must resolve back into the deterministic email-draft flow and reuse existing attachments instead of falling through to visual image generation.
 - Summary replies for attached email widgets must use the previously captured draft body from `EMAIL_DRAFT_CONTEXT` / `EMAIL_DRAFT_PAYLOAD` before any clarification text, so the summary does not accidentally summarize the user's reply sentence.
 - The backend API base URL is injected through a root HTML data attribute and read by the JS client at runtime, avoiding executable template expressions inside the inline script block so the template stays parser-friendly in the IDE.
+- Bot markdown HTML is untrusted frontend input: render it through `marked`, sanitize it with DOMPurify before `innerHTML`, block unsafe URL protocols, and hydrate trusted code/image controls with DOM event listeners instead of inline handlers.
 
 This file records the current high-level architectural decisions.
 
