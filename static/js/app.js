@@ -120,6 +120,89 @@ function serializeAttachedContext(ctx) {
     return String(ctx?.text || '');
 }
 
+function attachedContextDisplayBlock(ctx, idx) {
+    if (ctx?.kind === "email_draft" && ctx.draft) {
+        const draft = ctx.draft;
+        const lines = [];
+
+        lines.push(`Email draft: ${draft.subject || "Untitled email"}`);
+
+        if (draft.recipient) {
+            lines.push(`To: ${draft.recipient}`);
+        }
+
+        if (draft.tone) {
+            lines.push(`Tone: ${draft.tone}`);
+        }
+
+        if (draft.body) {
+            lines.push("");
+            lines.push("Body:");
+            lines.push(String(draft.body));
+        }
+
+        if (Array.isArray(draft.attachments) && draft.attachments.length) {
+            lines.push("");
+            lines.push("Draft attachments:");
+            draft.attachments.forEach((att, i) => {
+                lines.push(`- ${att.name || att.filename || `Attachment ${i + 1}`}`);
+            });
+        }
+
+        return lines.join("\n");
+    }
+
+    const text = String(ctx?.text || "").trim();
+
+    if (!text) {
+        return `Context ${idx + 1}`;
+    }
+
+    if (text.includes("EMAIL_DRAFT_CONTEXT:") || text.includes("EMAIL_DRAFT_PAYLOAD:")) {
+        return "Email draft attached";
+    }
+
+    return text;
+}
+
+function imageDisplayLabel(img, idx) {
+    return img?.name || img?.filename || img?.attachment_filename || `Image ${idx + 1}`;
+}
+
+function buildVisibleUserPrompt(userText, attachedContexts, images) {
+    const lines = [];
+    const cleanUserText = String(userText || "").trim();
+    const contexts = Array.isArray(attachedContexts) ? attachedContexts : [];
+    const imageList = Array.isArray(images) ? images : [];
+
+    if (cleanUserText) {
+        lines.push(cleanUserText);
+    } else if (contexts.length && imageList.length) {
+        lines.push("Attached context and images");
+    } else if (contexts.length) {
+        lines.push("Attached context");
+    } else if (imageList.length) {
+        lines.push("Attached images");
+    }
+
+    if (contexts.length) {
+        lines.push("", "Attached context:");
+        contexts.forEach((ctx, idx) => {
+            lines.push("");
+            lines.push(attachedContextDisplayBlock(ctx, idx));
+        });
+    }
+
+    if (imageList.length) {
+        lines.push("", "Attached images:");
+        imageList.forEach((img, idx) => {
+            lines.push(`• ${imageDisplayLabel(img, idx)}`);
+        });
+    }
+
+    return lines.join("\n").trim() || "Attached context";
+}
+
 function attachedContextTotalChars() {
     return (state.attachedContexts || []).reduce((total, ctx) => {
         if (ctx?.kind === 'email_draft') return total;
@@ -770,7 +853,7 @@ function loadChat(id) {
     ui.clearImgPreview();
     if (window.clearContextPreview) window.clearContextPreview();
     chat.ms.forEach((m, idx) => {
-        const visibleContent = m.r === 'u' ? getVisibleUserMessageContent(m) : m.c;
+        const visibleContent = m.c;
         ui.addMsg(m.r, visibleContent, m.i, idx, m.m || 'AI Assistant', m.masked);
     });
     ui.renderHist();
@@ -1061,15 +1144,9 @@ async function send() {
     }
 
     let apiPrompt = p;
-    let displayPrompt = p;
     if (hasContexts) {
         const formattedContexts = state.attachedContexts.map((ctx, idx) => `[Attached Context ${idx + 1}]\n"""\n${serializeAttachedContext(ctx)}\n"""`).join('\n\n');
         apiPrompt = `${formattedContexts}\n\n${p || "Review the attached context above."}`;
-        displayPrompt = p || (
-            hasImages ? "Attached context and images" : "Attached context"
-        );
-    } else if (hasImages && !displayPrompt) {
-        displayPrompt = "Attached images";
     }
 
     if (hasImages) {
@@ -1083,9 +1160,14 @@ async function send() {
 
     const imageDisplayPayload = hasImages ? state.currentImages.map(imagePayloadForDisplay).filter(Boolean) : null;
     const attachmentsToSend = hasImages ? state.currentImages.map(imageAttachmentForStorage).filter(Boolean) : [];
+    const displayPrompt = buildVisibleUserPrompt(
+        p,
+        state.attachedContexts,
+        imageDisplayPayload || []
+    );
     const historyForApi = chat.ms.map(redactMessageAttachmentsForApi);
 
-    ui.addMsg('u', displayPrompt, imageDisplayPayload, chat.ms.length, null, isMasked);
+    ui.addMsg('u', apiPrompt, imageDisplayPayload, chat.ms.length, null, isMasked);
     chat.ms.push({ r: 'u', c: apiPrompt, display_c: displayPrompt, i: imageDisplayPayload, attachments: attachmentsToSend, masked: isMasked });
     historyForApi.push(redactMessageAttachmentsForApi(chat.ms[chat.ms.length - 1]));
     touchChat(chat.id);
@@ -1739,6 +1821,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.toggleSet = ui.toggleSet;
         window.filterHist = ui.filterHist;
         window.startRename = ui.startRename;
+        window.openAttachedContextSheet = ui.openAttachedContextSheet;
         window.closeNeuralContext = ui.closeNeuralContext;
         window.handleDragStart = ui.handleDragStart;
         window.handleDragEnd = ui.handleDragEnd;

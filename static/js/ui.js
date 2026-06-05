@@ -19,6 +19,96 @@ function escapeHTML(str) {
         .replace(/'/g, '&#39;');
 }
 
+function extractJsonAfterMarker(content, marker) {
+    if (typeof content !== 'string' || !content.includes(marker)) return null;
+    const payloadPart = content.split(marker, 2)[1] || '';
+    const startIdx = payloadPart.indexOf('{');
+    if (startIdx === -1) return null;
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = startIdx; i < payloadPart.length; i++) {
+        const ch = payloadPart[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (ch === '\\') {
+            escaped = true;
+            continue;
+        }
+        if (ch === '"') {
+            inString = !inString;
+            continue;
+        }
+        if (inString) continue;
+        if (ch === '{') depth += 1;
+        if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) return payloadPart.slice(startIdx, i + 1);
+        }
+    }
+    return null;
+}
+
+function formatAttachedContextSheetText(rawText, idx = 0) {
+    const text = String(rawText || '').trim();
+    if (!text) return `Context ${idx + 1}`;
+
+    const jsonText = extractJsonAfterMarker(text, 'EMAIL_DRAFT_CONTEXT:');
+    if (jsonText) {
+        try {
+            const draft = JSON.parse(jsonText);
+            const lines = [];
+
+            lines.push(`Email draft: ${draft.subject || 'Untitled email'}`);
+
+            if (draft.recipient) {
+                lines.push(`To: ${draft.recipient}`);
+            }
+
+            if (draft.tone) {
+                lines.push(`Tone: ${draft.tone}`);
+            }
+
+            if (draft.body) {
+                lines.push('');
+                lines.push('Body:');
+                lines.push(String(draft.body));
+            }
+
+            if (Array.isArray(draft.attachments) && draft.attachments.length) {
+                lines.push('');
+                lines.push('Draft attachments:');
+                draft.attachments.forEach((att, i) => {
+                    lines.push(`- ${att.name || att.filename || `Attachment ${i + 1}`}`);
+                });
+            }
+
+            return lines.join('\n');
+        } catch (err) {
+            return text;
+        }
+    }
+
+    return text;
+}
+
+function formatAttachedContextCardTitle(rawText, idx = 0) {
+    const sheetText = formatAttachedContextSheetText(rawText, idx);
+    const firstLine = String(sheetText || '').split(/\r?\n/).find(line => line.trim()) || `Context ${idx + 1}`;
+    return firstLine.length > 80 ? `${firstLine.slice(0, 80).trimEnd()}…` : firstLine;
+}
+
+function formatAttachedContextCardSnippet(rawText, idx = 0) {
+    const sheetText = formatAttachedContextSheetText(rawText, idx);
+    const lines = String(sheetText || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length <= 1) return '';
+    const snippet = lines.slice(1, 3).join(' · ');
+    return snippet.length > 100 ? `${snippet.slice(0, 100).trimEnd()}…` : snippet;
+}
+
 function smartFocus(id) {
     if (window.innerWidth > 850) {
         const el = document.getElementById(id);
@@ -129,23 +219,21 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
         if (parsed.contexts && parsed.contexts.length > 0) {
             contextHtml = `<div class="msg-attached-contexts">`;
             parsed.contexts.forEach(ctx => {
-                const displaySnippet = ctx.text.length > 60 ? ctx.text.substring(0, 60).trim() + '...' : ctx.text.trim();
-                const safeText = ctx.text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const displayTitle = formatAttachedContextCardTitle(ctx.text, ctx.index);
+                const displaySnippet = formatAttachedContextCardSnippet(ctx.text, ctx.index);
+                const safeText = escapeHTML(formatAttachedContextSheetText(ctx.text, ctx.index));
                 const uniqueCtxId = `ctx-${idx}-${ctx.index}`;
                 contextHtml += `
-                    <div class="msg-context-card" onclick="window.toggleContextExpand('${uniqueCtxId}')">
+                    <div class="msg-context-card" onclick="window.openAttachedContextSheet('${uniqueCtxId}')">
                         <div class="msg-context-header">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                                 <polyline points="14 2 14 8 20 8"></polyline>
                             </svg>
-                            <span>Attached Context ${ctx.index}</span>
-                            <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-left: auto; transition: transform 0.3s; transform: rotate(0deg);">
-                                <path d="M6 9l6 6 6-6"></path>
-                            </svg>
+                            <span>${escapeHTML(displayTitle)}</span>
                         </div>
-                        <div class="msg-context-snippet">${displaySnippet}</div>
-                        <div class="msg-context-full" id="${uniqueCtxId}" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;">${safeText}</div>
+                        ${displaySnippet ? `<div class="msg-context-snippet">${escapeHTML(displaySnippet)}</div>` : ''}
+                        <div class="msg-context-full" id="${uniqueCtxId}" style="display: none;">${safeText}</div>
                     </div>
                 `;
             });
@@ -409,6 +497,8 @@ function showNeuralContext(results, explanation) {
     const cont = document.getElementById('context-results');
     const scrim = document.getElementById('neural-scrim');
     if (!card || !cont || !scrim) return;
+    const title = card.querySelector('.context-title');
+    if (title) title.innerText = 'Neural Context Link';
     cont.innerHTML = '';
     if (explanation) {
         const box = document.createElement('div'); box.className = 'neural-insight-box';
@@ -423,6 +513,39 @@ function showNeuralContext(results, explanation) {
         cont.appendChild(div);
     });
     card.classList.add('active'); scrim.classList.add('active');
+}
+
+function openAttachedContextSheet(id) {
+    const el = document.getElementById(id);
+    const card = document.getElementById('neural-context-card');
+    const cont = document.getElementById('context-results');
+    const scrim = document.getElementById('neural-scrim');
+    if (!el || !card || !cont || !scrim) return;
+
+    const title = card.querySelector('.context-title');
+    const cardEl = el.closest('.msg-context-card');
+    const cardTitle = cardEl?.querySelector('.msg-context-header span')?.textContent?.trim();
+    if (title) title.innerText = cardTitle || 'Attached Context';
+
+    cont.innerHTML = '';
+    const body = document.createElement('pre');
+    body.className = 'attached-context-sheet';
+    body.style.margin = '0';
+    body.style.whiteSpace = 'pre-wrap';
+    body.style.wordBreak = 'break-word';
+    body.style.fontFamily = 'monospace';
+    body.style.fontSize = '0.9rem';
+    body.style.lineHeight = '1.6';
+    body.style.color = 'var(--text-main)';
+    body.style.background = 'rgba(255,255,255,0.04)';
+    body.style.border = '1px solid var(--glass-border)';
+    body.style.borderRadius = '14px';
+    body.style.padding = '16px';
+    body.textContent = el.textContent || '';
+    cont.appendChild(body);
+
+    card.classList.add('active');
+    scrim.classList.add('active');
 }
 
 function closeNeuralContext() {
@@ -854,7 +977,7 @@ const ui = {
     previewImg, clearImgPreview,
     showDeleteConfirm, closeDeleteConfirm,
     openImageModal, closeImageModal,
-    showNeuralContext, closeNeuralContext,
+    showNeuralContext, openAttachedContextSheet, closeNeuralContext,
     setThemeUI, handleDragStart, handleDragEnd,
     renderBotMessage,
     collectEmailDraftForDrag

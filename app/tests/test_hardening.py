@@ -980,6 +980,102 @@ class HardeningTests(unittest.TestCase):
         written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
         self.assertIn(f"Attachment: generated.png ({len(image_bytes)} bytes)", written)
 
+    def test_send_or_simulate_email_offloads_long_plain_body_to_txt_attachment(self):
+        from app.logic.tools import send_or_simulate_email
+
+        long_body = (
+            "This is a detailed project update with a long explanation.\n\n"
+            + ("More plain-text detail is provided here. " * 30)
+        ).strip()
+        mocked_open = mock_open()
+
+        with patch.dict(os.environ, {"EMAIL_MODE": "SIMULATE"}, clear=False):
+            with patch("builtins.open", mocked_open):
+                result = send_or_simulate_email(
+                    recipient="friend@example.com",
+                    subject="Update",
+                    body=long_body,
+                    tone="modern",
+                )
+
+        self.assertIn("SIMULATE SUCCESS", result)
+        written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
+        self.assertIn("Please find the detailed content attached.", written)
+        self.assertIn("Attachment: email-body.txt", written)
+
+    def test_send_or_simulate_email_offloads_long_technical_body_to_md_attachment(self):
+        import tempfile
+        from app.logic import attachment_store, tools
+
+        class FakeSMTP:
+            sent_messages = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def starttls(self):
+                pass
+
+            def login(self, *_args):
+                pass
+
+            def send_message(self, msg):
+                self.sent_messages.append(msg)
+
+        technical_body = (
+            "## Vector Database Notes\n\n"
+            "```python\n"
+            "from faiss import IndexFlatL2\n"
+            "def build_index(vectors):\n"
+            "    return IndexFlatL2(768)\n"
+            "```\n\n"
+            + ("- step one\n- step two\n" * 35)
+        ).strip()
+
+        FakeSMTP.sent_messages = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "image_proxy.png",
+                    "image/png",
+                    self._png_bytes(),
+                    "owner@example.com",
+                )
+                with patch.dict(
+                    os.environ,
+                    {
+                        "EMAIL_MODE": "LIVE",
+                        "SENDER_EMAIL": "sender@example.com",
+                        "SENDER_PWD": "secret",
+                    },
+                    clear=False,
+                ):
+                    with patch("app.logic.tools.smtplib.SMTP", FakeSMTP):
+                        result = tools.send_or_simulate_email(
+                            "user@example.com",
+                            "Subject",
+                            technical_body,
+                            attachments=[saved],
+                            owner="owner@example.com",
+                        )
+
+        self.assertIn("LIVE SUCCESS", result)
+        msg = FakeSMTP.sent_messages[0]
+        payload = msg.get_payload()
+        plain_text = payload[0].get_payload(0).get_payload(decode=True).decode("utf-8")
+        self.assertIn("Please find the detailed technical content attached.", plain_text)
+        self.assertEqual(payload[1].get_filename(), "email-body.md")
+        self.assertEqual(payload[1].get_content_type(), "text/markdown")
+        self.assertEqual(payload[2].get_filename(), "image_proxy.png")
+        self.assertEqual(payload[2].get_content_type(), "image/png")
+        self.assertIn("Vector Database Notes", payload[1].get_payload(decode=True).decode("utf-8"))
+
     def test_chat_repository_rejects_oversized_sync(self):
         from app.repository import ChatRepository
 
