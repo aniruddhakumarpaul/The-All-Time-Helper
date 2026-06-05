@@ -267,9 +267,234 @@
             }
         };
 
+        const ALLOWED_MARKDOWN_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+        const FORBIDDEN_MARKDOWN_TAGS = ['script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'select'];
+        const DANGEROUS_URL_PATTERN = /^(?:javascript|data|vbscript|file):/i;
+
+        function escapeMarkdownHtml(value) {
+            return String(value || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function safeClassToken(value) {
+            return String(value || '').replace(/[^\w-]/g, '').slice(0, 40);
+        }
+
+        function normalizeMarkdownUrl(rawUrl) {
+            return String(rawUrl || '').replace(/&amp;/g, '&').trim();
+        }
+
+        function getSafeMarkdownLink(rawUrl) {
+            const normalized = normalizeMarkdownUrl(rawUrl);
+            if (!normalized || DANGEROUS_URL_PATTERN.test(normalized)) return '';
+            try {
+                const parsed = new URL(normalized, window.location.origin);
+                if (!ALLOWED_MARKDOWN_PROTOCOLS.has(parsed.protocol.toLowerCase())) return '';
+                return parsed.href;
+            } catch (err) {
+                return '';
+            }
+        }
+
+        function getSafeImageSource(rawUrl) {
+            const normalized = normalizeMarkdownUrl(rawUrl)
+                .replace(/&_r=\d+/, '')
+                .replace(/\?_r=\d+/, '');
+            if (!normalized || DANGEROUS_URL_PATTERN.test(normalized)) return null;
+
+            if (normalized.startsWith('static/')) {
+                return { kind: 'local', url: `/${normalized}` };
+            }
+            if (normalized.startsWith('/static/')) {
+                return { kind: 'local', url: normalized };
+            }
+            if (normalized.startsWith('/api/image_proxy?')) {
+                return { kind: 'local', url: normalized };
+            }
+
+            try {
+                const parsed = new URL(normalized, window.location.origin);
+                if (parsed.origin === window.location.origin && parsed.pathname.startsWith('/static/')) {
+                    return { kind: 'local', url: parsed.pathname + parsed.search + parsed.hash };
+                }
+                if (parsed.origin === window.location.origin && parsed.pathname === '/api/image_proxy') {
+                    return { kind: 'local', url: parsed.pathname + parsed.search };
+                }
+                if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                    return { kind: 'external', url: parsed.href };
+                }
+            } catch (err) {
+                return null;
+            }
+            return null;
+        }
+
+        function appendSpinner(parent, message) {
+            const shimmer = document.createElement('div');
+            shimmer.className = 'img-shimmer';
+            const label = document.createElement('span');
+            label.textContent = message;
+            parent.appendChild(shimmer);
+            parent.appendChild(label);
+        }
+
+        function buildRenderedImageHtml(source, title, altText) {
+            const safeSource = getSafeImageSource(source);
+            if (!safeSource) return '';
+
+            const uniqueId = 'img-' + Math.random().toString(36).slice(2, 11);
+            const wrapper = document.createElement('div');
+            wrapper.className = 'ai-img-wrapper';
+            wrapper.id = `wrap-${uniqueId}`;
+
+            const img = document.createElement('img');
+            img.id = uniqueId;
+            img.className = 'chat-rendered-img';
+            img.alt = String(altText || 'AI Generated Image');
+            if (title) img.title = String(title);
+
+            const jobId = extractPollinationsJobId(safeSource.url);
+            const isDeferredPollinations = Boolean(jobId && isPollinationsGeneratedUrl(safeSource.url));
+
+            if (isDeferredPollinations) {
+                wrapper.classList.add('pollinations-upscale-card');
+                wrapper.dataset.upscaleJobId = jobId;
+                wrapper.dataset.originalUrl = safeSource.url;
+                wrapper.dataset.alt = img.alt;
+
+                const loading = document.createElement('div');
+                loading.className = 'ai-img-loading';
+                loading.id = `load-${uniqueId}`;
+                appendSpinner(loading, 'Enhancing image...');
+
+                const error = document.createElement('div');
+                error.className = 'ai-img-error';
+                error.id = `error-${uniqueId}`;
+                error.style.display = 'none';
+                error.style.padding = '16px';
+                error.style.color = 'var(--text-sub)';
+
+                img.style.display = 'none';
+                img.crossOrigin = 'anonymous';
+                img.referrerPolicy = 'no-referrer';
+                img.dataset.loadId = uniqueId;
+
+                wrapper.appendChild(loading);
+                wrapper.appendChild(error);
+                wrapper.appendChild(img);
+                return wrapper.outerHTML;
+            }
+
+            img.dataset.modalUrl = safeSource.url;
+
+            if (safeSource.kind === 'local') {
+                img.src = safeSource.url;
+                img.dataset.loaded = 'true';
+                img.style.display = 'block';
+                wrapper.appendChild(img);
+                return wrapper.outerHTML;
+            }
+
+            const loading = document.createElement('div');
+            loading.className = 'ai-img-loading';
+            loading.id = `load-${uniqueId}`;
+            appendSpinner(loading, 'Generating image...');
+
+            img.src = `/api/image_proxy?url=${encodeURIComponent(safeSource.url)}`;
+            img.style.display = 'none';
+            img.crossOrigin = 'anonymous';
+            img.referrerPolicy = 'no-referrer';
+            img.dataset.loadId = uniqueId;
+            img.dataset.retryUrl = safeSource.url;
+
+            wrapper.appendChild(loading);
+            wrapper.appendChild(img);
+            return wrapper.outerHTML;
+        }
+
+        function updateRenderedImageLoaded(img) {
+            if (!img) return;
+            img.dataset.loaded = 'true';
+            const loadId = img.dataset.loadId;
+            const loadEl = loadId ? document.getElementById('load-' + loadId) : null;
+            if (loadEl) loadEl.style.display = 'none';
+            img.style.display = 'block';
+            updateLastMessageImageState(img);
+        }
+
+        function sanitizeMarkdownHtml(html) {
+            const dirty = String(html || '');
+            const config = {
+                FORBID_TAGS: FORBIDDEN_MARKDOWN_TAGS,
+                FORBID_ATTR: ['onclick', 'onerror', 'onload', 'onmouseover', 'onfocus', 'onblur'],
+                ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+                ADD_ATTR: ['target', 'rel', 'crossorigin', 'referrerpolicy']
+            };
+
+            if (window.DOMPurify && typeof window.DOMPurify.sanitize === 'function') {
+                return window.DOMPurify.sanitize(dirty, config);
+            }
+
+            const template = document.createElement('template');
+            template.innerHTML = dirty;
+            template.content.querySelectorAll(FORBIDDEN_MARKDOWN_TAGS.join(',')).forEach(el => el.remove());
+            template.content.querySelectorAll('*').forEach(el => {
+                Array.from(el.attributes).forEach(attr => {
+                    const name = attr.name.toLowerCase();
+                    const value = String(attr.value || '').trim();
+                    if (name.startsWith('on') || DANGEROUS_URL_PATTERN.test(value)) {
+                        el.removeAttribute(attr.name);
+                    }
+                    if ((name === 'href' || name === 'src') && DANGEROUS_URL_PATTERN.test(value)) {
+                        el.removeAttribute(attr.name);
+                    }
+                });
+            });
+            return template.innerHTML;
+        }
+
+        window.hydrateRenderedMarkdown = function(rootEl) {
+            if (!rootEl || typeof rootEl.querySelectorAll !== 'function') return;
+
+            rootEl.querySelectorAll('.copy-btn[data-code]').forEach(btn => {
+                if (btn.dataset.hydrated === 'true') return;
+                btn.dataset.hydrated = 'true';
+                btn.addEventListener('click', () => window.copyCode(btn, btn.dataset.code || ''));
+            });
+
+            rootEl.querySelectorAll('.download-btn[data-code]').forEach(btn => {
+                if (btn.dataset.hydrated === 'true') return;
+                btn.dataset.hydrated = 'true';
+                btn.addEventListener('click', () => window.downloadCode(btn.dataset.code || '', btn.dataset.lang || 'txt'));
+            });
+
+            rootEl.querySelectorAll('.chat-rendered-img').forEach(img => {
+                if (img.dataset.hydrated === 'true') return;
+                img.dataset.hydrated = 'true';
+                img.addEventListener('click', () => {
+                    const modalUrl = img.dataset.modalUrl || img.src;
+                    if (modalUrl && typeof window.openImageModal === 'function') {
+                        window.openImageModal(modalUrl);
+                    }
+                });
+                img.addEventListener('load', () => updateRenderedImageLoaded(img));
+                img.addEventListener('error', () => {
+                    if (img.dataset.retryUrl && img.dataset.loadId) {
+                        window.handleImgError(img, img.dataset.retryUrl, img.dataset.loadId);
+                    }
+                });
+            });
+        };
+
         // --- GLOBAL IMAGE ERROR HANDLER (DE-COUPLED) ---
         window.handleImgError = function(img, safeHref, uniqueId) {
             if (!img) return;
+            const safeSource = getSafeImageSource(safeHref);
+            if (!safeSource || safeSource.kind !== 'external') return;
             img.retryCount = (img.retryCount || 0) + 1;
             const loadEl = document.getElementById('load-' + uniqueId);
             
@@ -289,13 +514,26 @@
                 
                 setTimeout(() => { 
                     if (img && !img.dataset.loaded) {
-                        const retryUrl = safeHref + (safeHref.includes('?') ? '&' : '?') + '_r=' + img.retryCount;
+                        const retryUrl = safeSource.url + (safeSource.url.includes('?') ? '&' : '?') + '_r=' + img.retryCount;
                         img.src = `/api/image_proxy?url=${encodeURIComponent(retryUrl)}`; 
                     }
                 }, delay);
             } else {
                 if(loadEl) {
-                    loadEl.innerHTML = `<div style="padding:16px;color:var(--text-sub)">⌛ Generation is taking a while. <a href="${safeHref}" target="_blank" style="color:var(--accent-blue); font-weight: 600;">View directly →</a></div>`;
+                    loadEl.textContent = '';
+                    const message = document.createElement('div');
+                    message.style.padding = '16px';
+                    message.style.color = 'var(--text-sub)';
+                    message.appendChild(document.createTextNode('Generation is taking a while. '));
+                    const link = document.createElement('a');
+                    link.href = safeSource.url;
+                    link.target = '_blank';
+                    link.rel = 'noopener noreferrer';
+                    link.style.color = 'var(--accent-blue)';
+                    link.style.fontWeight = '600';
+                    link.textContent = 'View directly';
+                    message.appendChild(link);
+                    loadEl.appendChild(message);
                     
                     const chatArea = document.getElementById('chat-area');
                     const lastMsg = chatArea ? chatArea.lastElementChild : null;
@@ -312,6 +550,32 @@
         window.renderMarkdown = function(text) {
             try {
                 const renderer = new marked.Renderer();
+                renderer.html = function() {
+                    return '';
+                };
+
+                renderer.link = function(arg1, arg2, arg3) {
+                    let href = arg1;
+                    let title = arg2;
+                    let linkText = arg3;
+                    if (typeof arg1 === 'object' && arg1 !== null) {
+                        href = arg1.href || '';
+                        title = arg1.title || '';
+                        linkText = arg1.text || '';
+                    }
+                    const safeHref = getSafeMarkdownLink(href);
+                    const safeText = linkText || href || '';
+                    if (!safeHref) return escapeMarkdownHtml(safeText);
+                    const a = document.createElement('a');
+                    a.href = safeHref;
+                    if (title) a.title = String(title);
+                    if (!safeHref.toLowerCase().startsWith('mailto:')) {
+                        a.target = '_blank';
+                        a.rel = 'noopener noreferrer';
+                    }
+                    a.textContent = safeText;
+                    return a.outerHTML;
+                };
                 
                 renderer.code = function(arg1, arg2) {
                     let code = arg1;
@@ -320,17 +584,18 @@
                         code = arg1.text || '';
                         language = arg1.lang || '';
                     }
-                    const langClass = language ? `language-${language}` : '';
-                    const escapedCode = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const safeLang = safeClassToken(language || 'txt') || 'txt';
+                    const langClass = `language-${safeLang}`;
+                    const escapedCode = escapeMarkdownHtml(code);
                     const safeCode = encodeURIComponent(code).replace(/'/g, '%27');
                     return `
                         <div class="code-wrapper">
                             <div class="code-actions">
-                                <button class="code-btn copy-btn" onclick="window.copyCode(this, '${safeCode}')">
+                                <button class="code-btn copy-btn" data-code="${safeCode}">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                                     <span>Copy</span>
                                 </button>
-                                <button class="code-btn download-btn" onclick="window.downloadCode('${safeCode}', '${language || 'txt'}')">
+                                <button class="code-btn download-btn" data-code="${safeCode}" data-lang="${safeLang}">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                                     <span>Save</span>
                                 </button>
@@ -346,101 +611,14 @@
                         imgHref = href.href || '';
                         imgText = href.text || '';
                     }
-
-                    const normalizedHref = imgHref.replace(/&amp;/g, '&');
-                    const baseUrl = normalizedHref.replace(/&_r=\d+/, '').replace(/\?_r=\d+/, '');
-                    const safeHref = baseUrl.replace(/'/g, "\\'");
-                    const safeAlt = (imgText || 'AI Generated Image').replace(/'/g, "\\'");
-                    const uniqueId = 'img-' + Math.random().toString(36).substr(2, 9);
-                    const jobId = extractPollinationsJobId(baseUrl);
-                    const isDeferredPollinations = Boolean(jobId && isPollinationsGeneratedUrl(baseUrl));
-                    const localStaticUrl = baseUrl.startsWith('static/') ? `/${baseUrl}` : baseUrl;
-                    const isLocalStaticImage = localStaticUrl.startsWith('/static/');
-
-                    if (isDeferredPollinations) {
-                        return `
-                        <div class="ai-img-wrapper pollinations-upscale-card" id="wrap-${uniqueId}" data-upscale-job-id="${jobId}" data-original-url="${baseUrl.replace(/"/g, '&quot;')}" data-alt="${safeAlt}">
-                            <div class="ai-img-loading" id="load-${uniqueId}">
-                                <div class="img-shimmer"></div>
-                                <span>🎨 Enhancing image...</span>
-                            </div>
-                            <div class="ai-img-error" id="error-${uniqueId}" style="display:none; padding:16px; color:var(--text-sub);"></div>
-                            <img
-                                id="${uniqueId}"
-                                alt="${safeAlt}"
-                                title="${title || ''}"
-                                class="chat-rendered-img"
-                                style="display:none;"
-                                crossorigin="anonymous"
-                                referrerpolicy="no-referrer"
-                                onclick="window.openImageModal(this.src)"
-                            >
-                        </div>`;
-                    }
-
-                    if (isLocalStaticImage) {
-                        const safeLocalHref = localStaticUrl.replace(/'/g, "\\'");
-                        return `
-                        <div class="ai-img-wrapper" id="wrap-${uniqueId}">
-                            <img
-                                id="${uniqueId}"
-                                src="${localStaticUrl}"
-                                alt="${safeAlt}"
-                                title="${title || ''}"
-                                class="chat-rendered-img"
-                                data-loaded="true"
-                                style="display:block;"
-                                onclick="window.openImageModal('${safeLocalHref}')"
-                            >
-                        </div>`;
-                    }
-
-                    // Use proxy to bypass blocks for non-Pollinations external images.
-                    const proxyUrl = `/api/image_proxy?url=${encodeURIComponent(baseUrl)}`;
-
-                    return `
-                        <div class="ai-img-wrapper" id="wrap-${uniqueId}">
-                            <div class="ai-img-loading" id="load-${uniqueId}">
-                                <div class="img-shimmer"></div>
-                                <span>🎨 Generating image...</span>
-                            </div>
-                            <img 
-                                id="${uniqueId}"
-                                src="${proxyUrl}" 
-                                alt="${safeAlt}" 
-                                title="${title || ''}" 
-                                class="chat-rendered-img"
-                                style="display:none;"
-                                crossorigin="anonymous"
-                                referrerpolicy="no-referrer"
-                                onclick="window.openImageModal('${safeHref}')"
-                                onload="
-                                    this.dataset.loaded = 'true';
-                                    const lEl = document.getElementById('load-${uniqueId}');
-                                    if(lEl) lEl.style.display='none';
-                                    this.style.display='block';
-                                    const chatArea = document.getElementById('chat-area');
-                                    const lastMsg = chatArea ? chatArea.lastElementChild : null;
-                                    if (lastMsg && lastMsg.contains(this) && lastMsg.classList.contains('b-msg')) {
-                                        const totalImgs = lastMsg.querySelectorAll('.chat-rendered-img').length;
-                                        const loadedImgs = lastMsg.querySelectorAll('.chat-rendered-img[style*=\\'display: block\\']').length;
-                                        if (totalImgs === loadedImgs) {
-                                            const mascot = document.getElementById('mascot-container');
-                                            if (mascot) mascot.classList.remove('thinking');
-                                            const stopBtn = document.getElementById('stop-btn');
-                                            if (stopBtn) stopBtn.style.display = 'none';
-                                        }
-                                    }
-                                "
-                                onerror="window.handleImgError(this, '${safeHref}', '${uniqueId}')"
-                            >
-                        </div>`;
+                    return buildRenderedImageHtml(imgHref, title, imgText);
                 };
 
-                return marked.parse(text, { renderer: renderer });
+                const rendered = marked.parse(text, { renderer: renderer });
+                return sanitizeMarkdownHtml(rendered);
             } catch (e) {
                 console.error("Markdown Error:", e);
-                return text;
+                return escapeMarkdownHtml(text);
             }
         };
 

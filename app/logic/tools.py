@@ -138,6 +138,73 @@ def _attachment_label(attachments: list, fallback_filename: str = "report.txt") 
     return ", ".join(labels)
 
 
+def _looks_like_code_or_markdown(text: str) -> bool:
+    text = text or ""
+    lowered = text.lower()
+
+    code_signals = [
+        "```",
+        "def ",
+        "class ",
+        "import ",
+        "from ",
+        "function ",
+        "const ",
+        "let ",
+        "var ",
+        "return ",
+        "try:",
+        "except ",
+        "if __name__",
+        "pip install",
+        "npm ",
+        "faiss.",
+        "sentence_transformer",
+    ]
+
+    markdown_signals = [
+        "# ",
+        "## ",
+        "- ",
+        "* ",
+        "|",
+        "copy\nsave",
+    ]
+
+    return any(sig in lowered for sig in code_signals) or sum(sig in lowered for sig in markdown_signals) >= 2
+
+
+def _prepare_email_send_body(body: str) -> tuple[str, Optional[dict]]:
+    body_text = str(body or "")
+    cleaned = body_text.strip()
+    if not cleaned:
+        return body_text, None
+
+    body_length = len(cleaned)
+    line_count = cleaned.count("\n") + 1
+    should_offload = body_length >= 600 or (body_length >= 400 and line_count >= 4)
+    if not should_offload:
+        return body_text, None
+
+    looks_technical = _looks_like_code_or_markdown(cleaned)
+    body_filename = "email-body.md" if looks_technical else "email-body.txt"
+    note = (
+        "Please find the detailed technical content attached."
+        if looks_technical
+        else "Please find the detailed content attached."
+    )
+
+    attachment = _prepare_attachment(body_text, body_filename, fallback="email-body")
+    if attachment:
+        attachment["name"] = body_filename
+        attachment["filename"] = body_filename
+        attachment["content_type"] = "text/markdown" if looks_technical else "text/plain"
+        attachment["type"] = attachment["content_type"]
+        return note, attachment
+
+    return body_text, None
+
+
 def _prepare_attachment(content: Any, filename: str = "report.txt", fallback: str = "attachment") -> Optional[dict]:
     if content is None or len(str(content).strip()) == 0:
         return None
@@ -784,6 +851,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
     email_mode = os.getenv("EMAIL_MODE", "SIMULATE").upper()
 
     is_live = (email_mode == "LIVE") and all([sender_email, sender_pwd])
+    send_body, body_attachment = _prepare_email_send_body(body)
 
     # Parse recipients
     recipients = [r.strip() for r in recipient.split(',') if '@' in r]
@@ -797,6 +865,8 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
         owner=owner or user_context.get(None),
         resolve_ids=True,
     )
+    if body_attachment:
+        normalized_attachments = [body_attachment] + normalized_attachments
     if normalized_attachments:
         attachment_content = normalized_attachments[0].get("content")
         attachment_filename = normalized_attachments[0].get("filename") or attachment_filename
@@ -819,7 +889,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                     personalized_body = re.sub(
                         r'^(hi everyone|dear all|hello everyone|greetings all|hi all|hello all|dear team)[,.]?',
                         f'Dear {first_name},',
-                        body,
+                        send_body,
                         flags=re.IGNORECASE
                     )
                     if not personalized_body.startswith(f"Dear {first_name}"):
@@ -877,6 +947,9 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
                             elif ext == 'txt':
                                 maintype = 'text'
                                 subtype = 'plain'
+                            elif ext == 'md':
+                                maintype = 'text'
+                                subtype = 'markdown'
 
                         part = MIMEBase(maintype, subtype)
                         part.set_payload(att_bytes)
@@ -891,7 +964,7 @@ def send_or_simulate_email(recipient: str, subject: str, body: str, tone: str = 
             return final_res
         else:
             # Simulation mode
-            html_content = _build_html_body(body, tone)
+            html_content = _build_html_body(send_body, tone)
             
             # Format visual log entry
             log_entry = f"""

@@ -293,6 +293,78 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("TO", payload["body"])
         self.assertNotIn("I found both an image and text", payload["body"])
 
+    def test_attachment_choice_reply_accepts_natural_summary_phrases(self):
+        from app.logic import agents
+
+        self.assertEqual(
+            agents._attachment_choice_reply("a summary of the relevant text with the image attached"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("summary of relevant text with image attached"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("use a summary and attach the image"),
+            "summary",
+        )
+        self.assertEqual(
+            agents._attachment_choice_reply("summarize the text and attach the image"),
+            "summary",
+        )
+        self.assertEqual(agents._attachment_choice_reply("image only"), "image")
+        self.assertEqual(agents._attachment_choice_reply("text only"), "text")
+        self.assertEqual(agents._attachment_choice_reply("both"), "both")
+
+    def test_attachment_choice_followup_summary_builds_email_draft_with_existing_images(self):
+        from app.logic import agents
+        import json
+
+        img_a = {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050}
+        img_b = {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430}
+        history = [
+            {
+                "r": "u",
+                "c": (
+                    '[Attached Context 1]\n"""\n'
+                    "Detailed technical notes about Vector Database and FAISS Indexing.\n"
+                    "This should become summarized email body text.\n"
+                    '"""\n\nattach them together we will send an email to some one'
+                ),
+                "i": [img_a, img_b],
+                "attachments": [img_a, img_b],
+            },
+            {
+                "r": "b",
+                "c": (
+                    "I found both an image and text in the recent chat. "
+                    "Should I use the image only, the text only, both, or a summary of the relevant text with the image attached?"
+                ),
+            },
+        ]
+
+        reconstructed = agents._reconstruct_contextual_prompt(
+            "a summary of the relevant text with the image attached",
+            history,
+        )
+        self.assertIn("attach them together", reconstructed)
+        self.assertIn("summary of the recent text", reconstructed)
+
+        result = agents._try_direct_tool_execution(
+            reconstructed,
+            {"requires_tools": False, "is_local": False, "complexity": "direct"},
+            history=history,
+            target_model="gemma4-openrouter",
+        )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        self.assertNotIn("image_generate_tool", result)
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["subject"], "Requested Image and Description")
+        self.assertIn("Summary of relevant previous text", payload["body"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", payload["body"])
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+
     def test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing(self):
         from app.logic import agents
 
@@ -369,6 +441,27 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
         self.assertIn("invalid tool-call plan", result)
 
+    def test_direct_pasted_code_explanation_suppresses_inline_raw_tool_call_leak(self):
+        from app.logic import agents
+
+        prompt = (
+            "import os\n"
+            "def run_indexing():\n"
+            "    print('hello world')\n"
+            "\n"
+            "explain the above in details and syntax by syntax."
+        )
+        intent = {"requires_tools": False, "complexity": "direct", "is_local": False}
+        raw = (
+            "Okay, I will do that.\n"
+            "[image_generate_tool(description='a new image that should not be generated')]"
+        )
+
+        result = agents._harden_result(raw, None, target_model="gemma4-openrouter", intent=intent, user_prompt=prompt)
+
+        self.assertNotIn("image_generate_tool", result)
+        self.assertIn("invalid tool-call plan", result)
+
     def test_email_template_field_update_returns_widget_not_tool_json(self):
         from app.logic import agents
         import json
@@ -432,6 +525,69 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["body"], attached_text)
         self.assertNotIn("send_email_tool", result)
 
+    def test_attachment_choice_reply_treats_natural_summary_reply_as_summary(self):
+        from app.logic.agents import _attachment_choice_reply
+
+        self.assertEqual(
+            _attachment_choice_reply("a summary of the relevant text with the image attached"),
+            "summary",
+        )
+
+    def test_summary_reply_uses_previous_email_draft_body_not_clarification(self):
+        from app.logic import agents
+        import json
+
+        draft_body = (
+            "Detailed Explanation of the Python Code: Vector Database and FAISS Indexing\n\n"
+            "This code demonstrates a vector database implementation using FAISS for multilingual indexing."
+        )
+        draft_context = {
+            "recipient": "",
+            "subject": "Requested Image and Description",
+            "body": draft_body,
+            "tone": "modern",
+            "attachments": [
+                {"id": "file-a", "name": "image_proxy.png", "type": "image/png", "size": 266050},
+                {"id": "file-b", "name": "upscaled.jpg", "type": "image/jpeg", "size": 796430},
+            ],
+        }
+        history = [
+            {
+                "role": "user",
+                "content": (
+                    '[Attached Context 1]\n"""\n'
+                    f'EMAIL_DRAFT_CONTEXT:{json.dumps(draft_context)}\n'
+                    '"""\n\nattach them together then we will send a mail to some one'
+                ),
+                "attachments": draft_context["attachments"],
+                "i": draft_context["attachments"],
+            }
+        ]
+
+        result = agents._try_update_email_draft_from_prompt(
+            "a summary of the relevant text with the image attached",
+            history,
+            "gemma4-openrouter",
+        )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertIn("Summary of relevant previous text", payload["body"])
+        self.assertIn("Detailed Explanation of the Python Code", payload["body"])
+        self.assertNotIn("a summary of the relevant text with the image attached", payload["body"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", payload["body"])
+        self.assertNotIn('"recipient"', payload["body"])
+        self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
+
+        intent = {"is_local": False, "requires_tools": True, "complexity": "single", "is_sensitive": False}
+        direct_result = agents._try_direct_tool_execution(
+            "summarize the text and attach the image",
+            intent,
+            history,
+            target_model="gemma4-openrouter",
+        )
+        self.assertTrue(direct_result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+
     def test_dragged_email_widget_context_seeds_next_email_widget(self):
         from app.logic import agents
         import json
@@ -476,7 +632,9 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual([att["id"] for att in payload["attachments"]], ["file-a", "file-b"])
 
         context = agents._latest_attachable_history_context(history, prompt)
-        self.assertNotIn("catalog.append", context["text"])
+        self.assertEqual(context["email_draft"]["body"], draft_body)
+        self.assertIn("catalog.append", context["text"])
+        self.assertNotIn("EMAIL_DRAFT_CONTEXT", context["text"])
         self.assertNotIn("\\n", context["text"])
 
     def test_log_prompt_image_email_regression(self):
@@ -821,6 +979,102 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("SIMULATE SUCCESS", result)
         written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
         self.assertIn(f"Attachment: generated.png ({len(image_bytes)} bytes)", written)
+
+    def test_send_or_simulate_email_offloads_long_plain_body_to_txt_attachment(self):
+        from app.logic.tools import send_or_simulate_email
+
+        long_body = (
+            "This is a detailed project update with a long explanation.\n\n"
+            + ("More plain-text detail is provided here. " * 30)
+        ).strip()
+        mocked_open = mock_open()
+
+        with patch.dict(os.environ, {"EMAIL_MODE": "SIMULATE"}, clear=False):
+            with patch("builtins.open", mocked_open):
+                result = send_or_simulate_email(
+                    recipient="friend@example.com",
+                    subject="Update",
+                    body=long_body,
+                    tone="modern",
+                )
+
+        self.assertIn("SIMULATE SUCCESS", result)
+        written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
+        self.assertIn("Please find the detailed content attached.", written)
+        self.assertIn("Attachment: email-body.txt", written)
+
+    def test_send_or_simulate_email_offloads_long_technical_body_to_md_attachment(self):
+        import tempfile
+        from app.logic import attachment_store, tools
+
+        class FakeSMTP:
+            sent_messages = []
+
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def starttls(self):
+                pass
+
+            def login(self, *_args):
+                pass
+
+            def send_message(self, msg):
+                self.sent_messages.append(msg)
+
+        technical_body = (
+            "## Vector Database Notes\n\n"
+            "```python\n"
+            "from faiss import IndexFlatL2\n"
+            "def build_index(vectors):\n"
+            "    return IndexFlatL2(768)\n"
+            "```\n\n"
+            + ("- step one\n- step two\n" * 35)
+        ).strip()
+
+        FakeSMTP.sent_messages = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "image_proxy.png",
+                    "image/png",
+                    self._png_bytes(),
+                    "owner@example.com",
+                )
+                with patch.dict(
+                    os.environ,
+                    {
+                        "EMAIL_MODE": "LIVE",
+                        "SENDER_EMAIL": "sender@example.com",
+                        "SENDER_PWD": "secret",
+                    },
+                    clear=False,
+                ):
+                    with patch("app.logic.tools.smtplib.SMTP", FakeSMTP):
+                        result = tools.send_or_simulate_email(
+                            "user@example.com",
+                            "Subject",
+                            technical_body,
+                            attachments=[saved],
+                            owner="owner@example.com",
+                        )
+
+        self.assertIn("LIVE SUCCESS", result)
+        msg = FakeSMTP.sent_messages[0]
+        payload = msg.get_payload()
+        plain_text = payload[0].get_payload(0).get_payload(decode=True).decode("utf-8")
+        self.assertIn("Please find the detailed technical content attached.", plain_text)
+        self.assertEqual(payload[1].get_filename(), "email-body.md")
+        self.assertEqual(payload[1].get_content_type(), "text/markdown")
+        self.assertEqual(payload[2].get_filename(), "image_proxy.png")
+        self.assertEqual(payload[2].get_content_type(), "image/png")
+        self.assertIn("Vector Database Notes", payload[1].get_payload(decode=True).decode("utf-8"))
 
     def test_chat_repository_rejects_oversized_sync(self):
         from app.repository import ChatRepository
@@ -1370,6 +1624,61 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload[0].get_content_subtype(), "alternative")
         self.assertEqual(payload[1].get_filename(), "one.png")
         self.assertEqual(payload[1].get_content_type(), "image/png")
+
+    def test_frontend_markdown_rendering_is_sanitized(self):
+        from pathlib import Path
+
+        index_html = Path("templates/index.html").read_text(encoding="utf-8")
+        ui_js = Path("static/js/ui.js").read_text(encoding="utf-8")
+        utils_js = Path("static/js/utils.js").read_text(encoding="utf-8")
+
+        marked_idx = index_html.index("https://cdn.jsdelivr.net/npm/marked/marked.min.js")
+        purify_idx = index_html.index("https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.2.7/purify.min.js")
+        utils_idx = index_html.index("/static/js/utils.js")
+        self.assertLess(marked_idx, purify_idx)
+        self.assertLess(purify_idx, utils_idx)
+        self.assertIn('integrity="sha512-78KH17QLT5e55GJqP76vutp1D2iAoy06WcYBXB6iBCsmO6wWzx0Qdg8EDpm8mKXv68BcvHOyeeP4wxAL0twJGQ=="', index_html)
+        self.assertIn('crossorigin="anonymous"', index_html)
+        self.assertIn('referrerpolicy="no-referrer"', index_html)
+
+        self.assertIn("function sanitizeMarkdownHtml(html)", utils_js)
+        self.assertIn("window.DOMPurify.sanitize(dirty, config)", utils_js)
+        self.assertIn("const rendered = marked.parse(text, { renderer: renderer });", utils_js)
+        self.assertIn("return sanitizeMarkdownHtml(rendered);", utils_js)
+        self.assertIn("renderer.html = function()", utils_js)
+        self.assertIn("return '';", utils_js)
+        self.assertIn("FORBID_TAGS: FORBIDDEN_MARKDOWN_TAGS", utils_js)
+        self.assertIn("FORBID_ATTR:", utils_js)
+        self.assertIn("'onerror'", utils_js)
+        self.assertIn("'onclick'", utils_js)
+        self.assertIn("DANGEROUS_URL_PATTERN", utils_js)
+        self.assertIn("javascript|data|vbscript|file", utils_js)
+        self.assertIn("ALLOWED_MARKDOWN_PROTOCOLS", utils_js)
+        self.assertIn("new Set(['http:', 'https:', 'mailto:'])", utils_js)
+
+        self.assertIn("function buildRenderedImageHtml(source, title, altText)", utils_js)
+        self.assertIn("document.createElement('img')", utils_js)
+        self.assertIn("img.alt = String(altText || 'AI Generated Image')", utils_js)
+        self.assertIn("img.title = String(title)", utils_js)
+        self.assertIn("img.dataset.retryUrl = safeSource.url", utils_js)
+        self.assertIn("return buildRenderedImageHtml(imgHref, title, imgText);", utils_js)
+        self.assertIn("addEventListener('click'", utils_js)
+        self.assertIn("addEventListener('load'", utils_js)
+        self.assertIn("addEventListener('error'", utils_js)
+        self.assertNotIn('class="code-btn copy-btn" onclick=', utils_js)
+        self.assertNotIn('class="code-btn download-btn" onclick=', utils_js)
+
+        self.assertIn("function normalizePreviewImageSource(value)", ui_js)
+        self.assertIn("data-preview-src", ui_js)
+        self.assertIn("data-preview-payload", ui_js)
+        self.assertNotIn("window.openImageModal('${src}')", ui_js)
+        self.assertNotIn("window.handleImageDragStart(event, '${item}')", ui_js)
+
+        render_assignments = ui_js.count("innerHTML = window.renderMarkdown") + ui_js.count("innerHTML = cleanedText ? window.renderMarkdown")
+        self.assertGreater(render_assignments, 0)
+        self.assertGreaterEqual(ui_js.count("window.hydrateRenderedMarkdown"), render_assignments)
+        self.assertIn('sandbox=""', ui_js)
+        self.assertNotIn('allow-scripts', ui_js)
 
     def test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe(self):
         from pathlib import Path
