@@ -185,19 +185,7 @@ async def image_proxy(url: str):
     import requests
     from fastapi.responses import Response
     import anyio
-    from urllib.parse import urlparse
-    
-    # SECURITY FIX #15: Validate URL to prevent SSRF attacks
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return Response(status_code=400)
-        # Block internal/private IPs
-        blocked_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254", "metadata.google.internal"]
-        if parsed.hostname and (parsed.hostname in blocked_hosts or parsed.hostname.startswith("10.") or parsed.hostname.startswith("192.168.")):
-            return Response(status_code=403)
-    except Exception:
-        return Response(status_code=400)
+    from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
     
     try:
         def fetch():
@@ -205,18 +193,31 @@ async def image_proxy(url: str):
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
             }
-            return requests.get(url, headers=headers, timeout=60.0, allow_redirects=True)
+            return safe_fetch_url(
+                url,
+                headers=headers,
+                timeout=60,
+                max_bytes=8 * 1024 * 1024,
+                request_get=requests.get,
+            )
             
         response = await anyio.to_thread.run_sync(fetch)
         
         if response.status_code != 200:
             print(f"DEBUG: Proxy failed for {url} with status {response.status_code}")
             return Response(status_code=response.status_code)
+
+        content_type = str(response.headers.get("content-type", "image/png")).split(";", 1)[0].strip().lower()
+        if not content_type.startswith("image/"):
+            return Response(status_code=415)
             
         return Response(
             content=response.content, 
-            media_type=response.headers.get("content-type", "image/png")
+            media_type=content_type or "image/png"
         )
+    except SafeFetchError as e:
+        print(f"DEBUG: Proxy blocked {url}: {e}")
+        return Response(status_code=e.status_code)
     except Exception as e:
         print(f"DEBUG: Proxy Exception: {e}")
         return Response(status_code=500)

@@ -1515,9 +1515,19 @@ input:focus {
     outline: none;
 }
 
-.signout-btn:hover {
-    background: linear-gradient(135deg, #463dd1, #2a73e800) !important;
-    border: 1px solid #4f46e5;
+[data-theme="dark"] .signout-btn:hover {
+    background: repeating-linear-gradient(138deg, #dd1515e0, transparent 300px) !important;
+    border: 1px solid var(--accent-blue);
+    border-radius: 16px;
+    color: white !important;
+    font-weight: 600;
+    box-shadow: 0 8px 25px rgba(70, 61, 209, 0.4);
+    transform: translateY(-3px) scale(1.02);
+}
+
+[data-theme="light"] .signout-btn:hover {
+    background: linear-gradient(138deg, #463dd1, transparent 300px) !important;
+    border: 1px solid var(--accent-blue);
     border-radius: 16px;
     color: white !important;
     font-weight: 600;
@@ -1930,15 +1940,15 @@ input:focus {
     position: absolute;
     top: 50px;
     right: 0;
-    background: var(--bg-card);
+    background: repeating-linear-gradient(138deg, #bb121291, transparent 220px);
     border: 1px solid var(--glass-border);
     border-radius: 14px;
-    backdrop-filter: blur(15px);
+    backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(15px);
     display: none;
     flex-direction: column;
     min-width: 140px;
-    padding: 8px;
+    padding: 15px 10px 15px 10px;
     z-index: 9999;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
     animation: drawerFly 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -1973,13 +1983,22 @@ input:focus {
     color: var(--text-main);
 }
 
-.menu-item.active {
-    color: var(--accent-blue);
+[data-theme="dark"] .menu-item.active {
+    color: #e7e21d;
+    background: rgba(66, 133, 244, 0.1);
+}
+
+[data-theme="light"] .menu-item.active {
+    color: #1f3ee9;
     background: rgba(66, 133, 244, 0.1);
 }
 
 [data-theme="light"] .dropdown-menu {
-    background: rgba(255, 255, 255, 0.9);
+    background: linear-gradient(324deg, #ffffffde, rgb(0 0 0 / 29%));
+    backdrop-filter: blur(10px);
+    border: 1px solid var(--glass-border);
+    border-radius: 14px;
+    padding: 15px 10px 15px 10px;
 }
 
 [data-theme="light"] .menu-item:hover {

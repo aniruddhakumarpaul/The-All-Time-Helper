@@ -14,4 +14,5 @@ Generated images follow a two-stage path:
 ## Email Attachments
 - Generated-image email attachments must use downloaded bytes, not a raw Pollinations URL.
 - Attachment download logic validates HTTP success, image bytes, and size before accepting the payload.
+- Remote image fetches for `/api/image_proxy` and email attachments validate `http`/`https` URLs, block localhost/private/reserved/link-local/multicast DNS results, re-check redirect targets, and enforce streaming byte caps before accepting bytes.
 
