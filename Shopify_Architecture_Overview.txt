@@ -1,0 +1,31 @@
+# Shopify Architecture Overview
+
+Shopify is built on a high-performance modular monolith architecture, primarily using Ruby on Rails to manage core commerce functions (checkout, inventory, payments) within a single, scalable application. It utilizes a robust tech stack including MySQL, Redis, and Memcached, deployed on Google Cloud via Kubernetes to handle high-volume flash sales. [1, 2, 3, 4]
+
+## Core Architectural Layers
+
+* **Frontend (Storefront)**: Uses Liquid (Shopify’s templating language) for themes, or headless frameworks (React/GraphQL) for custom storefronts.
+* **Backend (The "Monolith")**: Core logic written in Ruby on Rails, heavily supported by Go and Lua for performance-critical components.
+* **Data Layer**: Leverages MySQL for relational data (orders, users) and Memcached/Redis for high-speed caching.
+* **External APIs**: Connects to apps, payment gateways, and shipping partners via robust REST and GraphQL APIs. [1, 4, 5, 6, 7]
+
+## Key Architectural Characteristics
+
+* **Modular Monolith**: While a monolith, it is organized into distinct, separated modules, allowing teams to manage complexity without the overhead of full microservices.
+* **Headless Capability**: Allows separating the frontend (what users see) from the backend (commerce logic), letting brands use headless CMS or custom frontends.
+* **Event-Driven**: Uses mechanisms like Kafka to handle asynchronous tasks (e.g., sending emails, updating search indexes).
+* **Scalability**: Uses Nginx + Lua for request routing and traffic management, ensuring stability during extreme loads. [2, 4, 5, 8]
+
+Shopify’s architecture serves a wide range of needs, from small businesses using the standard platform to large enterprises utilizing Shopify Plus for headless, complex integrations. [5]
+
+---
+
+### References
+* **[1]** [Shopify Platform Overview (YouTube)](https://www.youtube.com/watch?v=MV5Kdwzwcag)
+* **[2]** [Exploring Shopify Microservices Architecture](https://praella.com/blogs/shopify-insights/exploring-shopify-microservices-architecture-a-comprehensive-guide)
+* **[3]** [Shopify Tech Stack Deep Dive](https://blog.bytebytego.com/p/shopify-tech-stack)
+* **[4]** [Shopify's Modular Monolithic Architecture](https://mehmetozkaya.medium.com/shopifys-modular-monolithic-architecture-a-deep-dive-%EF%B8%8F-a2f88c172797)
+* **[5]** [Shopify Platform Architecture & Design Principles](https://www.shopifyacademy.com/the-shopify-platform-architecture-and-design-principles)
+* **[6]** [Shopify Scalability Analysis (YouTube)](https://www.youtube.com/watch?v=VqCe-Iv_CGs)
+* **[7]** [Ultimate Guide to Shopify Architecture](https://systron.net/blog/ultimate-guide-shopify-architecture/)
+* **[8]** [Shopify Infrastructure (YouTube)](https://www.youtube.com/watch?v=izYcUuljRRc)

@@ -1,0 +1,55 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \".codex\\hooks\\session_start.py\"",
+            "timeout": 10,
+            "statusMessage": "Loading project workflow"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|functions.apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \".codex\\hooks\\before_edit.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking edit policy"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Shell|exec_command|functions.exec_command|apply_patch|functions.apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \".codex\\hooks\\record_tool_use.py\"",
+            "timeout": 10,
+            "statusMessage": "Recording workflow state"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -B \".codex\\hooks\\stop_check.py\"",
+            "timeout": 10,
+            "statusMessage": "Checking final workflow"
+          }
+        ]
+      }
+    ]
+  }
+}
