@@ -980,6 +980,97 @@ class HardeningTests(unittest.TestCase):
         written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
         self.assertIn(f"Attachment: generated.png ({len(image_bytes)} bytes)", written)
 
+    def test_safe_fetch_blocks_localhost_and_private_ips(self):
+        from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
+
+        with self.assertRaises(SafeFetchError):
+            safe_fetch_url("http://localhost/image.png")
+
+        with self.assertRaises(SafeFetchError):
+            safe_fetch_url("http://10.0.0.8/image.png")
+
+    def test_safe_fetch_blocks_redirect_to_private_ip(self):
+        from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
+
+        class RedirectResponse:
+            status_code = 302
+            headers = {"Location": "http://127.0.0.1/private.png"}
+            content = b""
+
+            def iter_content(self, chunk_size=65536):
+                return iter(())
+
+        with patch("app.logic.safe_fetch.socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]):
+            with self.assertRaises(SafeFetchError):
+                safe_fetch_url("https://example.com/image.png", request_get=lambda *args, **kwargs: RedirectResponse())
+
+    def test_safe_fetch_blocks_oversized_response(self):
+        from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
+
+        class LargeResponse:
+            status_code = 200
+            headers = {"content-type": "image/png", "content-length": str(20 * 1024 * 1024)}
+            content = b""
+
+            def iter_content(self, chunk_size=65536):
+                return iter(())
+
+        with patch("app.logic.safe_fetch.socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]):
+            with self.assertRaises(SafeFetchError):
+                safe_fetch_url("https://example.com/image.png", max_bytes=1024, request_get=lambda *args, **kwargs: LargeResponse())
+
+    def test_download_image_attachment_allows_mocked_https_image(self):
+        from app.logic.tools import _download_image_attachment
+        import base64
+
+        image_bytes = self._png_bytes()
+        with patch("app.logic.safe_fetch.socket.getaddrinfo", return_value=[(None, None, None, None, ("93.184.216.34", 443))]):
+            with patch("app.logic.tools.requests.get", return_value=self._image_response(image_bytes)):
+                image_b64, ext, error = _download_image_attachment("https://example.com/image.png")
+
+        self.assertIsNone(error)
+        self.assertEqual(ext, "png")
+        self.assertEqual(base64.b64decode(image_b64), image_bytes)
+
+    def test_email_html_escapes_script_body_content(self):
+        from app.logic.tools import _build_html_body
+
+        html = _build_html_body("Hello\n\n<script>alert(1)</script>", "modern")
+
+        self.assertNotIn("<script>", html.lower())
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+
+    def test_email_html_sanitizes_raw_img_event_handler(self):
+        from app.logic.tools import _build_html_body
+
+        html = _build_html_body("Look <img src=x onerror=alert(1)>", "modern")
+
+        self.assertNotIn("<img src=x", html.lower())
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", html)
+
+    def test_email_html_preserves_code_blocks_as_escaped_code(self):
+        from app.logic.tools import _build_html_body
+
+        html = _build_html_body("```html\n<script>alert(1)</script>\n```", "modern")
+
+        self.assertIn("<pre", html)
+        self.assertNotIn("<script>", html.lower())
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+
+    def test_email_html_preserves_safe_links_and_blocks_javascript_links(self):
+        from app.logic.tools import _build_html_body
+
+        html = _build_html_body(
+            "Read [docs](https://example.com/path?a=1&b=2) and [bad](javascript:alert(1)).",
+            "modern",
+        )
+
+        self.assertIn('<a href="https://example.com/path?a=1&amp;b=2"', html)
+        self.assertIn(">docs</a>", html)
+        self.assertNotIn('href="javascript:', html.lower())
+        self.assertNotIn("javascript:alert", html.lower())
+        self.assertIn("bad", html)
+
     def test_send_or_simulate_email_offloads_long_plain_body_to_txt_attachment(self):
         from app.logic.tools import send_or_simulate_email
 

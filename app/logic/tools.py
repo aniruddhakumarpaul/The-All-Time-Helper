@@ -7,12 +7,14 @@ from app.logic.memory import query_memory, log_insight, user_context
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
 from app.logic.attachment_store import AttachmentStoreError, resolve_attachment_reference
+from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
 from contextvars import ContextVar
 from typing import Optional, List, Any, Tuple
 import base64
 import requests
 import re
 import urllib.parse
+import html
 
 active_history_context: ContextVar[Optional[List[dict]]] = ContextVar("active_history", default=None)
 
@@ -67,7 +69,12 @@ def _download_image_attachment(url: str, timeout: int = 60, min_bytes: int = 102
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
-            res = requests.get(clean_url, timeout=timeout)
+            res = safe_fetch_url(
+                clean_url,
+                timeout=timeout,
+                max_bytes=12 * 1024 * 1024,
+                request_get=requests.get,
+            )
             if res.status_code != 200:
                 last_error = f"HTTP {res.status_code}"
             else:
@@ -91,6 +98,9 @@ def _download_image_attachment(url: str, timeout: int = 60, min_bytes: int = 102
                         elif "webp" in content_type:
                             detected_ext = "webp"
                     return base64.b64encode(content).decode("utf-8"), detected_ext or "png", None
+        except SafeFetchError as e:
+            last_error = str(e)
+            break
         except Exception as e:
             last_error = str(e)
 
@@ -497,6 +507,74 @@ from email import encoders
 from dotenv import load_dotenv
 import json
 
+def _escape_email_html(value: Any) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def _safe_email_url(url: str, *, allow_images: bool = False) -> Optional[str]:
+    candidate = str(url or "").strip()
+    if not candidate or any(ord(ch) < 32 for ch in candidate):
+        return None
+    candidate = html.unescape(candidate)
+    parsed = urllib.parse.urlparse(candidate)
+    scheme = parsed.scheme.lower()
+    allowed = {"http", "https"}
+    if not allow_images:
+        allowed.add("mailto")
+    if scheme not in allowed:
+        return None
+    if scheme in {"http", "https"} and not parsed.netloc:
+        return None
+    return candidate
+
+
+def _render_email_inline_markdown(text: str) -> str:
+    placeholders = []
+
+    def stash(fragment: str) -> str:
+        token = f"%%%INLINE{len(placeholders)}%%%"
+        placeholders.append(fragment)
+        return token
+
+    def image_repl(match):
+        alt = _escape_email_html(match.group(1))
+        url = _safe_email_url(match.group(2), allow_images=True)
+        if not url:
+            return alt
+        safe_url = _escape_email_html(url)
+        return stash(
+            f'<div style="text-align: center; margin: 24px 0;">'
+            f'<img src="{safe_url}" alt="{alt}" style="max-width: 100%; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">'
+            f'<br><em style="font-size: 12px; color: #64748b; display: block; margin-top: 8px;">{alt}</em></div>'
+        )
+
+    def link_repl(match):
+        label = _render_email_inline_markdown(match.group(1))
+        url = _safe_email_url(match.group(2))
+        if not url:
+            return label
+        safe_url = _escape_email_html(url)
+        return stash(f'<a href="{safe_url}" style="color: #6366f1; text-decoration: none; font-weight: 500;">{label}</a>')
+
+    def code_repl(match):
+        code = _escape_email_html(match.group(1))
+        return stash(f'<code style="background-color: #f1f5f9; color: #6366f1; font-family: Consolas, Monaco, monospace; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; border: 1px solid #e2e8f0; font-weight: 500;">{code}</code>')
+
+    working = str(text or "")
+    working = re.sub(r'!\[([^\]]*)\]\(([^)\s]+)\)', image_repl, working)
+    working = re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', link_repl, working)
+    working = re.sub(r'`([^`\n]+)`', code_repl, working)
+    working = _escape_email_html(working)
+    working = re.sub(r'\*\*([^*]+)\*\*', r'<strong style="font-weight: 600; color: #0f172a;">\1</strong>', working)
+    working = re.sub(r'__([^_]+)__', r'<strong style="font-weight: 600; color: #0f172a;">\1</strong>', working)
+    working = re.sub(r'\*([^*]+)\*', r'<em style="font-style: italic; color: #475569;">\1</em>', working)
+    working = re.sub(r'_([^_]+)_', r'<em style="font-style: italic; color: #475569;">\1</em>', working)
+
+    for idx, fragment in enumerate(placeholders):
+        working = working.replace(f"%%%INLINE{idx}%%%", fragment)
+    return working
+
+
 def parse_markdown_table(rows) -> str:
     if not rows: return ""
     html_rows = []
@@ -514,19 +592,21 @@ def parse_markdown_table(rows) -> str:
             cell_style += 'background-color: #f8fafc; font-weight: 600; border-top: 1px solid #e2e8f0; color: #1e293b;'
         else:
             cell_style += 'color: #334155;'
-        html_cols = "".join([f'<{tag} style="{cell_style}">{col}</{tag}>' for col in cols])
+        html_cols = "".join([f'<{tag} style="{cell_style}">{_render_email_inline_markdown(col)}</{tag}>' for col in cols])
         html_rows.append(f'<tr>{html_cols}</tr>')
         
     return f'<div style="overflow-x: auto; margin: 20px 0;"><table style="width: 100%; border-collapse: collapse; font-size: 14px; border: 1px solid #e2e8f0;">{"".join(html_rows)}</table></div>'
 
 def render_markdown_to_html(text: str) -> str:
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+
     # 1. Extract code blocks
     code_blocks = []
     def save_code_block(match):
-        lang = match.group(1) or "code"
+        lang = _escape_email_html(match.group(1) or "code")
         code = match.group(2)
         placeholder = f"%%%CODEBLOCK{len(code_blocks)}%%%"
-        html = f'<div style="background-color: #0f172a; color: #e2e8f0; font-family: Consolas, Monaco, monospace; padding: 16px; border-radius: 12px; margin: 20px 0; overflow-x: auto; font-size: 13px; line-height: 1.6; border: 1px solid #1e293b;"><div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; margin-bottom: 8px; font-weight: 600; border-bottom: 1px solid #1e293b; padding-bottom: 6px;">{lang}</div><pre style="margin:0; white-space: pre-wrap;">{code.strip()}</pre></div>'
+        html = f'<div style="background-color: #0f172a; color: #e2e8f0; font-family: Consolas, Monaco, monospace; padding: 16px; border-radius: 12px; margin: 20px 0; overflow-x: auto; font-size: 13px; line-height: 1.6; border: 1px solid #1e293b;"><div style="font-size: 11px; text-transform: uppercase; color: #94a3b8; margin-bottom: 8px; font-weight: 600; border-bottom: 1px solid #1e293b; padding-bottom: 6px;">{lang}</div><pre style="margin:0; white-space: pre-wrap;">{_escape_email_html(code.strip())}</pre></div>'
         code_blocks.append(html)
         return placeholder
     
@@ -560,10 +640,7 @@ def render_markdown_to_html(text: str) -> str:
         new_lines.append(save_table(table_rows))
     text = '\n'.join(new_lines)
     
-    # 3. Blockquotes
-    text = re.sub(r'^>\s+(.+)$', r'<blockquote style="border-left: 4px solid #6366f1; padding-left: 16px; color: #4b5563; margin: 16px 0; font-style: italic; background-color: #f8fafc; padding: 10px 16px; border-radius: 0 8px 8px 0;">\1</blockquote>', text, flags=re.MULTILINE)
-    
-    # 4. Lists (Stateful)
+    # 3. Blockquotes and lists
     processed_lines = []
     in_ul = False
     in_ol = False
@@ -571,6 +648,7 @@ def render_markdown_to_html(text: str) -> str:
         stripped = line.strip()
         bullet_match = re.match(r'^[\-\*]\s+(.+)$', stripped)
         num_match = re.match(r'^\d+\.\s+(.+)$', stripped)
+        quote_match = re.match(r'^>\s+(.+)$', stripped)
         
         if bullet_match:
             if in_ol:
@@ -579,7 +657,7 @@ def render_markdown_to_html(text: str) -> str:
             if not in_ul:
                 processed_lines.append('<ul style="margin: 16px 0; padding-left: 24px; color: #334155;">')
                 in_ul = True
-            processed_lines.append(f'<li style="margin-bottom: 8px; line-height: 1.6;">{bullet_match.group(1)}</li>')
+            processed_lines.append(f'<li style="margin-bottom: 8px; line-height: 1.6;">{_render_email_inline_markdown(bullet_match.group(1))}</li>')
         elif num_match:
             if in_ul:
                 processed_lines.append('</ul>')
@@ -587,7 +665,15 @@ def render_markdown_to_html(text: str) -> str:
             if not in_ol:
                 processed_lines.append('<ol style="margin: 16px 0; padding-left: 24px; color: #334155;">')
                 in_ol = True
-            processed_lines.append(f'<li style="margin-bottom: 8px; line-height: 1.6;">{num_match.group(1)}</li>')
+            processed_lines.append(f'<li style="margin-bottom: 8px; line-height: 1.6;">{_render_email_inline_markdown(num_match.group(1))}</li>')
+        elif quote_match:
+            if in_ul:
+                processed_lines.append('</ul>')
+                in_ul = False
+            if in_ol:
+                processed_lines.append('</ol>')
+                in_ol = False
+            processed_lines.append(f'<blockquote style="border-left: 4px solid #6366f1; padding-left: 16px; color: #4b5563; margin: 16px 0; font-style: italic; background-color: #f8fafc; padding: 10px 16px; border-radius: 0 8px 8px 0;">{_render_email_inline_markdown(quote_match.group(1))}</blockquote>')
         else:
             if in_ul:
                 processed_lines.append('</ul>')
@@ -600,22 +686,10 @@ def render_markdown_to_html(text: str) -> str:
     if in_ol: processed_lines.append('</ol>')
     text = '\n'.join(processed_lines)
     
-    # 5. Inline formatting (bold, italic, links, inline code, hr, images)
-    # Parse images first so they don't conflict with link rendering
-    text = re.sub(
-        r'!\[([^\]]*)\]\(([^)]+)\)', 
-        r'<div style="text-align: center; margin: 24px 0;"><img src="\2" alt="\1" style="max-width: 100%; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.05);"><br><em style="font-size: 12px; color: #64748b; display: block; margin-top: 8px;">\1</em></div>', 
-        text
-    )
-    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color: #6366f1; text-decoration: none; font-weight: 500;">\1</a>', text)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'<strong style="font-weight: 600; color: #0f172a;">\1</strong>', text)
-    text = re.sub(r'__([^_]+)__', r'<strong style="font-weight: 600; color: #0f172a;">\1</strong>', text)
-    text = re.sub(r'\*([^*]+)\*', r'<em style="font-style: italic; color: #475569;">\1</em>', text)
-    text = re.sub(r'_([^_]+)_', r'<em style="font-style: italic; color: #475569;">\1</em>', text)
-    text = re.sub(r'`([^`\n]+)`', r'<code style="background-color: #f1f5f9; color: #6366f1; font-family: Consolas, Monaco, monospace; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; border: 1px solid #e2e8f0; font-weight: 500;">\1</code>', text)
+    # 4. Inline formatting and horizontal rules
     text = re.sub(r'^\s*[\-\*_]{3,}\s*$', r'<hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;">', text, flags=re.MULTILINE)
     
-    # 6. Build paragraph tags (excl. placeholders and structural HTML elements)
+    # 5. Build paragraph tags (excl. placeholders and structural HTML elements)
     paragraphs = []
     for part in text.split('\n\n'):
         part_stripped = part.strip()
@@ -624,12 +698,12 @@ def render_markdown_to_html(text: str) -> str:
         if any(marker in part_stripped for marker in ["%%%CODEBLOCK", "%%%TABLE", "<ul", "<ol", "<blockquote", "<hr"]):
             paragraphs.append(part_stripped)
         else:
-            part_formatted = part_stripped.replace('\n', '<br>')
+            part_formatted = _render_email_inline_markdown(part_stripped).replace('\n', '<br>')
             paragraphs.append(f'<p style="margin: 0 0 16px 0; line-height: 1.8; color: #334155;">{part_formatted}</p>')
             
     text = '\n'.join(paragraphs)
     
-    # 7. Restore placeholders
+    # 6. Restore placeholders
     for idx, html in enumerate(code_blocks):
         text = text.replace(f"%%%CODEBLOCK{idx}%%%", html)
     for idx, html in enumerate(tables):
