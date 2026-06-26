@@ -5,6 +5,17 @@
 *.db
 *.db-journal
 
+# Runtime memory/vector stores
+.project_brain/
+
+# Runtime logs and exported conversations
+logs/
+*.log
+chat_*.md
+
+# Generated user uploads
+static/uploads/
+
 # Python
 __pycache__/
 *.py[cod]
