@@ -1,0 +1,34 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "node --check static/js/app.js",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_email_template_field_update_returns_widget_not_tool_json app.tests.test_hardening.HardeningTests.test_attached_text_to_email_template_returns_widget_without_cloud_json app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text",
+    "node --check static/js/app.js",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attach_above_image_uses_history_email_and_direct_widget app.tests.test_hardening.HardeningTests.test_attach_two_recent_images_uses_multi_attachment_payload app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "node --check static/js/app.js",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}

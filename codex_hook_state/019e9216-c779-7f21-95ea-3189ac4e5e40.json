@@ -1,0 +1,15 @@
+{
+  "docs_changed": false,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m py_compile app/tests/test_hardening.py",
+    "node --check static/js/app.js",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}

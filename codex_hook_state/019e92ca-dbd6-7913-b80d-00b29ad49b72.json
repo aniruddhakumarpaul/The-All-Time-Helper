@@ -1,0 +1,8 @@
+{
+  "verification_commands": [
+    "node --check static/js/ui.js",
+    "node --check static/js/app.js",
+    "python -B -m py_compile app/routes/chat.py app/logic/agents.py app/tests/test_hardening.py"
+  ],
+  "verified": true
+}

@@ -1,0 +1,26 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attach_above_asks_when_image_and_text_are_both_recent app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text app.tests.test_hardening.HardeningTests.test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_send_email_tool_keeps_file_id_draft_metadata_only",
+    "python -B - <<'PY'\nfrom app.logic import agents\nfrom app.logic.exceptions import AgentFastExit\nfrom unittest.mock import patch\nimport json\npayload='EMAIL_DRAFT_PAYLOAD:'+json.dumps({'recipient':'user@example.com','subject':'Images','body':'Please find attached','tone':'modern','attachment_content':None,'attachment_filename':'one.png','attachments':[{'id':'file-1','filename':'one.png'}]})\nimg_data=[{'id':'file-1','name':'one.png','type':'image/png','size':123,'path':'ignored'},{'id':'file-2','name':'two.png','type':'image/png','size':456,'path':'ignored'}]\nwith patch.object(agents.tools.send_email_tool,'func',side_effect=AgentFastExit(payload)) as email_tool:\n    with patch('app.logic.agents.requests.post', side_effect=RuntimeError('skip local model')):\n        result=agents._try_direct_tool_execution('email user@example.com and attach these two images', {'requires_tools': True, 'is_local': True, 'force_direct_tool': True}, [], target_model='gemma4:e2b', img_data=img_data)\nprint(result)\nprint('called', email_tool.called)\nPY",
+    "python -B -c \"from app.logic import agents; from app.logic.exceptions import AgentFastExit; from unittest.mock import patch; import json; payload='EMAIL_DRAFT_PAYLOAD:'+json.dumps({'recipient':'user@example.com','subject':'Images','body':'Please find attached','tone':'modern','attachment_content':None,'attachment_filename':'one.png','attachments':[{'id':'file-1','filename':'one.png'}]}); img_data=[{'id':'file-1','name':'one.png','type':'image/png','size':123,'path':'ignored'},{'id':'file-2','name':'two.png','type':'image/png','size':456,'path':'ignored'}];\nwith patch.object(agents.tools.send_email_tool,'func',side_effect=AgentFastExit(payload)) as email_tool:\n    with patch('app.logic.agents.requests.post', side_effect=RuntimeError('skip local model')):\n        result=agents._try_direct_tool_execution('email user@example.com and attach these two images', {'requires_tools': True, 'is_local': True, 'force_direct_tool': True}, [], target_model='gemma4:e2b', img_data=img_data)\n    print(result); print('called', email_tool.called)\"",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attach_above_asks_when_image_and_text_are_both_recent app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text app.tests.test_hardening.HardeningTests.test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_send_email_tool_keeps_file_id_draft_metadata_only",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attach_above_asks_when_image_and_text_are_both_recent app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text app.tests.test_hardening.HardeningTests.test_structured_code_prompt_stays_verbatim_and_does_not_trigger_email_attachment_routing app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_send_email_tool_keeps_file_id_draft_metadata_only",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}

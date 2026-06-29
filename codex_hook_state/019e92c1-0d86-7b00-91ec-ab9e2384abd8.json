@@ -1,0 +1,19 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "node --check static/js/app.js static/js/ui.js",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget",
+    "node --check static/js/app.js static/js/ui.js",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget"
+  ],
+  "verified": true
+}

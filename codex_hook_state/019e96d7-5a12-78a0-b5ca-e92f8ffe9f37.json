@@ -1,0 +1,18 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "node --check static/js/app.js",
+    "python -B -m unittest app.tests.test_hardening",
+    "node --check static/js/app.js"
+  ],
+  "verified": true
+}

@@ -1,0 +1,28 @@
+{
+  "docs_changed": false,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attachment_choice_reply_treats_natural_summary_reply_as_summary app.tests.test_hardening.HardeningTests.test_summary_reply_uses_previous_email_draft_body_not_clarification",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attached_text_to_email_template_returns_widget_without_cloud_json app.tests.test_hardening.HardeningTests.test_attachment_choice_followup_both_builds_email_draft_with_all_images_and_text app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget app.tests.test_hardening.HardeningTests.test_summary_reply_uses_previous_email_draft_body_not_clarification",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}
