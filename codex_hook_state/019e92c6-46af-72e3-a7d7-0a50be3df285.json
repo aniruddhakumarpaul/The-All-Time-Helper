@@ -1,0 +1,14 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "node --check static/js/mascot.js",
+    "node --check static/js/app.js"
+  ],
+  "verified": true
+}

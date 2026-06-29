@@ -1,0 +1,20 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_harden_result_rewrites_pollinations_turbo_markdown app.tests.test_hardening.HardeningTests.test_image_proxy_returns_clear_pollinations_402_error app.tests.test_hardening.HardeningTests.test_frontend_stops_retries_for_permanent_image_proxy_status app.tests.test_hardening.HardeningTests.test_image_generate_tool_uses_flux_model_only",
+    "node --check .\\static\\js\\utils.js",
+    "python -B -m py_compile app/main.py app/logic/agents.py app/logic/tools.py app/tests/test_hardening.py",
+    "node --check .\\static\\js\\utils.js",
+    "python -B -m py_compile app/main.py app/logic/agents.py app/logic/tools.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_harden_result_rewrites_pollinations_turbo_markdown app.tests.test_hardening.HardeningTests.test_image_proxy_returns_clear_pollinations_402_error app.tests.test_hardening.HardeningTests.test_frontend_stops_retries_for_permanent_image_proxy_status app.tests.test_hardening.HardeningTests.test_image_generate_tool_uses_flux_model_only"
+  ],
+  "verified": true
+}

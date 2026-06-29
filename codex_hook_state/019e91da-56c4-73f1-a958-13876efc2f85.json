@@ -1,0 +1,20 @@
+{
+  "docs_changed": false,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m py_compile app/logic/attachment_store.py app/routes/chat.py app/logic/agents.py app/logic/tools.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attachment_store_saves_and_resolves_user_image app.tests.test_hardening.HardeningTests.test_chat_attachment_model_accepts_file_ids_without_data app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_send_email_tool_keeps_file_id_draft_metadata_only app.tests.test_hardening.HardeningTests.test_send_or_simulate_email_resolves_attachment_id app.tests.test_hardening.HardeningTests.test_live_email_uses_mixed_root_and_alternative_body app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_attachment_store_saves_and_resolves_user_image app.tests.test_hardening.HardeningTests.test_chat_attachment_model_accepts_file_ids_without_data app.tests.test_hardening.HardeningTests.test_direct_tool_preserves_current_attachment_id_metadata app.tests.test_hardening.HardeningTests.test_send_email_tool_keeps_file_id_draft_metadata_only app.tests.test_hardening.HardeningTests.test_send_or_simulate_email_resolves_attachment_id app.tests.test_hardening.HardeningTests.test_live_email_uses_mixed_root_and_alternative_body app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "python -B -m unittest app.tests.test_hardening",
+    "node --check static/js/ui.js",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "node --check static/js/api.js",
+    "node --check static/js/app.js",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}

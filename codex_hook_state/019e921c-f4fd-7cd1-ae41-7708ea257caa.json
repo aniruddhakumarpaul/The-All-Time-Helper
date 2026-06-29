@@ -1,0 +1,25 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "node --check static/js/app.js",
+    "python -B -m py_compile app/logic/agents.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening.HardeningTests.test_dragged_email_widget_context_seeds_next_email_widget app.tests.test_hardening.HardeningTests.test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe",
+    "python -B -m unittest app.tests.test_hardening",
+    "node --check static/js/app.js",
+    "python -B -m unittest app.tests.test_hardening"
+  ],
+  "verified": true
+}

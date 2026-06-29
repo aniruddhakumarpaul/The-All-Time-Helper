@@ -1,0 +1,17 @@
+{
+  "docs_changed": true,
+  "edit_tools": [
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch",
+    "apply_patch"
+  ],
+  "edited": true,
+  "verification_commands": [
+    "python -B -m py_compile app/main.py app/logic/tools.py app/tests/test_hardening.py",
+    "python -B -m unittest app.tests.test_hardening",
+    "python -B -m py_compile app/logic/safe_fetch.py"
+  ],
+  "verified": true
+}

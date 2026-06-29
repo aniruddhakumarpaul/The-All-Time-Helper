@@ -1,0 +1,8 @@
+{
+  "verification_commands": [
+    "python -B -m pytest app/tests/test_hardening.py::HardeningTests::test_inference_queue_cancel_marks_job_cancelled -q -p no:cacheprovider --basetemp C:\\tmp\\capstone_pytest_review",
+    "python -B -m pytest app/tests/system_audit.py::test_hybrid_email_mode -q -p no:cacheprovider --basetemp C:\\tmp\\capstone_pytest_review2",
+    "python -B -m pytest app/tests/test_hardening.py::HardeningTests::test_simulated_email_logs_multiple_attachment_names -q -p no:cacheprovider --basetemp C:\\tmp\\capstone_pytest_review3"
+  ],
+  "verified": true
+}
