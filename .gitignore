@@ -1,34 +1,22 @@
-# Environment variables
+# Model files
+*.gguf
+
+# Environment and Secrets
 .env
+.env.*
 
-# Database files
+# Databases
 *.db
-*.db-journal
+users.db
+database.db
 
-# Runtime memory/vector stores
-.project_brain/
+# Virtual environments
+.venv/
+venv/
+__pycache__/
+*.pyc
 
-# Runtime logs and exported conversations
+# Logs and scratch files
 logs/
 *.log
-chat_*.md
-
-# Generated user uploads
-static/uploads/
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# IDEs
-.vscode/
-.idea/
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Large Models
-*.gguf
-app/logic/fine_tuning/
+scratch/
