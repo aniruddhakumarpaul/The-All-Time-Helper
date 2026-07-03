@@ -20,6 +20,15 @@ function safeDomId(value) {
     return String(value ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
+function normalizePreviewImageSource(value) {
+    const raw = typeof value === 'object' && value !== null
+        ? value.data || value.content || value.url || ''
+        : String(value || '');
+    if (!raw) return { src: '', payload: '' };
+    if (/^(?:data:|blob:|https?:|\/static\/)/i.test(raw)) return { src: raw, payload: raw };
+    return { src: `data:image/png;base64,${raw}`, payload: raw };
+}
+
 function smartFocus(id) {
     if (window.innerWidth > 850) {
         const el = document.getElementById(id);
@@ -138,7 +147,7 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
     let tools = '';
     if (r === 'u' && idx !== undefined && !isMasked) {
         tools = `<div class="msg-tools">
-                    <div class="tool-icon" onclick="startEditPrompt(${Number(idx)}, this)" title="Edit Prompt">
+                    <div class="tool-icon" data-edit-index="${Number(idx)}" title="Edit Prompt">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
                     </div>
                  </div>`;
@@ -152,6 +161,7 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
         </div>`;
     }
 
+    const preview = normalizePreviewImageSource(Array.isArray(i) ? i[0] : i);
     div.innerHTML = `
         <div class="av-wrap">
             ${avatarHtml}
@@ -159,15 +169,24 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
                 ${r === 'u' ? safeName : 'THE ALL TIME HELPER'}
             </div>
         </div>
-        <div class="txt" draggable="false" ondragstart="if(!window.isGDown) { event.preventDefault(); return false; } handleDragStart(event, this.innerText)" ondragend="handleDragEnd(event)">
+        <div class="txt" draggable="false">
             <div id="msg-text-${safeIdx}">${content}</div>
-            ${i ? `<div class="chat-img-preview-container" onclick="openImageModal('data:image/png;base64,${escapeHtml(i)}')"><img src="data:image/png;base64,${escapeHtml(i)}" class="chat-img-preview"></div>` : ''}
+            ${preview.src ? `<div class="chat-img-preview-container" data-preview-src="${escapeHtml(preview.src)}" data-preview-payload="${escapeHtml(preview.payload)}"><img src="${escapeHtml(preview.src)}" class="chat-img-preview"></div>` : ''}
             ${watermark}
             ${tools}
         </div>
     `;
 
     document.getElementById('chat-area').appendChild(div);
+    const textContainer = div.querySelector('.txt');
+    textContainer?.addEventListener('dragstart', event => {
+        if (!window.isGDown) { event.preventDefault(); return; }
+        handleDragStart(event);
+    });
+    textContainer?.addEventListener('dragend', handleDragEnd);
+    div.querySelector('[data-edit-index]')?.addEventListener('click', event => startEditPrompt(Number(idx), event.currentTarget));
+    div.querySelector('[data-preview-src]')?.addEventListener('click', event => openImageModal(event.currentTarget.dataset.previewSrc));
+    if (r === 'b') window.hydrateRenderedMarkdown?.(div);
     div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
     document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
     if (mName) console.log(`DEBUG: Rendered watermark for ${mName}`);
@@ -294,14 +313,22 @@ function startEditPrompt(idx, btn) {
     const msg = chat.ms[idx];
     const txtDiv = document.getElementById(`msg-text-${safeDomId(idx)}`);
     if (!txtDiv) { console.error("DEBUG: txtDiv not found"); return; }
-    const oldText = msg.c;
-    txtDiv.innerHTML = `
-        <textarea class="edit-area">${escapeHtml(oldText)}</textarea>
-        <div class="edit-controls">
-            <button class="auth-btn edit-btn" onclick="submitEdit(${Number(idx)}, this.parentElement.parentElement)">Save & Submit</button>
-            <button class="auth-btn edit-btn edit-btn-cancel" onclick="cancelEdit(${Number(idx)})">Cancel</button>
-        </div>
-    `;
+    txtDiv.textContent = '';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'edit-area';
+    textarea.value = msg.c;
+    const controls = document.createElement('div');
+    controls.className = 'edit-controls';
+    const submit = document.createElement('button');
+    submit.className = 'auth-btn edit-btn';
+    submit.textContent = 'Save & Submit';
+    submit.addEventListener('click', () => window.submitEdit?.(Number(idx), txtDiv));
+    const cancel = document.createElement('button');
+    cancel.className = 'auth-btn edit-btn edit-btn-cancel';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => cancelEdit(Number(idx)));
+    controls.append(submit, cancel);
+    txtDiv.append(textarea, controls);
 }
 
 function cancelEdit(idx) {
@@ -310,7 +337,12 @@ function cancelEdit(idx) {
     const msg = chat.ms[idx];
     const txtDiv = document.getElementById(`msg-text-${safeDomId(idx)}`);
     if (txtDiv) {
-        txtDiv.innerHTML = msg.r === 'b' ? window.renderMarkdown(msg.c) : escapeHtml(msg.c);
+        if (msg.r === 'b') {
+            txtDiv.innerHTML = window.renderMarkdown(msg.c);
+            window.hydrateRenderedMarkdown?.(txtDiv);
+        } else {
+            txtDiv.innerHTML = escapeHtml(msg.c);
+        }
         if (msg.r === 'b') txtDiv.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
     }
 }
@@ -324,7 +356,18 @@ function previewImg(i) {
             state.currentBlobUrl = URL.createObjectURL(i.files[0]);
             const area = document.getElementById('img-preview-area');
             area.style.display = 'flex';
-            area.innerHTML = `<div class="img-thumb-wrap"><img src="${state.currentBlobUrl}" class="img-thumb"><button class="img-remove-btn" onclick="clearImgPreview()">✕</button></div>`;
+            area.textContent = '';
+            const wrapper = document.createElement('div');
+            wrapper.className = 'img-thumb-wrap';
+            const image = document.createElement('img');
+            image.src = state.currentBlobUrl;
+            image.className = 'img-thumb';
+            const remove = document.createElement('button');
+            remove.className = 'img-remove-btn';
+            remove.textContent = 'x';
+            remove.addEventListener('click', clearImgPreview);
+            wrapper.append(image, remove);
+            area.appendChild(wrapper);
             selModel('moondream', 'Moondream (Vision)');
         };
         reader.readAsDataURL(i.files[0]);
@@ -334,6 +377,8 @@ function previewImg(i) {
 function clearImgPreview() {
     if (state.currentBlobUrl) URL.revokeObjectURL(state.currentBlobUrl);
     state.currentBlobUrl = null; state.currentImg = null;
+    state.currentImages = [];
+    state.pendingImageUploads = null;
     document.getElementById('img-in').value = '';
     const area = document.getElementById('img-preview-area');
     area.style.display = 'none'; area.innerHTML = '';
@@ -403,6 +448,7 @@ function closeNeuralContext() {
 }
 
 function setThemeUI(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
     document.body.setAttribute('data-theme', theme);
     const isDark = theme === 'dark';
     document.getElementById('main-logo-img').src = isDark ? LOGO_DATA : LOGO_LIGHT_DATA;
@@ -428,7 +474,7 @@ const ui = {
     showDeleteConfirm, closeDeleteConfirm,
     openImageModal, closeImageModal,
     showNeuralContext, closeNeuralContext,
-    setThemeUI, handleDragStart, handleDragEnd
+    setThemeUI, handleDragStart, handleDragEnd, normalizePreviewImageSource
 };
 
 export { ui };

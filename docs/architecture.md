@@ -16,6 +16,7 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `static/js/app.js`: frontend orchestrator and chat state persistence.
 - `static/js/ui.js`: DOM rendering and widget composition.
 - `static/js/utils.js`: markdown rendering and legacy global helpers.
+- Static and rendered controls bind events from JavaScript modules; active HTML contains no inline event attributes. See `docs/csp.md` for the not-yet-enabled CSP candidate.
 
 ## Design Rules
 - Prefer deterministic direct tool paths for obvious workflows.

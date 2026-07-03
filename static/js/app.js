@@ -7,6 +7,47 @@ import { api } from './api.js';
 import { ui } from './ui.js';
 import { mascot } from './mascot.js';
 
+const MAX_ATTACHED_CONTEXTS = 6;
+const MAX_CONTEXT_CHARS = 6000;
+const MAX_TOTAL_CONTEXT_CHARS = 18000;
+
+function escapeHTML(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+}
+
+function addAttachedContext(text, kind = 'text') {
+    const clean = String(text || '').trim();
+    if (!clean || state.attachedContexts.length >= MAX_ATTACHED_CONTEXTS) return false;
+    const currentTotal = state.attachedContexts.reduce((total, item) => total + item.text.length, 0);
+    const allowed = Math.max(0, Math.min(MAX_CONTEXT_CHARS, MAX_TOTAL_CONTEXT_CHARS - currentTotal));
+    if (!allowed) return false;
+    const clipped = clean.slice(0, allowed);
+    state.attachedContexts.push({ kind, text: clipped });
+    if (clipped.length < clean.length) console.warn('Context truncated to keep this request within the model limit');
+    return true;
+}
+
+function serializeAttachedContext(ctx) {
+    return String(ctx?.text || '').slice(0, MAX_CONTEXT_CHARS);
+}
+
+function clearPendingComposerDrafts() {
+    Object.keys(localStorage).forEach(key => {
+        if (key.startsWith('helper_pending_prompt_')) localStorage.removeItem(key);
+    });
+    state.attachedContexts = [];
+    state.currentImages = [];
+    state.pendingImageUploads = null;
+}
+
+async function waitForPendingImageUploads() {
+    if (!state.pendingImageUploads) return state.currentImages;
+    await state.pendingImageUploads;
+    return state.currentImages;
+}
+
 // --- Upscale Poller ---
 function startUpscalePoller(jobId, container) {
     if (state.activePollers.has(jobId)) return;
@@ -101,6 +142,11 @@ async function saveUserChats() {
     await api.syncChats(state.chats);
 }
 
+async function requestChatPersist({ immediate = false } = {}) {
+    if (immediate) return saveUserChats();
+    return saveUserChats();
+}
+
 // --- Core: Handle Auth (with button loading state) ---
 async function handleAuth(t) {
     const btn = document.getElementById(t + '-btn');
@@ -131,16 +177,22 @@ async function submitEdit(idx, container) {
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) return;
     chat.ms = chat.ms.slice(0, idx);
+    await requestChatPersist({ immediate: true });
     loadChat(state.activeId);
     mascot.triggerBotReaction(newText);
     document.getElementById('prompt').value = newText;
-    send();
+    await send();
 }
 
 // --- Core: Send Message ---
 async function send() {
     const p = document.getElementById('prompt').value.trim();
-    if (!p && !state.currentImg) return;
+    await waitForPendingImageUploads();
+    const currentAttachments = state.currentImages.slice();
+    const contextText = state.attachedContexts.map(serializeAttachedContext).filter(Boolean)
+        .map((text, index) => `[Attached Context ${index + 1}]\n"""\n${text}\n"""`).join('\n\n');
+    const apiPrompt = [contextText, p].filter(Boolean).join('\n\n');
+    if (!apiPrompt && !currentAttachments.length) return;
     if (!state.activeId) state.set('activeId', Date.now().toString());
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) { chat = { id: state.activeId, title: p.substring(0, 35), ms: [] }; state.chats.push(chat); }
@@ -158,7 +210,7 @@ async function send() {
     }
 
     ui.addMsg('u', p, state.currentImg, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: p, i: state.currentImg, masked: isMasked });
+    chat.ms.push({ r: 'u', c: p, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
     mascot.triggerBotReaction(p);
     ui.clearImgPreview();
     promptEl.value = ''; promptEl.style.height = 'auto';
@@ -181,8 +233,13 @@ async function send() {
     state.set('abortController', new AbortController());
 
     try {
+        const historyForApi = chat.ms.map(message => ({
+            role: message.r === 'u' ? 'user' : 'assistant',
+            content: message.apiPrompt || message.c,
+            attachments: message.attachments || []
+        }));
         const res = await api.streamChat({
-            prompt: p, history: chat.ms, model: state.selectedModel, img: state.currentImg, name: state.user.name,
+            prompt: apiPrompt, history: historyForApi, model: state.selectedModel, img: null, attachments: currentAttachments, name: state.user.name,
             persona: document.getElementById('persona-toggle').checked, isMasked,
             sys: { english: document.getElementById('t-eng').classList.contains('on'), oneword: document.getElementById('t-word').classList.contains('on'), pers: document.getElementById('t-pers').classList.contains('on') }
         }, state.abortController.signal);
@@ -212,7 +269,7 @@ async function send() {
                     }
                     if (j.message && j.message.content) {
                         if (fullTxt === '') { bTxt.querySelector('.typing-indicator')?.remove(); bTxt.querySelector('.status-msg')?.remove(); bTxt.closest('.msg').classList.remove('thinking-state'); }
-                        fullTxt += j.message.content; bTxt.innerHTML = window.renderMarkdown(fullTxt);
+                        fullTxt += j.message.content; bTxt.innerHTML = window.renderMarkdown(fullTxt); window.hydrateRenderedMarkdown?.(bTxt);
                     }
                 } catch (e) { if (tl.length > 5) console.warn("Dropped:", tl); }
             });
@@ -223,6 +280,7 @@ async function send() {
         }
         chat.ms.push({ r: 'b', c: fullTxt, m: mName });
         bTxt.innerHTML = window.renderMarkdown(fullTxt);
+        window.hydrateRenderedMarkdown?.(bTxt);
         bTxt.querySelectorAll('img').forEach(img => { if (img.src.includes('uid=')) { const jId = new URLSearchParams(img.src.split('?')[1]).get('uid'); if (jId) startUpscalePoller(jId, bTxt); } });
         bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
         saveUserChats();
@@ -234,6 +292,8 @@ async function send() {
         document.querySelectorAll('.thinking-state').forEach(el => el.classList.remove('thinking-state'));
         document.querySelectorAll('.typing-indicator').forEach(ti => ti.remove());
         state.abortController = null; state.currentImg = null;
+        state.attachedContexts = [];
+        state.currentImages = [];
         state.activeJobId = null;
         window.activeId = state.activeId;
         if (state.chats.find(c => c.id === state.activeId)?.ms.length <= 2) ui.renderHist();
@@ -244,6 +304,80 @@ async function send() {
 function stopAI() {
     if (state.activeJobId) api.cancelInferenceJob(state.activeJobId).catch(() => {});
     if (state.abortController) state.abortController.abort();
+}
+
+function deleteSelectedChat() {
+    if (!state.chatToDelete) return;
+    const deletedId = state.chatToDelete;
+    state.chats = state.chats.filter(chat => chat.id !== deletedId);
+    if (state.activeId === deletedId) startNewChat();
+    ui.closeDeleteConfirm();
+    ui.renderHist();
+    saveUserChats();
+}
+
+function bindStaticEvents() {
+    const on = (id, eventName, handler) => document.getElementById(id)?.addEventListener(eventName, handler);
+    on('login-btn', 'click', () => handleAuth('login'));
+    on('signup-btn', 'click', () => handleAuth('signup'));
+    on('verify-btn', 'click', () => handleAuth('verify'));
+    document.querySelectorAll('[data-auth-view]').forEach(el => el.addEventListener('click', () => ui.switchAuth(el.dataset.authView)));
+
+    on('l-email', 'keydown', event => { if (event.key === 'Enter') document.getElementById('l-pwd')?.focus(); });
+    on('l-pwd', 'keydown', event => { if (event.key === 'Enter') handleAuth('login'); });
+    on('s-name', 'keydown', event => { if (event.key === 'Enter') document.getElementById('s-email')?.focus(); });
+    on('s-email', 'keydown', event => { if (event.key === 'Enter') document.getElementById('s-pwd')?.focus(); });
+    on('s-pwd', 'keydown', event => { if (event.key === 'Enter') handleAuth('signup'); });
+    on('v-otp', 'input', event => { event.currentTarget.value = event.currentTarget.value.replace(/[^0-9]/g, '').slice(0, 6); });
+    on('v-otp', 'keydown', event => { if (event.key === 'Enter') handleAuth('verify'); });
+
+    on('mobile-menu-btn', 'click', ui.toggleSidebar);
+    on('sidebar-scrim', 'click', ui.toggleSidebar);
+    on('main-logo-img', 'click', mascot.jiggleLogo);
+    on('new-chat-btn', 'click', startNewChat);
+    on('hist-search', 'input', event => ui.filterHist(event.currentTarget.value));
+    on('open-settings-btn', 'click', ui.openSettings);
+    on('model-toggle', 'click', ui.toggleDropdown);
+    document.querySelectorAll('[data-model-id]').forEach(el => el.addEventListener('click', () => ui.selModel(el.dataset.modelId, el.dataset.modelName)));
+    on('img-in', 'change', event => {
+        const input = event.currentTarget;
+        ui.previewImg(input);
+        state.pendingImageUploads = api.uploadAttachments(input.files)
+            .then(items => { state.currentImages = items; })
+            .catch(error => { state.currentImages = []; alert(error.message); })
+            .finally(() => { state.pendingImageUploads = null; });
+    });
+    on('stop-btn', 'click', stopAI);
+    on('export-chat-btn', 'click', exportChat);
+    on('main-send-btn', 'click', send);
+    on('neural-scrim', 'click', ui.closeNeuralContext);
+    on('close-neural-btn', 'click', ui.closeNeuralContext);
+    on('theme-btn-settings', 'click', event => window.toggleThemeMenu(event, 'theme-menu-settings'));
+    document.querySelectorAll('[data-theme-choice]').forEach(el => el.addEventListener('click', () => window.applyThemeChoice(el.dataset.themeChoice)));
+    document.querySelectorAll('[data-toggle-setting]').forEach(el => el.addEventListener('click', () => ui.toggleSet(el.id)));
+    on('signout-btn', 'click', ui.signOut);
+    on('cancel-delete-btn', 'click', ui.closeDeleteConfirm);
+    on('confirm-del-btn', 'click', deleteSelectedChat);
+
+    const personaItem = document.querySelector('.persona-switch-item');
+    personaItem?.addEventListener('click', event => {
+        if (event.target.closest('.switch')) return;
+        const toggle = document.getElementById('persona-toggle');
+        if (!toggle) return;
+        toggle.checked = !toggle.checked;
+        toggle.dispatchEvent(new Event('change'));
+    });
+    const settingsModal = document.getElementById('settings-modal');
+    settingsModal?.addEventListener('click', event => { if (event.target === settingsModal) ui.closeSettings(); });
+    const palette = document.getElementById('cmd-palette');
+    palette?.addEventListener('click', event => { if (event.target === palette) window.closePalette?.(); });
+    on('pal-in', 'input', event => window.updPal?.(event.currentTarget.value));
+    on('prompt', 'drop', event => {
+        const textVal = event.dataTransfer?.getData('text/plain') || '';
+        if (!textVal) return;
+        event.preventDefault();
+        addAttachedContext(textVal);
+    });
 }
 
 // --- Toggle Pin & Export ---
@@ -331,7 +465,9 @@ function initPullRefresh() {
 document.addEventListener('DOMContentLoaded', () => {
     try {
         console.log("DEBUG: app.js orchestrator initializing...");
+        clearPendingComposerDrafts();
         initTheme();
+        bindStaticEvents();
         document.getElementById('active-model-name').innerText = 'Gemma 4';
 
         const savedUser = localStorage.getItem('helper_user_v2');

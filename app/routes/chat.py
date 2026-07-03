@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import StreamingResponse
 import sqlite3
 import json
@@ -14,6 +14,7 @@ from app.logic.neural_explainer import explain_neural_context
 from app.logic.agents import ask_the_helper
 from app.logger import logger
 from app.inference_queue import inference_queue
+from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
 import asyncio
 import threading
 import queue
@@ -55,6 +56,21 @@ def _new_job_id() -> str:
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
     return {"success": True, "chats": chats_array}
+
+
+@router.post("/attachments")
+async def upload_attachments(
+    files: List[UploadFile] = File(...),
+    current_user: str = Depends(get_current_user),
+):
+    saved = []
+    try:
+        for upload in files[:6]:
+            data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+            saved.append(save_attachment_bytes(upload.filename or "attachment", upload.content_type or "", data, current_user))
+        return {"success": True, "attachments": saved}
+    except AttachmentStoreError as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @router.post("/sync_chats")

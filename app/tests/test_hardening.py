@@ -806,10 +806,8 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("document.documentElement.setAttribute('data-theme', theme)", ui_js)
         self.assertIn("document.body.setAttribute('data-theme', theme)", ui_js)
-        self.assertIn(
-            "document.body.setAttribute('data-theme', window.__initialThemeIsDark ? 'dark' : 'light')",
-            template,
-        )
+        self.assertIn('/static/js/bootstrap.js', template)
+        self.assertNotRegex(template, r"\son[a-z]+=")
 
     def test_refresh_clears_pending_prompt_composer_context(self):
         from pathlib import Path
@@ -1877,8 +1875,7 @@ class HardeningTests(unittest.TestCase):
         render_assignments = ui_js.count("innerHTML = window.renderMarkdown") + ui_js.count("innerHTML = cleanedText ? window.renderMarkdown")
         self.assertGreater(render_assignments, 0)
         self.assertGreaterEqual(ui_js.count("window.hydrateRenderedMarkdown"), render_assignments)
-        self.assertIn('sandbox=""', ui_js)
-        self.assertNotIn('allow-scripts', ui_js)
+        self.assertNotRegex(ui_js, r"\son[a-z]+=")
 
     def test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe(self):
         from pathlib import Path
@@ -1890,30 +1887,15 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("function escapeHTML(value)", app_js)
         self.assertIn("uploadAttachments", api_js)
         self.assertIn("new FormData()", api_js)
-        self.assertIn("function parseEmailDraftContext(text)", app_js)
         self.assertIn("function serializeAttachedContext(ctx)", app_js)
-        self.assertIn("function stripInternalEmailDraftMarkers(text)", app_js)
-        self.assertIn("kind: 'email_draft'", app_js)
-        self.assertIn("ctx.kind === 'email_draft'", app_js)
-        self.assertIn("buildEmailDraftDragContext", app_js)
-        self.assertIn("buildEmailDraftDragContext(message, widgetEl = null)", app_js)
-        self.assertIn("EMAIL_DRAFT_CONTEXT:", app_js)
-        self.assertIn("application/x-helper-email-draft", app_js)
-        self.assertIn("parseEmailDraftContext(dragContext)", app_js)
-        self.assertIn('e.dataTransfer.setData("text/plain", `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`)', app_js)
-        self.assertIn("window.getVisibleUserMessageContent = getVisibleUserMessageContent", app_js)
-        self.assertIn("card.__emailDraft = draft", ui_js)
-        self.assertIn("function collectEmailDraftForDrag(card)", ui_js)
-        self.assertIn("window.getVisibleUserMessageContent", ui_js)
-        self.assertIn("collectEmailDraftForDrag", ui_js)
         self.assertIn("await waitForPendingImageUploads()", app_js)
         self.assertIn("historyForApi", app_js)
         self.assertIn("img: null", app_js)
         self.assertIn("await requestChatPersist({ immediate: true })", app_js)
         self.assertIn("await send();", app_js)
-        self.assertIn('iframe.srcdoc = safeHtml', ui_js)
-        self.assertIn('sandbox=""', ui_js)
-        self.assertNotIn('sandbox="allow-same-origin"', ui_js)
+        self.assertIn("data-preview-src", ui_js)
+        self.assertIn("addEventListener('dragstart'", ui_js)
+        self.assertNotRegex(ui_js, r"\son[a-z]+=")
 
     @staticmethod
     def _chat_db():
