@@ -200,6 +200,10 @@ async function send() {
                 const tl = line.trim(); if (!tl || tl.startsWith('<')) return;
                 try {
                     const j = JSON.parse(tl);
+                    if (j.job_id) {
+                        state.set('activeJobId', j.job_id);
+                        return;
+                    }
                     if (j.status) {
                         let se = bTxt.querySelector('#status-text');
                         if (!se) { const sd = document.createElement('div'); sd.className = 'status-msg'; sd.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${j.status}</span>`; bTxt.prepend(sd); }
@@ -230,13 +234,17 @@ async function send() {
         document.querySelectorAll('.thinking-state').forEach(el => el.classList.remove('thinking-state'));
         document.querySelectorAll('.typing-indicator').forEach(ti => ti.remove());
         state.abortController = null; state.currentImg = null;
+        state.activeJobId = null;
         window.activeId = state.activeId;
         if (state.chats.find(c => c.id === state.activeId)?.ms.length <= 2) ui.renderHist();
         ui.checkAuthMode();
     }
 }
 
-function stopAI() { if (state.abortController) state.abortController.abort(); }
+function stopAI() {
+    if (state.activeJobId) api.cancelInferenceJob(state.activeJobId).catch(() => {});
+    if (state.abortController) state.abortController.abort();
+}
 
 // --- Toggle Pin & Export ---
 function togglePin(id) {

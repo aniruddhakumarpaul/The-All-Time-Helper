@@ -47,6 +47,15 @@ async function streamChat(payload, signal) {
     return res;
 }
 
+async function cancelInferenceJob(jobId) {
+    if (!jobId) return null;
+    const res = await fetch(`/chat/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+    });
+    return await res.json();
+}
+
 /**
  * Load chats from cloud.
  */
@@ -92,5 +101,5 @@ async function checkUpscaleStatus(jobId) {
     return await res.json();
 }
 
-const api = { handleAuth, streamChat, fetchChats, syncChats, retrieveContext, checkUpscaleStatus };
+const api = { handleAuth, streamChat, cancelInferenceJob, fetchChats, syncChats, retrieveContext, checkUpscaleStatus };
 export { api };

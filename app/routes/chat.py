@@ -38,6 +38,10 @@ class RetrieveRequest(BaseModel):
     n: int = 3
 
 
+def _new_job_id() -> str:
+    return str(uuid.uuid4())
+
+
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
@@ -45,13 +49,23 @@ def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connect
 
 
 @router.post("/sync_chats")
-def sync_chats(chats: List[dict], current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
+def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     try:
         ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+@router.post("/chat/jobs/{job_id}/cancel")
+async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        return {"success": False, "error": "Job not found"}
+    cancelled = inference_queue.cancel(job_id, current_user)
+    return {"success": cancelled, **({} if cancelled else {"error": "Job not found"})}
 
 
 @router.post("/retrieve_context")
@@ -111,12 +125,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             pass
 
     try:
+        job_id = _new_job_id()
+
         async def agent_stream():
             token = user_context.set(current_user)
             if admin_key_value:
                 admin_auth_context.set(admin_key_value)
             listener_task = asyncio.create_task(listen_for_disconnect())
             try:
+                yield json.dumps({"job_id": job_id}).encode() + b'\n'
                 yield json.dumps({"status": "Initializing Neural Core..."}).encode() + b'\n'
                 await asyncio.sleep(0.5)
 
@@ -137,8 +154,6 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                     status_queue.put({"type": "chunk", "data": token})
 
                 _admin_key_for_thread = admin_key_value
-                job_id = f"{current_user}_{uuid.uuid4().hex}"
-
                 from app.logic.bus import job_id_context
                 _job_id_for_thread = job_id
 
@@ -152,10 +167,19 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         status_callback=status_callback, chunk_callback=chunk_callback
                     )
 
-                task = asyncio.create_task(inference_queue.submit(job_id, thread_target, abort_event, timeout=1500.0))
+                task = asyncio.create_task(
+                    inference_queue.submit(
+                        job_id,
+                        thread_target,
+                        abort_event,
+                        timeout=1500.0,
+                        owner=current_user,
+                    )
+                )
 
                 while not task.done():
                     if abort_event.is_set():
+                        inference_queue.cancel(job_id, current_user)
                         break
 
                     while not status_queue.empty():

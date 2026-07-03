@@ -50,12 +50,22 @@ class HardeningTests(unittest.TestCase):
             )
             queue._active_jobs["job-123"] = job
 
+            self.assertFalse(queue.cancel("job-123", "other@example.com"))
             self.assertTrue(queue.cancel("job-123", "user@example.com"))
             self.assertTrue(abort_event.is_set())
             self.assertTrue(future.done())
             self.assertEqual(future.result(), "Operation cancelled.")
 
         asyncio.run(run_test())
+
+    def test_chat_job_ids_are_uuid_values(self):
+        import uuid
+        from app.routes.chat import _new_job_id
+
+        job_id = _new_job_id()
+
+        self.assertEqual(str(uuid.UUID(job_id)), job_id)
+        self.assertNotIn("@", job_id)
 
     def test_gemini_models_are_cloud_routed(self):
         from app.logic.agents import _detect_intent

@@ -8,7 +8,7 @@ class ChatRepository:
     @staticmethod
     def get_chats_for_user(db: sqlite3.Connection, user_email: str) -> List[Dict]:
         c = db.cursor()
-        c.execute("SELECT id, title, messages_json FROM chats WHERE user_email=? ORDER BY updated_at ASC", (user_email,))
+        c.execute("SELECT id, title, messages_json, updated_at FROM chats WHERE user_email=? ORDER BY updated_at ASC", (user_email,))
         rows = c.fetchall()
         chats_array = []
         for r in rows:
@@ -19,20 +19,29 @@ class ChatRepository:
                     ms = parsed if isinstance(parsed, list) else []
                 except Exception:
                     ms = []
+            updated_at = float(r['updated_at'] or 0)
             chats_array.append({
                 "id": r['id'],
                 "title": r['title'],
-                "ms": ms
+                "ms": ms,
+                "updated_at": updated_at,
+                "updatedAt": updated_at,
             })
         return chats_array
 
     @staticmethod
-    def sync_user_chats(db: sqlite3.Connection, user_email: str, chats: List[dict]):
+    def sync_user_chats(db: sqlite3.Connection, user_email: str, payload):
         MAX_CHATS = 200
         MAX_MESSAGES_PER_CHAT = 500
         MAX_MESSAGE_CHARS = 120_000
-        if not isinstance(chats, list):
-            raise ValueError("Chat sync payload must be a list.")
+        if isinstance(payload, dict):
+            chats = payload.get("chats", [])
+            deleted_chat_ids = payload.get("deleted_chat_ids", [])
+        else:
+            chats = payload
+            deleted_chat_ids = []
+        if not isinstance(chats, list) or not isinstance(deleted_chat_ids, list):
+            raise ValueError("Chat sync payload must contain chat and deletion lists.")
         if len(chats) > MAX_CHATS:
             raise ValueError(f"Too many chats to sync ({len(chats)}). Maximum is {MAX_CHATS}.")
 
@@ -67,7 +76,7 @@ class ChatRepository:
             except (TypeError, ValueError):
                 updated_at = now
 
-            payload = json.dumps(cleaned_messages)
+            messages_json = json.dumps(cleaned_messages)
             c.execute(
                 """
                 INSERT INTO chats (id, user_email, title, messages_json, updated_at)
@@ -75,11 +84,15 @@ class ChatRepository:
                 ON CONFLICT(id) DO UPDATE SET
                     title=excluded.title,
                     messages_json=excluded.messages_json,
-                    updated_at=MAX(chats.updated_at, excluded.updated_at)
+                    updated_at=excluded.updated_at
                 WHERE chats.user_email=excluded.user_email
+                    AND excluded.updated_at >= chats.updated_at
                 """,
-                (cid, user_email, title, payload, updated_at),
+                (cid, user_email, title, messages_json, updated_at),
             )
+        for chat_id in deleted_chat_ids[:MAX_CHATS]:
+            if isinstance(chat_id, str) and chat_id:
+                c.execute("DELETE FROM chats WHERE id = ? AND user_email = ?", (chat_id[:120], user_email))
         db.commit()
 
 

@@ -22,6 +22,7 @@ DEFAULT_INFERENCE_TIMEOUT = 180.0
 class InferenceJob:
     """A single inference request with its callbacks and abort signal."""
     id: str
+    owner: str
     fn: Callable
     abort_event: threading.Event
     result_future: asyncio.Future = field(default=None)
@@ -42,6 +43,7 @@ class InferenceQueue:
         self._max_queue_depth = max_queue_depth
         self._workers: list = []
         self._started = False
+        self._active_jobs: dict[str, InferenceJob] = {}
 
     async def _ensure_started(self):
         """Lazily initialize the queue and workers on first use (must be called from async context)."""
@@ -110,9 +112,18 @@ class InferenceQueue:
                 if not job.result_future.done():
                     job.result_future.set_exception(e)
             finally:
+                if self._active_jobs.get(job.id) is job:
+                    self._active_jobs.pop(job.id, None)
                 self._queue.task_done()
 
-    async def submit(self, job_id: str, fn: Callable, abort_event: threading.Event, timeout: float = DEFAULT_INFERENCE_TIMEOUT) -> Any:
+    async def submit(
+        self,
+        job_id: str,
+        fn: Callable,
+        abort_event: threading.Event,
+        timeout: float = DEFAULT_INFERENCE_TIMEOUT,
+        owner: str = "",
+    ) -> Any:
         """
         Submit an inference job and await its result.
         
@@ -147,15 +158,27 @@ class InferenceQueue:
         
         job = InferenceJob(
             id=job_id,
+            owner=owner,
             fn=context_wrapper,
             abort_event=abort_event,
             result_future=future,
             timeout=timeout
         )
+        self._active_jobs[job_id] = job
         await self._queue.put(job)
         
         logger.info(f"[InferenceQueue] Job {job_id} queued (depth: {self._queue.qsize()}/{self._max_queue_depth})")
         return await future
+
+    def cancel(self, job_id: str, owner: str) -> bool:
+        """Cancel a queued or active job only when it belongs to the caller."""
+        job = self._active_jobs.get(job_id)
+        if not job or not owner or job.owner != owner:
+            return False
+        job.abort_event.set()
+        if job.result_future and not job.result_future.done():
+            job.result_future.set_result("Operation cancelled.")
+        return True
 
     @property
     def queue_depth(self) -> int:
@@ -169,6 +192,9 @@ class InferenceQueue:
         for _ in self._workers:
             await self._queue.put(None)
         await asyncio.gather(*self._workers, return_exceptions=True)
+        self._workers.clear()
+        self._active_jobs.clear()
+        self._started = False
 
 
 # Singleton — 1 worker for weak GPU, max 8 queued requests
