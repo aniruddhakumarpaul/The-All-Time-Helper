@@ -1,4 +1,5 @@
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 import jwt
 import bcrypt
@@ -15,13 +16,25 @@ if not SECRET_KEY:
     raise RuntimeError("FATAL: SECRET_KEY environment variable is not set. Refusing to start with an insecure configuration.")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+ADMIN_KEY = os.getenv("ADMIN_KEY")
+
 
 def verify_password(plain_password, hashed_password):
-    if not hashed_password: return False
+    if not hashed_password:
+        return False
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
 
 def get_password_hash(password):
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+
+def verify_admin_key(candidate: str | None) -> bool:
+    """Validate the admin key without leaking timing information."""
+    if not ADMIN_KEY or not candidate:
+        return False
+    return secrets.compare_digest(str(candidate).strip(), str(ADMIN_KEY).strip())
+
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
@@ -33,7 +46,9 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
 
 async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
     credentials_exception = HTTPException(
