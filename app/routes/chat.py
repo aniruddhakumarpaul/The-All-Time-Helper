@@ -1,24 +1,26 @@
+import asyncio
+import json
+import queue
+import sqlite3
+import threading
+import time
+import traceback
+import uuid
+from typing import Any, List, Optional
+
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import StreamingResponse
-import sqlite3
-import json
-import traceback
-import time
 from pydantic import BaseModel, Field
-from typing import Any, List, Optional
+
 from app.database import get_db
+from app.inference_queue import inference_queue
+from app.logger import logger
+from app.logic.agents import ask_the_helper
+from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
+from app.logic.memory import admin_auth_context, query_memory, user_context
+from app.logic.neural_explainer import explain_neural_context
 from app.repository import ChatRepository
 from app.security import get_current_user, verify_admin_key
-from app.logic.memory import query_memory, user_context, admin_auth_context
-from app.logic.neural_explainer import explain_neural_context
-from app.logic.agents import ask_the_helper
-from app.logger import logger
-from app.inference_queue import inference_queue
-from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
-import asyncio
-import threading
-import queue
-import uuid
 
 router = APIRouter()
 
@@ -52,6 +54,12 @@ def _new_job_id() -> str:
     return str(uuid.uuid4())
 
 
+def _normalize_chat_image_payload(req: ChatRequest):
+    if req.attachments:
+        return [item.model_dump(exclude_none=True) for item in req.attachments]
+    return req.img
+
+
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
@@ -78,9 +86,9 @@ def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current
     try:
         ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
-    except Exception as e:
+    except Exception as exc:
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(exc)}
 
 
 @router.post("/chat/jobs/{job_id}/cancel")
@@ -111,11 +119,11 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
         return {
             "success": True,
             "results": results,
-            "explanation": explanation
+            "explanation": explanation,
         }
-    except Exception as e:
+    except Exception as exc:
         traceback.print_exc()
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(exc)}
     finally:
         user_context.reset(token)
 
@@ -124,7 +132,8 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
 async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
     target_model = req.model
     prompt = req.prompt
-    img = [item.model_dump(exclude_none=True) for item in req.attachments] if req.attachments else req.img
+    img = _normalize_chat_image_payload(req)
+    has_visual_input = bool(img)
     history = req.history
     sys_config = req.sys
 
@@ -170,7 +179,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 yield json.dumps({"status": "Initializing Neural Core..."}).encode() + b'\n'
                 await asyncio.sleep(0.5)
 
-                if req.img:
+                if has_visual_input:
                     yield json.dumps({"status": "Vision Pipeline Processing Image..."}).encode() + b'\n'
                 else:
                     yield json.dumps({"status": "Scanning Semantic Memory..."}).encode() + b'\n'
@@ -197,7 +206,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         admin_auth_context.set(_admin_key_for_thread)
                     return ask_the_helper(
                         prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
-                        status_callback=status_callback, chunk_callback=chunk_callback
+                        status_callback=status_callback, chunk_callback=chunk_callback,
                     )
 
                 task = asyncio.create_task(
@@ -242,15 +251,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
 
                 yield json.dumps({"done": True}).encode() + b'\n'
-            except Exception as e:
-                logger.error(f"Agent Error: {str(e)}")
-                yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(e)}"}, "done": True}).encode() + b'\n'
+            except Exception as exc:
+                logger.error(f"Agent Error: {str(exc)}")
+                yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(exc)}"}, "done": True}).encode() + b'\n'
             finally:
                 abort_event.set()
                 listener_task.cancel()
                 user_context.reset(token)
 
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
-    except Exception as e:
+    except Exception as exc:
         traceback.print_exc()
-        return {"error": str(e)}
+        return {"error": str(exc)}
