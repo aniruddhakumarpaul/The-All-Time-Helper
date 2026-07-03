@@ -92,6 +92,19 @@
         }
     }
 
+    function parseDraftFromTransfer(raw) {
+        const text = String(raw || '').trim();
+        if (!text) return null;
+        if (text.startsWith('{')) {
+            try {
+                return normalizeDraft(JSON.parse(text));
+            } catch (_) {
+                return null;
+            }
+        }
+        return parseEmailDraftContext(text)?.draft || null;
+    }
+
     function stripInternalEmailDraftMarkers(text) {
         const parsed = parseEmailDraftContext(text);
         if (!parsed) return String(text || '');
@@ -241,7 +254,7 @@
         mascot.dataset.emailDraftDrop = 'true';
         mascot.addEventListener('drop', event => {
             const raw = event.dataTransfer?.getData(DRAFT_MIME) || event.dataTransfer?.getData('text/plain') || '';
-            const draft = raw.trim().startsWith('{') ? normalizeDraft(JSON.parse(raw)) : parseEmailDraftContext(raw)?.draft;
+            const draft = parseDraftFromTransfer(raw);
             if (!draft) return;
             event.preventDefault();
             event.stopImmediatePropagation();
