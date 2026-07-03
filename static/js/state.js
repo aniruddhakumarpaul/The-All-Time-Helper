@@ -14,7 +14,11 @@ class AppState {
         this.chats = [];
         this.activeId = null;
         this.abortController = null;
+        this.activeJobId = null;
         this.currentImg = null;
+        this.currentImages = [];
+        this.pendingImageUploads = null;
+        this.attachedContexts = [];
         this.currentBlobUrl = null;
         this.chatToDelete = null;
         this.isRenaming = false;

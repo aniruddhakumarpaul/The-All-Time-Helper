@@ -24,6 +24,7 @@ client = chromadb.PersistentClient(path=MEMORY_PATH)
 
 # The 'neural_memory' collection stores project code, logic, and decisions
 collection = client.get_or_create_collection(name="neural_memory")
+_memory_unhealthy_reason: Optional[str] = None
 
 def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: str = None):
     """Adds or updates a document in the semantic memory with forced user isolation."""
@@ -49,6 +50,10 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
     """
     Retrieves relevant snippets with STRICT user-level isolation and semantic thresholding.
     """
+    global _memory_unhealthy_reason
+    if _memory_unhealthy_reason:
+        return []
+
     uid = user_id or user_context.get()
     if not uid:
         logger.warning("Attempted to query memory without a User ID. Returning empty.")
@@ -73,12 +78,16 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
         "where": where_filter
     }
 
-    results = collection.query(**query_args)
-    
-    # FLAW 5 FIX: PASS 2: High-Recall Tool-Rule Search
-    # We always pull tool rules even with weak matches to ensure agent behavior is grounded.
-    rule_filter = {"$and": [{"user_id": uid}, {"type": "tool_rule"}]}
-    rule_results = collection.query(query_texts=[query_text], n_results=3, where=rule_filter)
+    try:
+        results = collection.query(**query_args)
+
+        # Tool rules use a wider threshold so behavioral constraints stay grounded.
+        rule_filter = {"$and": [{"user_id": uid}, {"type": "tool_rule"}]}
+        rule_results = collection.query(query_texts=[query_text], n_results=3, where=rule_filter)
+    except Exception as exc:
+        _memory_unhealthy_reason = str(exc)
+        logger.error(f"[Memory] Query failed closed: {exc}")
+        return []
 
     formatted_results = []
     

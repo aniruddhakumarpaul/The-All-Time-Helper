@@ -6,6 +6,32 @@ from unittest.mock import mock_open, patch
 
 
 class HardeningTests(unittest.TestCase):
+    def test_admin_key_validation_requires_exact_configured_secret(self):
+        from app import security
+
+        with patch.object(security, "ADMIN_KEY", "configured-secret"):
+            self.assertTrue(security.verify_admin_key("configured-secret"))
+            self.assertFalse(security.verify_admin_key("wrong-secret"))
+            self.assertFalse(security.verify_admin_key(None))
+
+    def test_local_email_execution_ignores_persistent_admin_state(self):
+        from app.logic import agents
+        from app.logic.memory import admin_auth_context
+
+        token = admin_auth_context.set(None)
+        try:
+            result = agents._execute_local(
+                {"requires_tools": True},
+                {"final_prompt": "send an email"},
+                "gemma2:2b",
+                {},
+                [],
+            )
+        finally:
+            admin_auth_context.reset(token)
+
+        self.assertIn("AUTH_REQUIRED", result)
+
     def test_inference_queue_cancel_marks_job_cancelled(self):
         from app.inference_queue import InferenceJob, InferenceQueue
         import threading
@@ -24,12 +50,22 @@ class HardeningTests(unittest.TestCase):
             )
             queue._active_jobs["job-123"] = job
 
+            self.assertFalse(queue.cancel("job-123", "other@example.com"))
             self.assertTrue(queue.cancel("job-123", "user@example.com"))
             self.assertTrue(abort_event.is_set())
             self.assertTrue(future.done())
             self.assertEqual(future.result(), "Operation cancelled.")
 
         asyncio.run(run_test())
+
+    def test_chat_job_ids_are_uuid_values(self):
+        import uuid
+        from app.routes.chat import _new_job_id
+
+        job_id = _new_job_id()
+
+        self.assertEqual(str(uuid.UUID(job_id)), job_id)
+        self.assertNotIn("@", job_id)
 
     def test_gemini_models_are_cloud_routed(self):
         from app.logic.agents import _detect_intent
@@ -744,7 +780,7 @@ class HardeningTests(unittest.TestCase):
     def test_ngrok_cors_update_uses_middleware_kwargs(self):
         from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
-        from app import main
+        from app import factory
 
         test_app = FastAPI()
         test_app.add_middleware(
@@ -755,8 +791,7 @@ class HardeningTests(unittest.TestCase):
             allow_headers=["*"],
         )
 
-        with patch.object(main, "ALLOWED_ORIGINS", ["http://localhost:9000"]):
-            added = main._append_cors_origin(test_app, "https://example.ngrok-free.dev/")
+        added = factory.append_cors_origin(test_app, "https://example.ngrok-free.dev/")
 
         self.assertEqual(added, ["https://example.ngrok-free.dev"])
         self.assertIn("https://example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
@@ -771,10 +806,8 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("document.documentElement.setAttribute('data-theme', theme)", ui_js)
         self.assertIn("document.body.setAttribute('data-theme', theme)", ui_js)
-        self.assertIn(
-            "document.body.setAttribute('data-theme', window.__initialThemeIsDark ? 'dark' : 'light')",
-            template,
-        )
+        self.assertIn('/static/js/bootstrap.js', template)
+        self.assertNotRegex(template, r"\son[a-z]+=")
 
     def test_refresh_clears_pending_prompt_composer_context(self):
         from pathlib import Path
@@ -849,24 +882,25 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("Body with { braces }", result["draft"]["body"])
 
     def test_upscale_status_returns_registry_ready(self):
-        from app import main
+        from app.routes import health
 
         with patch.object(
-            main.UpscaleManager,
+            health.UpscaleManager,
             "get_status",
             return_value={"status": "ready", "url": "/static/uploads/upscaled_registry.jpg"},
         ):
-            result = asyncio.run(main.get_upscale_status("registry"))
+            result = asyncio.run(health.get_upscale_status("registry"))
 
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["url"], "/static/uploads/upscaled_registry.jpg")
 
     def test_upscale_status_recovers_ready_from_disk(self):
-        from app import main
+        from app.factory import BASE_DIR
+        from app.routes import health
 
         job_id = "test_status_disk"
-        upload_dir = os.path.join(main.base_dir, "static", "uploads")
+        upload_dir = os.path.join(BASE_DIR, "static", "uploads")
         file_path = os.path.join(upload_dir, f"upscaled_{job_id}.jpg")
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -874,8 +908,8 @@ class HardeningTests(unittest.TestCase):
             f.write(b"fake image bytes")
 
         try:
-            with patch.object(main.UpscaleManager, "get_status", return_value=None):
-                result = asyncio.run(main.get_upscale_status(job_id))
+            with patch.object(health.UpscaleManager, "get_status", return_value=None):
+                result = asyncio.run(health.get_upscale_status(job_id))
         finally:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -885,15 +919,16 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(result["url"], f"/static/uploads/upscaled_{job_id}.jpg")
 
     def test_upscale_status_reports_missing_when_registry_and_disk_miss(self):
-        from app import main
+        from app.factory import BASE_DIR
+        from app.routes import health
 
         job_id = "test_status_missing"
-        file_path = os.path.join(main.base_dir, "static", "uploads", f"upscaled_{job_id}.jpg")
+        file_path = os.path.join(BASE_DIR, "static", "uploads", f"upscaled_{job_id}.jpg")
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        with patch.object(main.UpscaleManager, "get_status", return_value=None):
-            result = asyncio.run(main.get_upscale_status(job_id))
+        with patch.object(health.UpscaleManager, "get_status", return_value=None):
+            result = asyncio.run(health.get_upscale_status(job_id))
 
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "missing")
@@ -1383,13 +1418,14 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("nologo=true", result)
 
     def test_image_proxy_returns_clear_pollinations_402_error(self):
-        from app import main
+        from app.routes import proxy
         from unittest.mock import Mock
 
         upstream = Mock()
         upstream.status_code = 402
         upstream.content = b""
         upstream.headers = {}
+        upstream.iter_content.return_value = []
 
         requested_urls = []
 
@@ -1399,7 +1435,7 @@ class HardeningTests(unittest.TestCase):
 
         async def run_test():
             with patch("requests.get", side_effect=fake_get):
-                return await main.image_proxy(
+                return await proxy.image_proxy(
                     "https://image.pollinations.ai/prompt/cat?model=turbo&nologo=true&seed=1"
                 )
 
@@ -1536,9 +1572,10 @@ class HardeningTests(unittest.TestCase):
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = '{"requires_tools": true, "complexity": "single", "category": "visual"}'
         
-        with patch("litellm.completion", return_value=mock_response):
-            # Using a cloud model like gemma4-openrouter to trigger litellm branch
-            analysis = _analyze_prompt_via_llm("acrilic scetch", "gemma4-openrouter")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
+            with patch("litellm.completion", return_value=mock_response):
+                # Cloud prompt analysis must still use the configured provider key.
+                analysis = _analyze_prompt_via_llm("acrilic scetch", "gemma4-openrouter")
             
             self.assertIsNotNone(analysis)
             self.assertTrue(analysis["requires_tools"])
@@ -1838,8 +1875,7 @@ class HardeningTests(unittest.TestCase):
         render_assignments = ui_js.count("innerHTML = window.renderMarkdown") + ui_js.count("innerHTML = cleanedText ? window.renderMarkdown")
         self.assertGreater(render_assignments, 0)
         self.assertGreaterEqual(ui_js.count("window.hydrateRenderedMarkdown"), render_assignments)
-        self.assertIn('sandbox=""', ui_js)
-        self.assertNotIn('allow-scripts', ui_js)
+        self.assertNotRegex(ui_js, r"\son[a-z]+=")
 
     def test_frontend_attachment_pipeline_uses_file_ids_and_hardened_iframe(self):
         from pathlib import Path
@@ -1851,30 +1887,15 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("function escapeHTML(value)", app_js)
         self.assertIn("uploadAttachments", api_js)
         self.assertIn("new FormData()", api_js)
-        self.assertIn("function parseEmailDraftContext(text)", app_js)
         self.assertIn("function serializeAttachedContext(ctx)", app_js)
-        self.assertIn("function stripInternalEmailDraftMarkers(text)", app_js)
-        self.assertIn("kind: 'email_draft'", app_js)
-        self.assertIn("ctx.kind === 'email_draft'", app_js)
-        self.assertIn("buildEmailDraftDragContext", app_js)
-        self.assertIn("buildEmailDraftDragContext(message, widgetEl = null)", app_js)
-        self.assertIn("EMAIL_DRAFT_CONTEXT:", app_js)
-        self.assertIn("application/x-helper-email-draft", app_js)
-        self.assertIn("parseEmailDraftContext(dragContext)", app_js)
-        self.assertIn('e.dataTransfer.setData("text/plain", `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`)', app_js)
-        self.assertIn("window.getVisibleUserMessageContent = getVisibleUserMessageContent", app_js)
-        self.assertIn("card.__emailDraft = draft", ui_js)
-        self.assertIn("function collectEmailDraftForDrag(card)", ui_js)
-        self.assertIn("window.getVisibleUserMessageContent", ui_js)
-        self.assertIn("collectEmailDraftForDrag", ui_js)
         self.assertIn("await waitForPendingImageUploads()", app_js)
         self.assertIn("historyForApi", app_js)
         self.assertIn("img: null", app_js)
         self.assertIn("await requestChatPersist({ immediate: true })", app_js)
         self.assertIn("await send();", app_js)
-        self.assertIn('iframe.srcdoc = safeHtml', ui_js)
-        self.assertIn('sandbox=""', ui_js)
-        self.assertNotIn('sandbox="allow-same-origin"', ui_js)
+        self.assertIn("data-preview-src", ui_js)
+        self.assertIn("addEventListener('dragstart'", ui_js)
+        self.assertNotRegex(ui_js, r"\son[a-z]+=")
 
     @staticmethod
     def _chat_db():

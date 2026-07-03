@@ -1,49 +1,80 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import StreamingResponse
 import sqlite3
 import json
 import traceback
 import time
-import re
-import cv2
-import numpy as np
-from pydantic import BaseModel
-from typing import List, Optional, Any
+from pydantic import BaseModel, Field
+from typing import Any, List, Optional
 from app.database import get_db
 from app.repository import ChatRepository
-from app.security import get_current_user
+from app.security import get_current_user, verify_admin_key
 from app.logic.memory import query_memory, user_context, admin_auth_context
 from app.logic.neural_explainer import explain_neural_context
 from app.logic.agents import ask_the_helper
 from app.logger import logger
 from app.inference_queue import inference_queue
+from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
 import asyncio
 import threading
 import queue
+import uuid
 
 router = APIRouter()
 
+
+class Attachment(BaseModel):
+    id: Optional[str] = None
+    name: str = "attachment.png"
+    type: str = "image/png"
+    size: Optional[int] = None
+    data: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     prompt: str
-    history: List[dict] = []
+    history: List[dict] = Field(default_factory=list)
     model: str = "gemma4:e2b"
-    img: Optional[str] = None
+    img: Optional[Any] = None
+    attachments: List[Attachment] = Field(default_factory=list)
     name: str = "Human"
-    sys: dict = {}
+    sys: dict = Field(default_factory=dict)
     persona: bool = False
     isMasked: bool = False
+
 
 class RetrieveRequest(BaseModel):
     text: str
     n: int = 3
+
+
+def _new_job_id() -> str:
+    return str(uuid.uuid4())
+
 
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
     return {"success": True, "chats": chats_array}
 
+
+@router.post("/attachments")
+async def upload_attachments(
+    files: List[UploadFile] = File(...),
+    current_user: str = Depends(get_current_user),
+):
+    saved = []
+    try:
+        for upload in files[:6]:
+            data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+            saved.append(save_attachment_bytes(upload.filename or "attachment", upload.content_type or "", data, current_user))
+        return {"success": True, "attachments": saved}
+    except AttachmentStoreError as exc:
+        return {"success": False, "error": str(exc)}
+
+
 @router.post("/sync_chats")
-def sync_chats(chats: List[dict], current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
+def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     try:
         ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
@@ -51,59 +82,68 @@ def sync_chats(chats: List[dict], current_user: str = Depends(get_current_user),
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
+
+@router.post("/chat/jobs/{job_id}/cancel")
+async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
+    try:
+        uuid.UUID(job_id)
+    except ValueError:
+        return {"success": False, "error": "Job not found"}
+    cancelled = inference_queue.cancel(job_id, current_user)
+    return {"success": cancelled, **({} if cancelled else {"error": "Job not found"})}
+
+
 @router.post("/retrieve_context")
 def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_current_user)):
-    # Set context for isolation
+    for marker in ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:"):
+        if marker in req.text:
+            try:
+                raw = req.text.split(marker, 1)[1].strip()
+                draft, _ = json.JSONDecoder().raw_decode(raw)
+                return {"success": True, "kind": "email_draft", "draft": draft, "results": [], "explanation": ""}
+            except (json.JSONDecodeError, TypeError):
+                return {"success": False, "error": "Invalid email draft context"}
     token = user_context.set(current_user)
     try:
         results = query_memory(req.text, n_results=req.n)
-        
-        # New: Generate an AI explanation for the snippets
         snippet_list = [r['content'] for r in results]
         explanation = explain_neural_context(req.text, snippet_list)
-        
         return {
-            "success": True, 
-            "results": results, 
+            "success": True,
+            "results": results,
             "explanation": explanation
         }
     except Exception as e:
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+    finally:
+        user_context.reset(token)
+
 
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
-    # Decision Engine: Choose between Pro (Agentic) and Local (Ollama)
     target_model = req.model
     prompt = req.prompt
-    img = req.img
+    img = [item.model_dump(exclude_none=True) for item in req.attachments] if req.attachments else req.img
     history = req.history
     sys_config = req.sys
-    
-    # NEW: Handle Admin Key securely via ContextVar, NOT in the LLM prompt
-    # FIX #3: Also pass key explicitly to avoid ContextVar thread-propagation issues
+
     admin_key_value = None
     if req.isMasked:
-        admin_key_value = req.prompt.strip()
-        # Securely store the key for the tool to access natively
+        candidate_key = req.prompt.strip()
+        if not verify_admin_key(candidate_key):
+            async def invalid_key_stream():
+                yield json.dumps({"message": {"content": "ERROR: AUTH_REQUIRED. Incorrect admin key."}, "done": True}).encode() + b'\n'
+                yield json.dumps({"done": True}).encode() + b'\n'
+            admin_auth_context.set(None)
+            return StreamingResponse(invalid_key_stream(), media_type="application/x-ndjson")
+
+        admin_key_value = candidate_key
         admin_auth_context.set(admin_key_value)
-        
-        # FIX: Persist admin auth to DB session so it survives retry loops
-        try:
-            from app.database import DB_FILE
-            with sqlite3.connect(DB_FILE) as conn:
-                conn.execute("UPDATE users SET admin_authorized = 1 WHERE email = ?", (current_user,))
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"Failed to persist admin auth to DB: {e}")
-            
-        # The LLM gets a clear instruction to proceed without seeing the key
-        prompt = "ADMIN_KEY_PROVIDED: The system has securely received the Admin Key and loaded it into the execution environment. You MUST now execute the send_email_tool immediately using the exact arguments from your previous attempt. DO NOT ask for the key again. DO NOT say you are ready, just execute the tool."
+        prompt = "ADMIN_KEY_PROVIDED: The system has securely received and validated the Admin Key. Execute the pending sensitive tool request from the prior turn without exposing the key."
     else:
-        # Ensure context is cleared for regular messages
         admin_auth_context.set(None)
-    
-    # New Unified Agentic Flow (Supports both Cloud & Local with Tools)
+
     abort_event = threading.Event()
 
     async def listen_for_disconnect():
@@ -111,22 +151,22 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             while not abort_event.is_set():
                 if await request.is_disconnected():
                     abort_event.set()
-                    logger.warning("[Chat] Client Disconnected. Killing Agent Thread.")
+                    logger.warning("[Chat] Client disconnected. Cancelling agent job.")
                     break
                 await asyncio.sleep(2)
-        except Exception: pass
+        except Exception:
+            pass
 
     try:
+        job_id = _new_job_id()
+
         async def agent_stream():
-            # Set User context for the generator thread
             token = user_context.set(current_user)
-            # FIX #3: Propagate admin key into the thread explicitly
             if admin_key_value:
                 admin_auth_context.set(admin_key_value)
-            # Start disconnect listener
             listener_task = asyncio.create_task(listen_for_disconnect())
             try:
-                # Immediate feedback for the user
+                yield json.dumps({"job_id": job_id}).encode() + b'\n'
                 yield json.dumps({"status": "Initializing Neural Core..."}).encode() + b'\n'
                 await asyncio.sleep(0.5)
 
@@ -135,10 +175,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 else:
                     yield json.dumps({"status": "Scanning Semantic Memory..."}).encode() + b'\n'
 
-                # Track if streaming occurred to prevent duplicate final yields
                 streaming_occurred = []
-
-                # Status & Chunk Queue for thread communication
                 status_queue = queue.Queue()
 
                 def status_callback(msg):
@@ -149,18 +186,11 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                     streaming_occurred.append(True)
                     status_queue.put({"type": "chunk", "data": token})
 
-                # FIX #3: Capture admin key for thread-safe propagation
                 _admin_key_for_thread = admin_key_value
-
-                # Run the Agentic Brain via the Inference Queue (backpressure + timeout)
-                job_id = f"{current_user}_{int(time.time())}"
-
-                # FIX: Propagate job_id for ToolResultBus tracking
                 from app.logic.bus import job_id_context
                 _job_id_for_thread = job_id
 
                 def thread_target():
-                    # Propagate ContextVars into worker thread
                     user_context.set(current_user)
                     job_id_context.set(_job_id_for_thread)
                     if _admin_key_for_thread:
@@ -170,52 +200,56 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         status_callback=status_callback, chunk_callback=chunk_callback
                     )
 
-                task = asyncio.create_task(inference_queue.submit(job_id, thread_target, abort_event, timeout=1500.0))
+                task = asyncio.create_task(
+                    inference_queue.submit(
+                        job_id,
+                        thread_target,
+                        abort_event,
+                        timeout=1500.0,
+                        owner=current_user,
+                    )
+                )
 
-                
-                # HEARTBEAT LOOP: Yield status/chunks from queue
                 while not task.done():
                     if abort_event.is_set():
+                        inference_queue.cancel(job_id, current_user)
                         break
-                    
-                    # Drain the queue
+
                     while not status_queue.empty():
                         item = status_queue.get()
                         if item["type"] == "status":
                             yield json.dumps({"status": item["data"]}).encode() + b'\n'
                         elif item["type"] == "chunk":
-                            # Use 'message' key for character streaming
-                            logger.debug(f"DEBUG: Yielding chunk to stream: '{item['data']}'")
                             yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
                         await asyncio.sleep(0.01)
 
-                    # Heartbeat to keep connection alive and force flush
                     yield json.dumps({"hb": int(time.time())}).encode() + b'\n'
-                    await asyncio.sleep(0.1) 
-                
+                    await asyncio.sleep(0.1)
+
                 result = await task
-                # Final check for any last status/chunks
                 while not status_queue.empty():
                     item = status_queue.get()
-                    if item["type"] == "status": yield json.dumps({"status": item["data"]}).encode() + b'\n'
-                    elif item["type"] == "chunk": yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
+                    if item["type"] == "status":
+                        yield json.dumps({"status": item["data"]}).encode() + b'\n'
+                    elif item["type"] == "chunk":
+                        yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
 
                 if abort_event.is_set():
                     yield json.dumps({"message": {"content": "⚠️ *Request Cancelled.*"}, "done": True}).encode() + b'\n'
                 else:
-                    # Only yield the final result block if it's a tool output or if NO streaming happened
                     is_tool_res = result and result.strip() in ["SUCCESS", "ERROR", "AUTH_REQUIRED"]
                     if is_tool_res or not streaming_occurred:
                         yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
-                
+
                 yield json.dumps({"done": True}).encode() + b'\n'
             except Exception as e:
                 logger.error(f"Agent Error: {str(e)}")
                 yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(e)}"}, "done": True}).encode() + b'\n'
             finally:
-                abort_event.set() # Ensure listener stops
+                abort_event.set()
                 listener_task.cancel()
-        
+                user_context.reset(token)
+
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as e:
         traceback.print_exc()

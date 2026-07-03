@@ -47,6 +47,29 @@ async function streamChat(payload, signal) {
     return res;
 }
 
+async function uploadAttachments(files) {
+    const form = new FormData();
+    Array.from(files || []).forEach(file => form.append('files', file));
+    const token = localStorage.getItem('helper_token_v2') || '';
+    const res = await fetch('/attachments', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'ngrok-skip-browser-warning': '69420' },
+        body: form
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Attachment upload failed');
+    return data.attachments || [];
+}
+
+async function cancelInferenceJob(jobId) {
+    if (!jobId) return null;
+    const res = await fetch(`/chat/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+    });
+    return await res.json();
+}
+
 /**
  * Load chats from cloud.
  */
@@ -92,5 +115,5 @@ async function checkUpscaleStatus(jobId) {
     return await res.json();
 }
 
-const api = { handleAuth, streamChat, fetchChats, syncChats, retrieveContext, checkUpscaleStatus };
+const api = { handleAuth, streamChat, uploadAttachments, cancelInferenceJob, fetchChats, syncChats, retrieveContext, checkUpscaleStatus };
 export { api };

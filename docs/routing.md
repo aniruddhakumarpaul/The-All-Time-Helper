@@ -13,3 +13,4 @@ Routing is designed to prefer the smallest reliable execution path.
 - Email-template edit prompts should update the current draft and return `EMAIL_DRAFT_PAYLOAD:` instead of raw tool-plan JSON.
 - One-word answers to an attachment clarification (`image`, `text`, `both`, `summary`) inherit the pending email attachment request and must resolve deterministically instead of going to normal chat.
 - Context switches to search, code, or factual questions should not inherit visual state.
+- `send_email_tool` creates a validated `EMAIL_DRAFT_PAYLOAD:` and never performs SMTP delivery. Approved delivery uses the deterministic helper with recipient/attachment validation, owner-scoped attachment resolution, and job-id idempotency.

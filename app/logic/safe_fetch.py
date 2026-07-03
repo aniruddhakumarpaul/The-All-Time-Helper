@@ -68,8 +68,9 @@ def safe_fetch_url(
     timeout: int = 30,
     max_bytes: int = 8 * 1024 * 1024,
     max_redirects: int = 3,
-    request_get: Callable = requests.get,
+    request_get: Optional[Callable] = None,
 ) -> SafeFetchResponse:
+    request_get = request_get or requests.get
     current_url = str(url or "").strip()
     for _ in range(max_redirects + 1):
         _validate_safe_http_url(current_url)

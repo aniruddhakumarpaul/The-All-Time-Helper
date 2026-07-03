@@ -39,6 +39,9 @@
 - The backend API base URL is injected through a root HTML data attribute and read by the JS client at runtime, avoiding executable template expressions inside the inline script block so the template stays parser-friendly in the IDE.
 - Bot markdown HTML is untrusted frontend input: render it through `marked`, sanitize it with DOMPurify before `innerHTML`, block unsafe URL protocols, and hydrate trusted code/image controls with DOM event listeners instead of inline handlers.
 - Email body HTML is untrusted backend output: preview and SMTP send must share `_build_html_body`, escape user text before markdown transforms, and only emit allowlisted formatting with safe URL protocols.
+- SQLite schema changes use explicit versioned migrations. Legacy `users.admin_authorized` values are cleared and ignored at runtime; authorization is request-scoped only.
+- LLM tools may build email drafts but cannot send SMTP messages. The deterministic delivery helper validates inputs and uses the inference job ID as its idempotency key.
+- Active frontend controls use module-bound listeners instead of inline event attributes. The CSP candidate remains documentation-only until browser smoke verification is complete.
 
 This file records the current high-level architectural decisions.
 

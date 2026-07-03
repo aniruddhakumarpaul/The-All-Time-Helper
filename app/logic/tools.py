@@ -1,37 +1,53 @@
+import base64
+import html
+import json
+import mimetypes
 import os
+import re
 import smtplib
 import time
+from contextvars import ContextVar
+from urllib.parse import urlparse
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import requests
 from crewai.tools import tool
-from app.logic.memory import query_memory, log_insight
+from dotenv import load_dotenv
+from app.logic.memory import query_memory, log_insight, admin_auth_context
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
+from app.security import verify_admin_key
+from app.logic.attachment_store import detect_file_type, resolve_attachment_reference
+from app.logic.exceptions import AgentFastExit
+from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
 
-# 1. Custom DuckDuckGo TEXT Search Tool (using modern ddgs library)
+
+active_history_context: ContextVar[list] = ContextVar("active_history_context", default=[])
+
+
 @tool("web_search_text")
 def search_tool(query: str) -> str:
-    """Useful for searching the web for TEXT-BASED information, news, and technical questions. 
-    STRICT RULE: This tool returns ONLY text descriptions and snippets. It CANNOT provide images."""
+    """Useful for searching the web for text-based information, news, and technical questions."""
     try:
         from ddgs import DDGS
-        import time
-        
+        import time as _time
+
         query = query.strip()
         logger.info(f"DEBUG: [Search] Query (ddgs v9): {query}")
-        
+
         results = []
         ddgs = DDGS()
-        
-        # Strategy 1: News (for recent/political queries)
+
         if any(kw in query.lower() for kw in ["recent", "news", "latest", "events", "politics"]):
             try:
                 results.extend(ddgs.news(query, max_results=5))
                 logger.info(f"DEBUG: [Search] News returned {len(results)} results")
             except Exception as ne:
                 logger.error(f"DEBUG: [Search] News failed: {ne}")
-                time.sleep(1)
-        
-        # Strategy 2: General web search (supplement or fallback)
+                _time.sleep(1)
+
         if len(results) < 3:
             try:
                 web_results = ddgs.text(query, max_results=5)
@@ -39,10 +55,10 @@ def search_tool(query: str) -> str:
                 logger.info(f"DEBUG: [Search] Web returned {len(web_results)} results")
             except Exception as te:
                 logger.error(f"DEBUG: [Search] Web failed: {te}")
-        
+
         if not results:
             return "No reliable results found. The search engine may be temporarily unavailable."
-        
+
         output = []
         for r in results[:8]:
             title = r.get('title', 'N/A')
@@ -54,13 +70,37 @@ def search_tool(query: str) -> str:
         logger.error(f"DEBUG: [Search] Global Failure: {str(e)}")
         return f"Search Error: {str(e)}"
 
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-from dotenv import load_dotenv
+
+def _render_safe_markdown(text: str) -> str:
+    def render_inline(value: str) -> str:
+        parts = []
+        cursor = 0
+        for match in re.finditer(r"\[([^\]]+)\]\(([^)]+)\)", value):
+            parts.append(html.escape(value[cursor:match.start()]))
+            label, target = match.group(1), match.group(2).strip()
+            parsed = urlparse(target)
+            if parsed.scheme.lower() in {"http", "https", "mailto"}:
+                parts.append(
+                    f'<a href="{html.escape(target, quote=True)}" rel="noopener noreferrer">{html.escape(label)}</a>'
+                )
+            else:
+                parts.append(html.escape(label))
+            cursor = match.end()
+        parts.append(html.escape(value[cursor:]))
+        return "".join(parts).replace("\n", "<br>")
+
+    rendered = []
+    cursor = 0
+    for match in re.finditer(r"```[^\n]*\n(.*?)```", text, flags=re.DOTALL):
+        rendered.append(render_inline(text[cursor:match.start()]))
+        rendered.append(f"<pre><code>{html.escape(match.group(1))}</code></pre>")
+        cursor = match.end()
+    rendered.append(render_inline(text[cursor:]))
+    return "".join(rendered)
+
 
 def _build_html_body(personalized_body: str, tone: str) -> str:
-    formatted_body = personalized_body.replace('\n', '<br>')
+    formatted_body = _render_safe_markdown(str(personalized_body or ""))
     tone_config = {
         "formal": {"bg": "#f9fafb", "h_bg": "#ffffff", "txt": "#111827", "h_txt": "EXECUTIVE CORRESPONDENCE", "h_sub": "Official Communication Layer", "border": "2px solid #111827"},
         "informal": {"bg": "#fdf2f8", "h_bg": "#fce7f3", "txt": "#be185d", "h_txt": "Hello there!", "h_sub": "A message from your friend's AI", "border": "1px solid #fce7f3"},
@@ -82,164 +122,297 @@ def _build_html_body(personalized_body: str, tone: str) -> str:
     </html>
     """
 
-# 2. Email Tool (Live Mode Enforced + HTML Support + Multi-Tone)
-@tool("send_email_tool")
-def send_email_tool(recipient: str, subject: str, body: str, raw_attachment_text: str = "", attachment_content: str = None, attachment_filename: str = "report.txt", is_html: bool = True, tone: str = "modern") -> str:
-    """Useful for sending professional emails. 
-    recipient: Destination email(s). Can be a single email or a comma-separated list for broadcasting.
-    subject: Professional subject line.
-    body: The agent-written message intro/context.
-    raw_attachment_text: The VERBATIM technical content or data block provided by the user. Pass it here to avoid truncation.
-    OPTIONAL: ONLY provide attachment_content if explicitly requested.
-    TONE: 'formal', 'informal', or 'modern'."""
-    
-    # Secure Auth Check via ContextVar + DB Fallback
-    from app.logic.memory import admin_auth_context, user_context
-    import sqlite3
+
+def _authorized_for_sensitive_tool() -> bool:
+    return verify_admin_key(admin_auth_context.get())
+
+
+def _download_image_attachment(url: str):
+    try:
+        response = safe_fetch_url(
+            url,
+            headers={"Accept": "image/*"},
+            timeout=30,
+            max_bytes=10 * 1024 * 1024,
+            request_get=requests.get,
+        )
+        if response.status_code != 200:
+            return None, None, f"Image download failed with status {response.status_code}."
+        content_type = (response.headers.get("content-type") or response.headers.get("Content-Type") or "").lower()
+        extension = detect_file_type(response.content)
+        if not content_type.startswith("image/") or extension not in {"png", "jpg", "gif", "webp"}:
+            return None, None, "Remote attachment is not a supported image."
+        return base64.b64encode(response.content).decode("ascii"), extension, None
+    except (SafeFetchError, Exception) as exc:
+        return None, None, f"Unable to fetch image attachment: {exc}"
+
+
+def _prepare_attachment(content, filename: str, fallback: str = "attachment.png"):
+    if isinstance(content, dict):
+        prepared = dict(content)
+        prepared["filename"] = prepared.get("filename") or prepared.get("name") or filename or fallback
+        return prepared
+    value = str(content or "").strip()
+    if not value:
+        return None
+    if value.startswith("http://") or value.startswith("https://"):
+        encoded, extension, error = _download_image_attachment(value)
+        if error:
+            raise ValueError(error)
+        return {"content": encoded, "filename": filename or f"attachment.{extension}"}
+    if value.startswith("data:") and "," in value:
+        value = value.split(",", 1)[1]
+    return {"content": value, "filename": filename or fallback}
+
+
+def _normalize_attachments(
+    attachment_content=None,
+    attachment_filename: str = "attachment.png",
+    attachments=None,
+):
+    normalized = []
+    if attachment_content:
+        prepared = _prepare_attachment(attachment_content, attachment_filename, "attachment.png")
+        if prepared:
+            normalized.append(prepared)
+    for index, item in enumerate(attachments or []):
+        if not isinstance(item, dict):
+            continue
+        filename = item.get("filename") or item.get("name") or f"attachment-{index + 1}.png"
+        source = item if item.get("id") and not item.get("content") and not item.get("data") else item.get("content") or item.get("data")
+        prepared = _prepare_attachment(source, filename, filename)
+        if prepared:
+            for key in ("id", "name", "type", "content_type", "size", "sha256"):
+                if item.get(key) is not None:
+                    prepared[key] = item[key]
+            duplicate = any(
+                existing.get("id") == prepared.get("id") and prepared.get("id")
+                or (
+                    existing.get("filename") == prepared.get("filename")
+                    and existing.get("content") == prepared.get("content")
+                )
+                for existing in normalized
+            )
+            if not duplicate:
+                normalized.append(prepared)
+    return normalized
+
+
+def _resolve_send_attachments(attachments, owner: str | None):
+    resolved = []
+    for item in attachments:
+        current = item
+        if item.get("id"):
+            if not owner:
+                raise ValueError("Attachment owner is required for stored files.")
+            current = resolve_attachment_reference(item, owner)
+        content = current.get("content") or current.get("data")
+        prepared = _prepare_attachment(content, current.get("filename") or current.get("name"), "attachment.png")
+        if not prepared:
+            continue
+        try:
+            raw = base64.b64decode(prepared["content"], validate=True)
+        except Exception as exc:
+            raise ValueError(f"Attachment is not valid base64: {exc}") from exc
+        if len(raw) > 10 * 1024 * 1024:
+            raise ValueError("Attachment exceeds 10 MB.")
+        prepared["bytes"] = raw
+        prepared["content_type"] = current.get("content_type") or current.get("type") or mimetypes.guess_type(prepared["filename"])[0] or "application/octet-stream"
+        resolved.append(prepared)
+    return resolved
+
+
+def _offload_long_body(body: str, attachments: list):
+    if len(body) < 800:
+        return body, attachments
+    technical = "```" in body or re.search(r"(?m)^#{1,6}\s|^\s*[-*]\s", body)
+    extension = "md" if technical else "txt"
+    note = "Please find the detailed technical content attached." if technical else "Please find the detailed content attached."
+    attachments.insert(
+        0,
+        {
+            "filename": f"email-body.{extension}",
+            "bytes": body.encode("utf-8"),
+            "content_type": "text/markdown" if technical else "text/plain",
+        },
+    )
+    return note, attachments
+
+
+def _valid_recipients(recipient: str) -> list[str]:
+    candidates = [value.strip() for value in str(recipient or "").split(",")]
+    return [value for value in candidates if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value)]
+
+
+def send_or_simulate_email(
+    recipient: str,
+    subject: str,
+    body: str,
+    attachments=None,
+    *,
+    tone: str = "modern",
+    attachment_content=None,
+    attachment_filename: str = "attachment.png",
+    owner: str | None = None,
+) -> str:
+    """Deterministically validate and simulate or send an approved email."""
+    recipients = _valid_recipients(recipient)
+    if not recipients:
+        return "ERROR: No valid recipients found."
+    try:
+        normalized = _normalize_attachments(attachment_content, attachment_filename, attachments)
+        resolved = _resolve_send_attachments(normalized, owner)
+    except ValueError as exc:
+        return f"ERROR: {exc}"
+    body, resolved = _offload_long_body(str(body or ""), resolved)
+
+    mode = os.getenv("EMAIL_MODE", "SIMULATE").upper()
+    if mode == "SIMULATE":
+        with open("simulated_emails.log", "a", encoding="utf-8") as stream:
+            stream.write(f"TO: {', '.join(recipients)}\nSUBJECT: {subject}\nBODY: {body}\n")
+            for item in resolved:
+                stream.write(f"Attachment: {item['filename']} ({len(item['bytes'])} bytes)\n")
+            stream.write("---\n")
+        return f"SIMULATE SUCCESS: Email prepared for {', '.join(recipients)}."
+
+    if mode != "LIVE":
+        return f"ERROR: Unsupported EMAIL_MODE '{mode}'."
+
+    from app.logic.bus import job_id_context
+    from app.logic.memory import user_context
     from app.database import DB_FILE
-    
-    auth_ok = admin_auth_context.get()
-    if not auth_ok:
+    import sqlite3
+
+    current_job = job_id_context.get()
+    if current_job:
         try:
             with sqlite3.connect(DB_FILE) as conn:
-                row = conn.execute(
-                    "SELECT admin_authorized FROM users WHERE email=?",
-                    (user_context.get(),)
-                ).fetchone()
-                auth_ok = row and row[0]
-        except Exception:
-            pass
+                row = conn.execute("SELECT status FROM email_send_log WHERE job_id = ?", (current_job,)).fetchone()
+            if row:
+                return row[0]
+        except sqlite3.Error as exc:
+            logger.warning(f"Email idempotency lookup failed: {exc}")
 
-    if not auth_ok:
-        return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
-
-    load_dotenv()
-    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
     sender_email = os.getenv("SENDER_EMAIL")
     sender_pwd = os.getenv("SENDER_PWD")
-
-    if not all([sender_email, sender_pwd]):
-        logger.error("SMTP credentials not configured.")
+    if not sender_email or not sender_pwd:
         return "ERROR: SMTP credentials not configured."
 
-    # Parse recipients (support comma-separated list)
-    recipients_raw = recipient
-    recipients = [r.strip() for r in recipients_raw.split(',') if '@' in r]
-    if not recipients:
-        return f"ERROR: No valid recipients found in '{recipient}'"
-
-    # FLAW 2 FIX: Pre-Send Check (Log & Bus)
-    from app.logic.bus import tool_result_bus, job_id_context
-    from app.logic.memory import user_context
-    import sqlite3
-    import re
-    from app.database import DB_FILE
-    
-    current_job = job_id_context.get()
-    current_user = user_context.get()
-    
-    # 1. Check shared bus (instant/same-process)
-    bus_check = tool_result_bus.get_result(current_job)
-    if bus_check:
-        logger.info(f"[Tool] Blocking duplicate send for job {current_job} (Bus Match)")
-        return bus_check
-
-    # 2. Check DB log (persistent/across-restarts)
     try:
-        with sqlite3.connect(DB_FILE) as conn:
-            c = conn.cursor()
-            c.execute("SELECT status FROM email_send_log WHERE job_id = ?", (current_job,))
-            row = c.fetchone()
-            if row:
-                logger.info(f"[Tool] Blocking duplicate send for job {current_job} (DB Match)")
-                return row[0]
-    except Exception as e:
-        logger.warning(f"[Tool] DB check failed: {e}")
-
-    try:
-        results = []
-        # FLAW 3 FIX: Countermeasure 3 — Native Batch SMTP
-        # Open one connection and reuse it for all recipients
-        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as server:
+        with smtplib.SMTP(os.getenv("SMTP_SERVER", "smtp.gmail.com"), int(os.getenv("SMTP_PORT", "587")), timeout=30) as server:
             server.starttls()
             server.login(sender_email, sender_pwd)
-            
             for target in recipients:
-                # BUG 2 FIX: Personalize salutation per recipient
-                raw_name = re.split(r'[\._\d]', target.split('@')[0])[0]
-                first_name = raw_name.capitalize()
-                
-                # BUG 1 FIX: Combine agent body with raw verbatim content
-                full_message_body = body.strip()
-                if raw_attachment_text.strip() and raw_attachment_text.strip() not in body.strip():
-                    full_message_body += f"\n\n---\n\n{raw_attachment_text.strip()}"
-                
-                # Replace any group greetings with personalized one
-                personalized_body = re.sub(
-                    r'^(hi everyone|dear all|hello everyone|greetings all|hi all|hello all|dear team)[,.]?',
-                    f'Dear {first_name},',
-                    full_message_body,
-                    flags=re.IGNORECASE
-                )
-                # If no greeting was found at start, prepend one
-                if not personalized_body.startswith(f"Dear {first_name}"):
-                    personalized_body = f"Dear {first_name},\n\n" + personalized_body
-
-                if attachment_content is not None and len(str(attachment_content).strip()) > 0:
-                    msg = MIMEMultipart()
-                    msg['Subject'] = subject
-                    msg['From'] = f"The All Time Helper <{sender_email}>"
-                    msg['To'] = target
-                    
-                    if is_html:
-                        html_content = _build_html_body(personalized_body, tone)
-                        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
-                    else:
-                        msg.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
-
-                    part = MIMEBase('application', 'octet-stream')
-                    part.set_payload(attachment_content.encode('utf-8'))
+                message = MIMEMultipart("mixed")
+                message["Subject"] = str(subject or "")[:998]
+                message["From"] = f"The All Time Helper <{sender_email}>"
+                message["To"] = target
+                alternative = MIMEMultipart("alternative")
+                alternative.attach(MIMEText(body, "plain", "utf-8"))
+                alternative.attach(MIMEText(_build_html_body(body, tone), "html", "utf-8"))
+                message.attach(alternative)
+                for item in resolved:
+                    main_type, sub_type = item["content_type"].split("/", 1)
+                    part = MIMEBase(main_type, sub_type)
+                    part.set_payload(item["bytes"])
                     encoders.encode_base64(part)
-                    part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
-                    msg.attach(part)
-                else:
-                    if is_html:
-                        msg = MIMEMultipart('alternative')
-                        msg['Subject'] = subject
-                        msg['From'] = f"The All Time Helper <{sender_email}>"
-                        msg['To'] = target
-                        msg.attach(MIMEText(personalized_body, 'plain', 'utf-8'))
-                        html_content = _build_html_body(personalized_body, tone)
-                        msg.attach(MIMEText(html_content, 'html', 'utf-8'))
-                    else:
-                        msg = MIMEText(personalized_body, 'plain', 'utf-8')
-                        msg['Subject'] = subject
-                        msg['From'] = f"The All Time Helper <{sender_email}>"
-                        msg['To'] = target
+                    part.add_header("Content-Disposition", "attachment", filename=item["filename"])
+                    message.attach(part)
+                server.send_message(message)
+        result = f"LIVE SUCCESS: Email broadcasted to {', '.join(recipients)}."
+        if current_job:
+            try:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO email_send_log (job_id, user_email, recipients, status, timestamp) VALUES (?, ?, ?, ?, ?)",
+                        (current_job, user_context.get(), ",".join(recipients), result, time.time()),
+                    )
+                    conn.commit()
+            except sqlite3.Error as exc:
+                logger.warning(f"Email idempotency write failed: {exc}")
+        return result
+    except Exception as exc:
+        logger.error(f"SMTP error: {exc}", exc_info=True)
+        return f"ERROR: Failed to send email. {exc}"
 
-                server.send_message(msg)
-                results.append(target)
-        
-        final_res = f"LIVE SUCCESS: Email broadcasted to {', '.join(results)}."
-        
-        # FLAW 1 & 2 FIX: Log success to Bus and DB
-        tool_result_bus.set_result(current_job, final_res)
-        try:
-            with sqlite3.connect(DB_FILE) as conn:
-                c = conn.cursor()
-                c.execute("INSERT OR REPLACE INTO email_send_log (job_id, user_email, recipients, status, timestamp) VALUES (?, ?, ?, ?, ?)",
-                          (current_job, current_user, ",".join(results), final_res, time.time()))
-        except Exception as e:
-            logger.warning(f"[Tool] Persistent logging failed: {e}")
 
-        return final_res
+@tool("send_email_tool")
+def send_email_tool(
+    recipient: str,
+    subject: str,
+    body: str,
+    raw_attachment_text: str = "",
+    attachment_content: str = None,
+    attachment_filename: str = "report.txt",
+    is_html: bool = True,
+    tone: str = "modern",
+    attachments: list = None,
+) -> str:
+    """Build a validated email draft. This agent tool never performs SMTP delivery."""
+    recipients = _valid_recipients(recipient)
+    if not recipients:
+        raise AgentFastExit("ERROR: No valid recipients found.")
+    draft_body = str(body or "")
+    if raw_attachment_text and raw_attachment_text.strip() not in draft_body:
+        draft_body = f"{draft_body}\n\n{raw_attachment_text.strip()}".strip()
+    try:
+        normalized = _normalize_attachments(attachment_content, attachment_filename, attachments)
+    except ValueError as exc:
+        raise AgentFastExit(f"ERROR: {exc}")
 
-    except Exception as e:
-        logger.error(f"SMTP error: {e}", exc_info=True)
-        return f"ERROR: Failed to send email. {str(e)}"
+    primary = normalized[0] if normalized else {}
+    draft = {
+        "recipient": ", ".join(recipients),
+        "subject": str(subject or "")[:998],
+        "body": draft_body,
+        "tone": tone if tone in {"formal", "informal", "modern"} else "modern",
+        "attachment_content": primary.get("content"),
+        "attachment_filename": primary.get("filename") or attachment_filename,
+    }
+    if normalized:
+        draft["attachments"] = normalized
+    raise AgentFastExit(f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}")
 
-# 3. Astrology Tool
+
+def resolve_chat_images(reference: str, history: list | None = None, max_images: int = 6):
+    found = []
+    for message in reversed(history or active_history_context.get() or []):
+        if not isinstance(message, dict):
+            continue
+        candidates = message.get("attachments") or message.get("img") or message.get("i") or []
+        if not isinstance(candidates, list):
+            candidates = [candidates]
+        for index, item in enumerate(candidates):
+            if isinstance(item, dict):
+                content = item.get("content") or item.get("data")
+                if content:
+                    found.append((content, item.get("filename") or item.get("name") or f"image-{index + 1}.png"))
+            elif isinstance(item, str) and item:
+                found.append((item, f"image-{index + 1}.png"))
+            if len(found) >= max_images:
+                return found
+        content = str(message.get("content") or message.get("c") or "")
+        for url in re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content):
+            filename = os.path.basename(urlparse(url).path) or "image.png"
+            if url.startswith("/static/"):
+                path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), url.lstrip("/"))
+                if os.path.isfile(path):
+                    with open(path, "rb") as stream:
+                        found.append((base64.b64encode(stream.read()).decode("ascii"), filename))
+            else:
+                encoded, _, error = _download_image_attachment(url)
+                if not error:
+                    found.append((encoded, filename))
+            if len(found) >= max_images:
+                return found
+    return found
+
+
+def resolve_chat_image(reference: str, history: list | None = None):
+    images = resolve_chat_images(reference, history, max_images=1)
+    return images[0] if images else None
+
+
 @tool("calculate_horoscope")
 def calculate_horoscope(sign: str) -> str:
     """Provides a daily horoscope reading based on the user's zodiac sign."""
@@ -260,45 +433,31 @@ def calculate_horoscope(sign: str) -> str:
     sign = sign.lower().strip()
     return readings.get(sign, "The stars are in flux for you today. Stay open to new possibilities and be kind to yourself.")
 
-# 4. Palm Reading Tool
+
 @tool("analyze_palm_lines")
 def analyze_palm_lines(palm_description: str) -> str:
-    """Analyzes a description of palm lines (Life, Heart, Head) to provide a fate reading."""
+    """Analyzes a description of palm lines to provide an entertainment reading."""
     return f"Based on your palm: '{palm_description}', I see a path of great resilience and emotional depth. Your lines suggest a major turning point approaching that will lead to spiritual growth."
 
-# 5. Symbolic Image Tool (Pollinations API)
-# BUG FIX: The tool now returns ONLY the raw markdown image tag.
-# Previously it returned a conversational wrapper ("I have visualized...") which
-# caused the LLM to re-summarise and strip the critical '!' character,
-# converting the image into a broken hyperlink.
+
 POLLINATIONS_IMAGE_MODEL = "flux"
 POLLINATIONS_IMAGE_HOST = "image.pollinations.ai"
 
+
 @tool("image_generate_tool")
 def image_generate_tool(description: str) -> str:
-    """AI IMAGE GENERATOR: Generates a high-definition AI image based on an artistic description.
-    Use this for: Fictional things, concept art, fantasy, and creative requests."""
+    """AI image generator for fictional, conceptual, fantasy, and creative requests."""
     import urllib.parse
-    
-    # 1. Clean and encode the prompt
+
     clean_desc = description.strip().replace('\n', ' ')
     encoded = urllib.parse.quote(clean_desc)
-    
-    # 2. Dynamic Seed and HD Parameters
-    # We use a mix of prompt hash and timestamp to ensure high entropy for the seed.
     seed = (abs(hash(clean_desc)) + int(time.time())) % 1000000
-    
-    # TRIGGER: Start the background upscale task
+
     try:
-        # We start the upscale task using the base url.
-        # Then we append &uid=... to the URL so the frontend can extract the job ID
-        # without the LLM stripping it off!
         base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
         upscale_id = UpscaleManager.start_upscale(base_url)
-        
         image_url_with_uid = f"{base_url}&uid={upscale_id}"
         logger.info(f"[ART ENGINE] Generated HD URL with UID: {image_url_with_uid}")
-        
         return f"![{clean_desc}]({image_url_with_uid})"
     except Exception as e:
         logger.error(f"[ART ENGINE] Failed to trigger upscale: {e}")
@@ -306,19 +465,17 @@ def image_generate_tool(description: str) -> str:
         return f"![{clean_desc}]({base_url})"
 
 
-# 5.5 Real World Image Search Tool (using modern ddgs library)
 @tool("image_search_tool")
 def image_search_tool(query: str) -> str:
-    """WEB IMAGE SEARCH: Useful for searching for REAL-WORLD images of products, people, places, vehicles, etc.
-    Use this when the user wants to see a photo of something that actually exists in the real world."""
+    """Search for a real-world image of a product, person, place, vehicle, or other real entity."""
     try:
         from ddgs import DDGS
         ddgs = DDGS()
         results = ddgs.images(query, max_results=1)
-        
+
         if not results:
             return "No reliable image results found."
-        
+
         img_url = results[0]['image']
         return f"![{query}]({img_url})"
     except Exception as e:
@@ -326,16 +483,14 @@ def image_search_tool(query: str) -> str:
         return f"Image Search Error: {str(e)}"
 
 
-# 6. Neural Memory Tools
 @tool("recall_memory")
 def recall_memory(query: str) -> str:
-    """Semantically searches the project's 'neural memory' for code snippets, architectural decisions, and previous activity.
-    Use this to understand how a feature is implemented or what was decided in the past without reading all files."""
+    """Semantically searches neural memory for code snippets, architectural decisions, and previous activity."""
     try:
         results = query_memory(query)
         if not results:
             return "No relevant memories found for this query."
-        
+
         output = []
         for r in results:
             source = r['metadata'].get('file', 'Unknown')
@@ -345,10 +500,10 @@ def recall_memory(query: str) -> str:
         logger.error(f"Memory Retrieval Error: {str(e)}")
         return f"Memory Retrieval Error: {str(e)}"
 
+
 @tool("archive_insight")
 def archive_insight(title: str, body: str) -> str:
-    """Permanently saves an architectural decision, user preference, or project milestone to the 'neural memory'.
-    Use this to ensure critical context is preserved for future sessions."""
+    """Permanently saves an architectural decision, user preference, or project milestone to neural memory."""
     try:
         log_insight(title, body)
         return f"Successfully archived insight: '{title}' to Neural Memory."
