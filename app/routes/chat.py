@@ -4,8 +4,8 @@ import sqlite3
 import json
 import traceback
 import time
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import Any, List, Optional
 from app.database import get_db
 from app.repository import ChatRepository
 from app.security import get_current_user, verify_admin_key
@@ -22,13 +22,22 @@ import uuid
 router = APIRouter()
 
 
+class Attachment(BaseModel):
+    id: Optional[str] = None
+    name: str = "attachment.png"
+    type: str = "image/png"
+    size: Optional[int] = None
+    data: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     prompt: str
-    history: List[dict] = []
+    history: List[dict] = Field(default_factory=list)
     model: str = "gemma4:e2b"
-    img: Optional[str] = None
+    img: Optional[Any] = None
+    attachments: List[Attachment] = Field(default_factory=list)
     name: str = "Human"
-    sys: dict = {}
+    sys: dict = Field(default_factory=dict)
     persona: bool = False
     isMasked: bool = False
 
@@ -70,6 +79,14 @@ async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_u
 
 @router.post("/retrieve_context")
 def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_current_user)):
+    for marker in ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:"):
+        if marker in req.text:
+            try:
+                raw = req.text.split(marker, 1)[1].strip()
+                draft, _ = json.JSONDecoder().raw_decode(raw)
+                return {"success": True, "kind": "email_draft", "draft": draft, "results": [], "explanation": ""}
+            except (json.JSONDecodeError, TypeError):
+                return {"success": False, "error": "Invalid email draft context"}
     token = user_context.set(current_user)
     try:
         results = query_memory(req.text, n_results=req.n)
@@ -91,7 +108,7 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
 async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
     target_model = req.model
     prompt = req.prompt
-    img = req.img
+    img = [item.model_dump(exclude_none=True) for item in req.attachments] if req.attachments else req.img
     history = req.history
     sys_config = req.sys
 

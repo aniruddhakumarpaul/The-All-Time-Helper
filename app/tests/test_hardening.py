@@ -1574,9 +1574,10 @@ class HardeningTests(unittest.TestCase):
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = '{"requires_tools": true, "complexity": "single", "category": "visual"}'
         
-        with patch("litellm.completion", return_value=mock_response):
-            # Using a cloud model like gemma4-openrouter to trigger litellm branch
-            analysis = _analyze_prompt_via_llm("acrilic scetch", "gemma4-openrouter")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
+            with patch("litellm.completion", return_value=mock_response):
+                # Cloud prompt analysis must still use the configured provider key.
+                analysis = _analyze_prompt_via_llm("acrilic scetch", "gemma4-openrouter")
             
             self.assertIsNotNone(analysis)
             self.assertTrue(analysis["requires_tools"])
