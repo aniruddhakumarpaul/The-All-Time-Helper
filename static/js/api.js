@@ -1,10 +1,3 @@
-/**
- * api.js — API Client Module
- * 
- * All fetch/networking logic extracted from main_v3.js.
- * Handles auth, chat streaming, cloud sync, and context retrieval.
- */
-
 import { state } from './state.js';
 
 const HEADERS_BASE = { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': '69420' };
@@ -14,9 +7,6 @@ function getAuthHeaders() {
     return { ...HEADERS_BASE, 'Authorization': `Bearer ${token}` };
 }
 
-/**
- * Authenticate user (login/signup/verify).
- */
 async function handleAuth(type) {
     let params = {};
     if (type === 'login') {
@@ -31,25 +21,20 @@ async function handleAuth(type) {
     return await res.json();
 }
 
-/**
- * Stream a chat response from the backend.
- * @param {Object} payload - Chat request body
- * @param {AbortSignal} signal - Abort signal for cancellation
- * @returns {Response} Raw fetch response for streaming
- */
 async function streamChat(payload, signal) {
-    const res = await fetch('/chat', {
+    return await fetch('/chat', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify(payload),
         signal
     });
-    return res;
 }
 
 async function uploadAttachments(files) {
+    const selected = Array.from(files || []);
+    if (!selected.length) return [];
     const form = new FormData();
-    Array.from(files || []).forEach(file => form.append('files', file));
+    selected.forEach(file => form.append('files', file));
     const token = localStorage.getItem('helper_token_v2') || '';
     const res = await fetch('/attachments', {
         method: 'POST',
@@ -70,9 +55,6 @@ async function cancelInferenceJob(jobId) {
     return await res.json();
 }
 
-/**
- * Load chats from cloud.
- */
 async function fetchChats() {
     const token = localStorage.getItem('helper_token_v2');
     if (!token) return null;
@@ -80,24 +62,23 @@ async function fetchChats() {
     return await res.json();
 }
 
-/**
- * Sync chats to cloud.
- */
-async function syncChats(chats) {
+async function syncChats(payload) {
     const token = localStorage.getItem('helper_token_v2');
-    if (!token) return;
+    if (!token) return { success: false, error: 'Missing auth token' };
     try {
-        await fetch('/sync_chats', {
+        const res = await fetch('/sync_chats', {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify(chats)
+            body: JSON.stringify(payload)
         });
-    } catch (e) { /* Silent fail for sync */ }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return { success: false, error: data.error || `Sync failed with status ${res.status}` };
+        return data;
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
 }
 
-/**
- * Retrieve neural context via drag-drop.
- */
 async function retrieveContext(text) {
     const res = await fetch('/retrieve_context', {
         method: 'POST',
@@ -107,9 +88,6 @@ async function retrieveContext(text) {
     return await res.json();
 }
 
-/**
- * Check upscale job status.
- */
 async function checkUpscaleStatus(jobId) {
     const res = await fetch(`/api/upscale/status/${jobId}`);
     return await res.json();

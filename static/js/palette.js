@@ -1,110 +1,125 @@
-/**
- * palette.js
- * Productivity engine for The All Time Helper - Pro
- */
 let palIdx = 0;
 let palResults = [];
 
-window.addEventListener('keydown', (e) => {
-    // 1. Unified Escape Handler
-    if (e.key === 'Escape') {
+function iconSvg(path) {
+    return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
+}
+
+function paletteActions() {
+    return [
+        { t: 'New Chat', i: iconSvg('<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>'), a: () => window.startNewChat?.() },
+        { t: 'Export Current Chat', i: '⬇️', a: () => window.exportChat?.() },
+        { t: 'Settings', i: '⚙️', a: () => window.openSettings?.() },
+        { t: 'Clear Image Attachment', i: '🧹', a: () => window.clearImgPreview?.() },
+        { t: 'Stop Current Generation', i: '⏹️', a: () => window.stopAI?.() },
+        { t: 'Dark Theme', i: '🌙', a: () => window.applyThemeChoice?.('dark') },
+        { t: 'Light Theme', i: '☀️', a: () => window.applyThemeChoice?.('light') },
+        { t: 'System Theme', i: '🌓', a: () => window.applyThemeChoice?.('system') },
+    ];
+}
+
+function paletteModels() {
+    return [
+        { t: 'Model: Antigravity Flash', i: '⚡', id: 'gemini-1.5-flash-latest', name: 'Antigravity Flash (Cloud)' },
+        { t: 'Model: Antigravity Pro', i: '💎', id: 'gemini-1.5-pro-latest', name: 'Antigravity Pro (Cloud)' },
+        { t: 'Model: Agentic Swarm', i: '🧠', id: 'agentic-pro', name: 'Agentic Swarm (Supervisor)' },
+        { t: 'Model: Gemma 4', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
+        { t: 'Model: Gemma 2', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
+        { t: 'Model: Mistral', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
+        { t: 'Model: Llama Sensitive', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
+        { t: 'Model: Phi 3', i: 'φ', id: 'phi3', name: 'Phi 3' },
+        { t: 'Model: Moondream Vision', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
+    ].map(model => ({
+        ...model,
+        a: () => window.selModel?.(model.id, model.name),
+    }));
+}
+
+function paletteChats(query) {
+    const chats = Array.isArray(window.chats) ? window.chats : [];
+    return chats
+        .filter(chat => chat.title && chat.title.toLowerCase().includes(query.toLowerCase()))
+        .slice(0, 20)
+        .map(chat => ({
+            t: 'Chat: ' + chat.title,
+            i: iconSvg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>'),
+            a: () => window.loadChat?.(chat.id),
+        }));
+}
+
+window.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
         closePalette();
-        if (window.closeSettings) window.closeSettings();
-        if (window.closeImageModal) window.closeImageModal();
-        if (window.closeDeleteConfirm) window.closeDeleteConfirm();
+        window.closeSettings?.();
+        window.closeImageModal?.();
+        window.closeDeleteConfirm?.();
     }
 
-    // 2. Open Palette
-    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault();
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
         openPalette();
     }
-    
-    // 3. Palette Navigation
+
     const palette = document.getElementById('cmd-palette');
-    // Using computed style to ensure visibility detection is robust
-    const isPalVisible = palette && window.getComputedStyle(palette).display === 'flex';
-    
-    if (isPalVisible) {
-        if (e.key === 'ArrowDown') { e.preventDefault(); palIdx = Math.min(palIdx + 1, palResults.length - 1); renderPal(); }
-        if (e.key === 'ArrowUp') { e.preventDefault(); palIdx = Math.max(palIdx - 1, 0); renderPal(); }
-        if (e.key === 'Enter') { e.preventDefault(); selectPal(); }
-    }
+    const isVisible = palette && window.getComputedStyle(palette).display === 'flex';
+    if (!isVisible) return;
+
+    if (event.key === 'ArrowDown') { event.preventDefault(); palIdx = Math.min(palIdx + 1, palResults.length - 1); renderPal(); }
+    if (event.key === 'ArrowUp') { event.preventDefault(); palIdx = Math.max(palIdx - 1, 0); renderPal(); }
+    if (event.key === 'Enter') { event.preventDefault(); selectPal(); }
 });
 
 function openPalette() {
-    const p = document.getElementById('cmd-palette');
-    p.style.display = 'flex';
+    const palette = document.getElementById('cmd-palette');
     const input = document.getElementById('pal-in');
+    if (!palette || !input) return;
+    palette.style.display = 'flex';
     input.value = '';
     input.focus();
     updPal('');
 }
 
 function closePalette() {
-    document.getElementById('cmd-palette').style.display = 'none';
+    const palette = document.getElementById('cmd-palette');
+    if (palette) palette.style.display = 'none';
 }
 
-function updPal(q) {
-    const list = document.getElementById('pal-results');
-    list.innerHTML = '';
-    palResults = [];
+function updPal(query) {
+    const normalized = String(query || '').trim().toLowerCase();
     palIdx = 0;
-
-    // 1. Actions
-    const actions = [
-        { t: 'New Chat', i: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>', a: () => startNewChat() },
-        { t: 'Dark Theme', i: '🌙', a: () => { if(window.applyThemeChoice) window.applyThemeChoice('dark'); } },
-        { t: 'Light Theme', i: '☀️', a: () => { if(window.applyThemeChoice) window.applyThemeChoice('light'); } },
-        { t: 'Settings', i: '⚙️', a: () => openSettings() }
-    ];
-
-    actions.forEach(act => {
-        if (act.t.toLowerCase().includes(q.toLowerCase())) palResults.push(act);
-    });
-
-    // 2. Models
-    const models = [
-        { t: 'Model: Antigravity Pro', i: '💎', a: () => { if(window.selModel) window.selModel('gemini-1.5-pro-latest', 'Antigravity Pro (Cloud)'); } },
-        { t: 'Model: Gemma 2', i: '⚡', a: () => { if(window.selModel) window.selModel('gemma2:2b', 'Gemma 2 (Fast&Fun)'); } },
-        { t: 'Model: Llama (Sensitive)', i: '🦙', a: () => { if(window.selModel) window.selModel('helper', 'Llama (Sensitive)'); } }
-    ];
-    models.forEach(m => {
-        if (m.t.toLowerCase().includes(q.toLowerCase())) palResults.push(m);
-    });
-
-    // 3. Chats
-    if (window.chats) {
-        window.chats.forEach(c => {
-            if (c.title && c.title.toLowerCase().includes(q.toLowerCase())) {
-                palResults.push({
-                    t: 'Chat: ' + c.title,
-                    i: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
-                    a: () => loadChat(c.id)
-                });
-            }
-        });
-    }
-
+    palResults = [
+        ...paletteActions(),
+        ...paletteModels(),
+        ...paletteChats(normalized),
+    ].filter(item => item.t.toLowerCase().includes(normalized));
     renderPal();
 }
 
 function renderPal() {
     const list = document.getElementById('pal-results');
-    list.innerHTML = '';
-    palResults.slice(0, 10).forEach((res, i) => {
-        const div = document.createElement('div');
-        div.className = `pal-item ${i === palIdx ? 'selected' : ''}`;
-        div.innerHTML = `${res.i} <span>${res.t}</span>`;
-        div.onclick = () => { res.a(); closePalette(); };
-        list.appendChild(div);
-        if (i === palIdx) div.scrollIntoView({ block: 'nearest' });
+    if (!list) return;
+    list.textContent = '';
+    palResults.slice(0, 10).forEach((result, index) => {
+        const row = document.createElement('div');
+        row.className = `pal-item ${index === palIdx ? 'selected' : ''}`;
+        const icon = document.createElement('span');
+        icon.className = 'pal-icon';
+        icon.innerHTML = result.i;
+        const label = document.createElement('span');
+        label.textContent = result.t;
+        row.append(icon, label);
+        row.addEventListener('click', () => { result.a(); closePalette(); });
+        list.appendChild(row);
+        if (index === palIdx) row.scrollIntoView({ block: 'nearest' });
     });
 }
 
 function selectPal() {
-    if (palResults[palIdx]) {
-        palResults[palIdx].a();
-        closePalette();
-    }
+    if (!palResults[palIdx]) return;
+    palResults[palIdx].a();
+    closePalette();
 }
+
+window.openPalette = openPalette;
+window.closePalette = closePalette;
+window.updPal = updPal;

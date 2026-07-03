@@ -1,7 +1,3 @@
-/**
- * app.js — ES6 Module Entry Point & Orchestrator
- * Imports modular components. Contains send/load/save orchestration from main_v3.js.
- */
 import { state } from './state.js';
 import { api } from './api.js';
 import { ui } from './ui.js';
@@ -10,11 +6,17 @@ import { mascot } from './mascot.js';
 const MAX_ATTACHED_CONTEXTS = 6;
 const MAX_CONTEXT_CHARS = 6000;
 const MAX_TOTAL_CONTEXT_CHARS = 18000;
+const CHAT_SYNC_DEBOUNCE_MS = 600;
+let syncTimer = null;
 
-function escapeHTML(value) {
-    return String(value ?? '').replace(/[&<>"']/g, char => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    })[char]);
+function ensureDeletedChatIds() {
+    if (!Array.isArray(state.deletedChatIds)) state.deletedChatIds = [];
+    return state.deletedChatIds;
+}
+
+function syncWindowState() {
+    window.chats = state.chats;
+    window.activeId = state.activeId;
 }
 
 function addAttachedContext(text, kind = 'text') {
@@ -48,188 +50,252 @@ async function waitForPendingImageUploads() {
     return state.currentImages;
 }
 
-// --- Upscale Poller ---
 function startUpscalePoller(jobId, container) {
     if (state.activePollers.has(jobId)) return;
     state.activePollers.add(jobId);
     const img = container.querySelector('.chat-rendered-img');
     if (!img) { state.activePollers.delete(jobId); return; }
     if (!img.parentElement.classList.contains('upscale-container')) {
-        const w = document.createElement('div'); w.className = 'upscale-container';
-        img.parentNode.insertBefore(w, img); w.appendChild(img);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'upscale-container';
+        img.parentNode.insertBefore(wrapper, img);
+        wrapper.appendChild(img);
     }
     img.classList.add('upscaling');
-    const badge = document.createElement('div'); badge.className = 'upscale-badge';
+    const badge = document.createElement('div');
+    badge.className = 'upscale-badge';
     badge.innerHTML = '<div class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px;"></div> Enhancing...';
     img.parentElement.appendChild(badge);
+
     const poll = async () => {
         try {
             const data = await api.checkUpscaleStatus(jobId);
             if (data.success && data.status === 'ready') {
-                const hi = new Image(); hi.src = data.url;
-                hi.onload = () => { img.src = data.url; img.classList.remove('upscaling'); badge.innerHTML = '✨ 4K Enhanced'; badge.classList.add('ready'); setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 4000); state.activePollers.delete(jobId); };
-            } else if (data.status === 'failed') { img.classList.remove('upscaling'); badge.remove(); state.activePollers.delete(jobId); }
-            else setTimeout(poll, 2500);
-        } catch (e) { state.activePollers.delete(jobId); }
+                const hi = new Image();
+                hi.src = data.url;
+                hi.onload = () => {
+                    img.src = data.url;
+                    img.classList.remove('upscaling');
+                    badge.innerHTML = '✨ 4K Enhanced';
+                    badge.classList.add('ready');
+                    setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 4000);
+                    state.activePollers.delete(jobId);
+                };
+            } else if (data.status === 'failed' || data.status === 'missing') {
+                img.classList.remove('upscaling');
+                badge.remove();
+                state.activePollers.delete(jobId);
+            } else {
+                setTimeout(poll, 2500);
+            }
+        } catch (_) {
+            state.activePollers.delete(jobId);
+        }
     };
     poll();
 }
 
-// --- Chat Key Handler ---
-function handleChatKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-    else if (e.key === 'Escape') startNewChat();
+function handleChatKey(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        send();
+    } else if (event.key === 'Escape') {
+        startNewChat();
+    }
 }
 
-// --- Core: Start New Chat ---
 function startNewChat() {
     state.set('activeId', Date.now().toString());
-    document.getElementById('chat-area').innerHTML = '';
-    document.getElementById('chat-area').style.display = 'none';
-    document.getElementById('welcome').style.display = 'flex';
+    const chatArea = document.getElementById('chat-area');
+    const welcome = document.getElementById('welcome');
+    if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'none'; }
+    if (welcome) welcome.style.display = 'flex';
     ui.clearImgPreview();
-    const p = document.getElementById('prompt');
-    if (p) { p.value = ''; p.style.height = 'auto'; }
+    const prompt = document.getElementById('prompt');
+    if (prompt) { prompt.value = ''; prompt.style.height = 'auto'; }
     ui.renderHist();
-    if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) ui.toggleSidebar();
+    const sidebar = document.getElementById('sidebar');
+    if (window.innerWidth <= 850 && sidebar?.classList.contains('open')) ui.toggleSidebar();
     ui.smartFocus('prompt');
+    syncWindowState();
 }
 
-// --- Core: Load Chat ---
 function loadChat(id) {
+    const chat = state.chats.find(c => c.id === id);
+    if (!chat) return;
     state.set('activeId', id);
     localStorage.setItem('helper_active_chat_v2', id);
-    const chat = state.chats.find(c => c.id === id);
-    document.getElementById('chat-area').innerHTML = '';
-    document.getElementById('chat-area').style.display = 'block';
-    document.getElementById('welcome').style.display = 'none';
+    const chatArea = document.getElementById('chat-area');
+    const welcome = document.getElementById('welcome');
+    if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'block'; }
+    if (welcome) welcome.style.display = 'none';
     ui.clearImgPreview();
-    chat.ms.forEach((m, idx) => ui.addMsg(m.r, m.c, m.i, idx, m.m || 'AI Assistant', m.masked));
+    chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked));
     ui.renderHist();
-    if (window.innerWidth <= 850 && document.getElementById('sidebar').classList.contains('open')) ui.toggleSidebar();
+    const sidebar = document.getElementById('sidebar');
+    if (window.innerWidth <= 850 && sidebar?.classList.contains('open')) ui.toggleSidebar();
     ui.smartFocus('prompt');
     ui.checkAuthMode();
+    syncWindowState();
 }
 
-// --- Core: Save/Load User Chats ---
 async function loadUserChats() {
-    if (!state.user || !state.user.email) return;
+    if (!state.user?.email) return;
     const key = 'helper_chats_v2_' + state.user.email;
     let localStr = localStorage.getItem(key);
     if (!localStr && localStorage.getItem('helper_chats_v2')) {
         localStr = localStorage.getItem('helper_chats_v2');
-        localStorage.setItem(key, localStr); localStorage.removeItem('helper_chats_v2');
+        localStorage.setItem(key, localStr);
+        localStorage.removeItem('helper_chats_v2');
     }
     if (localStr) {
-        state.chats = JSON.parse(localStr); window.chats = state.chats; ui.renderHist();
-        const sId = localStorage.getItem('helper_active_chat_v2');
-        if (sId && state.chats.find(c => c.id === sId)) loadChat(sId);
+        try {
+            const parsed = JSON.parse(localStr);
+            state.chats = Array.isArray(parsed) ? parsed : [];
+            syncWindowState();
+            ui.renderHist();
+            const savedId = localStorage.getItem('helper_active_chat_v2');
+            if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
+        } catch (error) {
+            console.warn('Local chat cache could not be parsed:', error);
+        }
     }
     try {
         const data = await api.fetchChats();
-        if (data && data.success && data.chats) {
+        if (data?.success && Array.isArray(data.chats)) {
             if (data.chats.length > 0 || state.chats.length === 0) {
-                state.chats = data.chats; window.chats = state.chats;
-                localStorage.setItem(key, JSON.stringify(state.chats)); ui.renderHist();
+                state.chats = data.chats;
+                syncWindowState();
+                localStorage.setItem(key, JSON.stringify(state.chats));
+                ui.renderHist();
+                const savedId = localStorage.getItem('helper_active_chat_v2');
+                if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
             }
         }
-    } catch (e) { console.error("Cloud fetch failed:", e); }
+    } catch (error) {
+        console.error('Cloud fetch failed:', error);
+    }
 }
 
 async function saveUserChats() {
-    if (!state.user) return;
+    if (!state.user?.email) return;
+    const deletedIds = ensureDeletedChatIds();
+    const payload = { chats: state.chats, deleted_chat_ids: deletedIds.slice() };
     localStorage.setItem('helper_chats_v2_' + state.user.email, JSON.stringify(state.chats));
-    await api.syncChats(state.chats);
+    const result = await api.syncChats(payload);
+    if (!result || result.success !== false) deletedIds.length = 0;
+    syncWindowState();
+    return result;
 }
 
-async function requestChatPersist({ immediate = false } = {}) {
+function requestChatPersist({ immediate = false } = {}) {
+    if (syncTimer) clearTimeout(syncTimer);
     if (immediate) return saveUserChats();
-    return saveUserChats();
+    syncTimer = setTimeout(() => { saveUserChats().catch(error => console.warn('Chat sync failed:', error)); }, CHAT_SYNC_DEBOUNCE_MS);
+    return Promise.resolve();
 }
 
-// --- Core: Handle Auth (with button loading state) ---
-async function handleAuth(t) {
-    const btn = document.getElementById(t + '-btn');
-    const orig = btn.innerHTML;
-    btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>';
+async function handleAuth(type) {
+    const btn = document.getElementById(type + '-btn');
+    const original = btn?.innerHTML;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
     try {
-        const data = await api.handleAuth(t);
+        const data = await api.handleAuth(type);
         if (data.success) {
-            if (t === 'signup' || (t === 'login' && data.unverified)) ui.switchAuth('otp');
-            else {
+            if (type === 'signup' || (type === 'login' && data.unverified)) {
+                ui.switchAuth('otp');
+            } else {
                 state.set('user', data.user);
                 localStorage.setItem('helper_user_v2', JSON.stringify(data.user));
                 if (data.token) localStorage.setItem('helper_token_v2', data.token);
-                document.getElementById('auth-overlay').style.display = 'none';
-                loadUserChats(); ui.updUI();
-                if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
+                const auth = document.getElementById('auth-overlay');
+                if (auth) auth.style.display = 'none';
+                await loadUserChats();
+                ui.updUI();
+                const themeModal = document.getElementById('theme-modal');
+                if (!localStorage.getItem('helper_theme_pref') && themeModal) themeModal.style.display = 'flex';
                 ui.smartFocus('prompt');
             }
-        } else alert(data.error || 'Check credentials');
-    } catch (e) { alert('Connection Error: ' + e.message); }
-    finally { btn.disabled = false; btn.innerHTML = orig; }
+        } else {
+            alert(data.error || 'Check credentials');
+        }
+    } catch (error) {
+        alert('Connection Error: ' + error.message);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = original; }
+    }
 }
 
-// --- Core: Submit Edit ---
 async function submitEdit(idx, container) {
-    const newText = container.querySelector('textarea').value.trim();
+    const textarea = container.querySelector('textarea');
+    const newText = textarea?.value.trim();
     if (!newText) return;
-    let chat = state.chats.find(c => c.id === state.activeId);
+    const chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) return;
     chat.ms = chat.ms.slice(0, idx);
     await requestChatPersist({ immediate: true });
     loadChat(state.activeId);
     mascot.triggerBotReaction(newText);
-    document.getElementById('prompt').value = newText;
+    const prompt = document.getElementById('prompt');
+    if (prompt) prompt.value = newText;
     await send();
 }
 
-// --- Core: Send Message ---
 async function send() {
-    const p = document.getElementById('prompt').value.trim();
+    const promptEl = document.getElementById('prompt');
+    if (!promptEl) return;
+    const userText = promptEl.value.trim();
     await waitForPendingImageUploads();
     const currentAttachments = state.currentImages.slice();
     const contextText = state.attachedContexts.map(serializeAttachedContext).filter(Boolean)
         .map((text, index) => `[Attached Context ${index + 1}]\n"""\n${text}\n"""`).join('\n\n');
-    const apiPrompt = [contextText, p].filter(Boolean).join('\n\n');
+    const apiPrompt = [contextText, userText].filter(Boolean).join('\n\n');
     if (!apiPrompt && !currentAttachments.length) return;
     if (!state.activeId) state.set('activeId', Date.now().toString());
+
     let chat = state.chats.find(c => c.id === state.activeId);
-    if (!chat) { chat = { id: state.activeId, title: p.substring(0, 35), ms: [] }; state.chats.push(chat); }
-    window.activeId = state.activeId;
-    document.getElementById('welcome').style.display = 'none';
-    document.getElementById('chat-area').style.display = 'block';
+    if (!chat) {
+        chat = { id: state.activeId, title: userText.substring(0, 35) || 'New Chat', ms: [], updated_at: Date.now() / 1000 };
+        state.chats.push(chat);
+    }
+    syncWindowState();
+
+    const welcome = document.getElementById('welcome');
+    const chatArea = document.getElementById('chat-area');
+    if (welcome) welcome.style.display = 'none';
+    if (chatArea) chatArea.style.display = 'block';
 
     let isMasked = false;
-    const promptEl = document.getElementById('prompt');
-    if (promptEl && promptEl.classList.contains('auth-waiting')) isMasked = true;
+    if (promptEl.classList.contains('auth-waiting')) isMasked = true;
     else if (chat.ms.length > 0) {
-        const last = chat.ms[chat.ms.length - 1].c.toLowerCase();
-        const authKws = ["please provide your admin key", "enter your admin_key", "provide the password", "authorize with your key", "auth_required", "admin key"];
-        if (authKws.some(kw => last.includes(kw))) isMasked = true;
+        const last = String(chat.ms[chat.ms.length - 1].c || '').toLowerCase();
+        const authKeywords = ['please provide your admin key', 'enter your admin_key', 'provide the password', 'authorize with your key', 'auth_required', 'admin key'];
+        isMasked = authKeywords.some(keyword => last.includes(keyword));
     }
 
-    ui.addMsg('u', p, state.currentImg, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: p, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
-    mascot.triggerBotReaction(p);
+    ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked);
+    chat.ms.push({ r: 'u', c: userText, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
+    chat.updated_at = Date.now() / 1000;
+    mascot.triggerBotReaction(userText);
     ui.clearImgPreview();
-    promptEl.value = ''; promptEl.style.height = 'auto';
+    promptEl.value = '';
+    promptEl.style.height = 'auto';
+    promptEl.placeholder = 'Message The All Time Helper...';
+    promptEl.classList.remove('auth-waiting');
     document.getElementById('stop-btn').style.display = 'flex';
     document.getElementById('main-send-btn').style.display = 'none';
-    promptEl.placeholder = "Message The All Time Helper...";
-    promptEl.classList.remove('auth-waiting');
 
     let initContent = '...';
     const isLocal = state.selectedModel !== 'agentic-pro' && !state.selectedModel.includes('gemini');
     if (isLocal) initContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
-    const mName = document.getElementById('active-model-name').innerText;
-    const bTxt = ui.addMsg('b', initContent, null, chat.ms.length, mName);
-    const parentMsg = bTxt.closest('.msg');
-    if (parentMsg) parentMsg.classList.add('thinking-state');
-    bTxt.innerHTML = `<div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${initContent}</span></div><div class="typing-indicator"><span></span><span></span><span></span></div>`;
+    const modelName = document.getElementById('active-model-name')?.innerText || 'AI Assistant';
+    const botText = ui.addMsg('b', initContent, null, chat.ms.length, modelName);
+    const botMsg = botText.closest('.msg');
+    if (botMsg) botMsg.classList.add('thinking-state');
+    botText.innerHTML = `<div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${initContent}</span></div><div class="typing-indicator"><span></span><span></span><span></span></div>`;
     mascot.updateBotVisuals();
-    const m = document.getElementById('mascot-container');
-    if (m) m.classList.add('thinking');
+    const mascotEl = document.getElementById('mascot-container');
+    if (mascotEl) mascotEl.classList.add('thinking');
     state.set('abortController', new AbortController());
 
     try {
@@ -238,64 +304,115 @@ async function send() {
             content: message.apiPrompt || message.c,
             attachments: message.attachments || []
         }));
-        const res = await api.streamChat({
-            prompt: apiPrompt, history: historyForApi, model: state.selectedModel, img: null, attachments: currentAttachments, name: state.user.name,
-            persona: document.getElementById('persona-toggle').checked, isMasked,
-            sys: { english: document.getElementById('t-eng').classList.contains('on'), oneword: document.getElementById('t-word').classList.contains('on'), pers: document.getElementById('t-pers').classList.contains('on') }
+        const response = await api.streamChat({
+            prompt: apiPrompt,
+            history: historyForApi,
+            model: state.selectedModel,
+            img: null,
+            attachments: currentAttachments,
+            name: state.user?.name || 'Human',
+            persona: Boolean(document.getElementById('persona-toggle')?.checked),
+            isMasked,
+            sys: {
+                english: Boolean(document.getElementById('t-eng')?.classList.contains('on')),
+                oneword: Boolean(document.getElementById('t-word')?.classList.contains('on')),
+                pers: Boolean(document.getElementById('t-pers')?.classList.contains('on'))
+            }
         }, state.abortController.signal);
-        if (res.status === 401) { ui.signOut(); return; }
-        if (!res.ok) {
-            const errTxt = `System Error ${res.status}: Backend overloaded. Try again.`;
-            bTxt.innerText = errTxt; chat.ms.push({ r: 'b', c: errTxt }); saveUserChats(); return;
+
+        if (response.status === 401) { ui.signOut(); return; }
+        if (!response.ok) {
+            const errorText = `System Error ${response.status}: Backend overloaded. Try again.`;
+            botText.innerText = errorText;
+            chat.ms.push({ r: 'b', c: errorText, m: modelName });
+            chat.updated_at = Date.now() / 1000;
+            await requestChatPersist({ immediate: true });
+            return;
         }
-        const reader = res.body.getReader(); let fullTxt = '', buffer = ''; const decoder = new TextDecoder("utf-8");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let fullText = '';
+        let buffer = '';
         while (true) {
-            const { done, value } = await reader.read(); if (done) break;
+            const { done, value } = await reader.read();
+            if (done) break;
             buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n'); buffer = lines.pop();
-            lines.forEach(line => {
-                const tl = line.trim(); if (!tl || tl.startsWith('<')) return;
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('<')) continue;
                 try {
-                    const j = JSON.parse(tl);
-                    if (j.job_id) {
-                        state.set('activeJobId', j.job_id);
-                        return;
+                    const item = JSON.parse(trimmed);
+                    if (item.job_id) { state.set('activeJobId', item.job_id); continue; }
+                    if (item.status) {
+                        let statusEl = botText.querySelector('#status-text');
+                        if (!statusEl) {
+                            const statusDiv = document.createElement('div');
+                            statusDiv.className = 'status-msg';
+                            statusDiv.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text"></span>`;
+                            botText.prepend(statusDiv);
+                            statusEl = statusDiv.querySelector('#status-text');
+                        }
+                        statusEl.innerText = item.status;
+                        continue;
                     }
-                    if (j.status) {
-                        let se = bTxt.querySelector('#status-text');
-                        if (!se) { const sd = document.createElement('div'); sd.className = 'status-msg'; sd.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${j.status}</span>`; bTxt.prepend(sd); }
-                        else se.innerText = j.status;
-                        return;
+                    if (item.message?.content) {
+                        if (!fullText) {
+                            botText.querySelector('.typing-indicator')?.remove();
+                            botText.querySelector('.status-msg')?.remove();
+                            botText.closest('.msg')?.classList.remove('thinking-state');
+                        }
+                        fullText += item.message.content;
+                        botText.innerHTML = window.renderMarkdown(fullText);
+                        window.hydrateRenderedMarkdown?.(botText);
                     }
-                    if (j.message && j.message.content) {
-                        if (fullTxt === '') { bTxt.querySelector('.typing-indicator')?.remove(); bTxt.querySelector('.status-msg')?.remove(); bTxt.closest('.msg').classList.remove('thinking-state'); }
-                        fullTxt += j.message.content; bTxt.innerHTML = window.renderMarkdown(fullTxt); window.hydrateRenderedMarkdown?.(bTxt);
-                    }
-                } catch (e) { if (tl.length > 5) console.warn("Dropped:", tl); }
-            });
+                } catch (error) {
+                    if (trimmed.length > 5) console.warn('Dropped stream line:', trimmed, error);
+                }
+            }
         }
-        if (buffer.trim()) { try { const j = JSON.parse(buffer); if (j.message && j.message.content) fullTxt += j.message.content; } catch (e) {} }
-        if (chat.title && chat.title.trim().length <= 5 && fullTxt.trim().length > 10) {
-            const fl = fullTxt.split('\n')[0]; chat.title = fl.substring(0, 35).trim() + (fl.length > 35 ? '...' : '');
+        if (buffer.trim()) {
+            try {
+                const item = JSON.parse(buffer);
+                if (item.message?.content) fullText += item.message.content;
+            } catch (_) {}
         }
-        chat.ms.push({ r: 'b', c: fullTxt, m: mName });
-        bTxt.innerHTML = window.renderMarkdown(fullTxt);
-        window.hydrateRenderedMarkdown?.(bTxt);
-        bTxt.querySelectorAll('img').forEach(img => { if (img.src.includes('uid=')) { const jId = new URLSearchParams(img.src.split('?')[1]).get('uid'); if (jId) startUpscalePoller(jId, bTxt); } });
-        bTxt.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
-        saveUserChats();
-    } catch (e) { bTxt.innerText += " [Stopped]"; }
-    finally {
-        document.getElementById('stop-btn').style.display = 'none';
-        document.getElementById('main-send-btn').style.display = 'flex';
-        ui.checkAuthMode(); if (m) m.classList.remove('thinking');
+        if (chat.title && chat.title.trim().length <= 5 && fullText.trim().length > 10) {
+            const firstLine = fullText.split('\n')[0];
+            chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
+        }
+        chat.ms.push({ r: 'b', c: fullText, m: modelName });
+        chat.updated_at = Date.now() / 1000;
+        botText.innerHTML = window.renderMarkdown(fullText);
+        window.hydrateRenderedMarkdown?.(botText);
+        botText.querySelectorAll('img').forEach(img => {
+            if (img.src.includes('uid=')) {
+                const jobId = new URLSearchParams(img.src.split('?')[1]).get('uid');
+                if (jobId) startUpscalePoller(jobId, botText);
+            }
+        });
+        botText.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+        await requestChatPersist({ immediate: true });
+    } catch (error) {
+        if (error.name === 'AbortError') botText.innerText += ' [Stopped]';
+        else botText.innerText += ` [Error: ${error.message}]`;
+    } finally {
+        const stopBtn = document.getElementById('stop-btn');
+        const sendBtn = document.getElementById('main-send-btn');
+        if (stopBtn) stopBtn.style.display = 'none';
+        if (sendBtn) sendBtn.style.display = 'flex';
+        ui.checkAuthMode();
+        if (mascotEl) mascotEl.classList.remove('thinking');
         document.querySelectorAll('.thinking-state').forEach(el => el.classList.remove('thinking-state'));
-        document.querySelectorAll('.typing-indicator').forEach(ti => ti.remove());
-        state.abortController = null; state.currentImg = null;
+        document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
+        state.abortController = null;
+        state.currentImg = null;
         state.attachedContexts = [];
         state.currentImages = [];
         state.activeJobId = null;
-        window.activeId = state.activeId;
+        syncWindowState();
         if (state.chats.find(c => c.id === state.activeId)?.ms.length <= 2) ui.renderHist();
         ui.checkAuthMode();
     }
@@ -306,14 +423,200 @@ function stopAI() {
     if (state.abortController) state.abortController.abort();
 }
 
-function deleteSelectedChat() {
+async function deleteSelectedChat() {
     if (!state.chatToDelete) return;
     const deletedId = state.chatToDelete;
+    const deletedIds = ensureDeletedChatIds();
+    if (!deletedIds.includes(deletedId)) deletedIds.push(deletedId);
     state.chats = state.chats.filter(chat => chat.id !== deletedId);
     if (state.activeId === deletedId) startNewChat();
     ui.closeDeleteConfirm();
     ui.renderHist();
-    saveUserChats();
+    syncWindowState();
+    await requestChatPersist({ immediate: true });
+}
+
+function togglePin(id) {
+    const chat = state.chats.find(c => c.id === id);
+    if (!chat) return;
+    chat.pinned = !chat.pinned;
+    chat.updated_at = Date.now() / 1000;
+    ui.renderHist();
+    requestChatPersist();
+}
+
+function exportChat() {
+    const chat = state.chats.find(c => c.id === state.activeId);
+    if (!chat || !chat.ms.length) return;
+    let md = `# ${chat.title || 'Conversation'}\n\n`;
+    chat.ms.forEach(message => { md += `### ${message.r === 'u' ? 'User' : 'Assistant'}\n${message.c}\n\n---\n\n`; });
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `chat_${state.activeId}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+}
+
+async function retrieveContext(text) {
+    const mascotEl = document.getElementById('mascot-container');
+    if (mascotEl) mascotEl.classList.add('thinking');
+    try {
+        const data = await api.retrieveContext(text);
+        if (data.success) ui.showNeuralContext(data.results, data.explanation);
+    } finally {
+        if (mascotEl) mascotEl.classList.remove('thinking');
+    }
+}
+
+window.applyThemeChoice = function applyThemeChoice(choice) {
+    localStorage.setItem('helper_theme_pref', choice);
+    const iconMap = { light: '☀️', dark: '🌙', system: '🌓' };
+    const labels = { light: 'Light', dark: 'Dark', system: 'System' };
+    const headerIcon = document.getElementById('current-theme-icon');
+    const settingsIcon = document.getElementById('current-theme-icon-settings');
+    if (headerIcon) headerIcon.innerText = iconMap[choice] || '🌓';
+    if (settingsIcon) settingsIcon.innerText = (iconMap[choice] || '🌓') + ' ' + (labels[choice] || 'System');
+    document.querySelectorAll('.theme-opt, .menu-item').forEach(option => {
+        option.classList.remove('active');
+        if (option.innerText.toLowerCase().includes(choice)) option.classList.add('active');
+    });
+    const resolvedTheme = choice === 'system'
+        ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+        : choice;
+    ui.setThemeUI(resolvedTheme);
+    document.querySelectorAll('.dropdown-menu').forEach(menu => { menu.style.display = 'none'; });
+    document.querySelectorAll('.set-row').forEach(row => row.classList.remove('row-elevated'));
+    const themeModal = document.getElementById('theme-modal');
+    if (themeModal?.style.display === 'flex') setTimeout(() => { themeModal.style.display = 'none'; }, 400);
+};
+
+window.toggleThemeMenu = function toggleThemeMenu(event, menuId) {
+    if (event) event.stopPropagation();
+    const target = menuId || 'theme-menu';
+    const menu = document.getElementById(target);
+    if (!menu) return;
+    const visible = menu.style.display === 'flex';
+    document.querySelectorAll('.dropdown-menu').forEach(item => { item.style.display = 'none'; });
+    document.querySelectorAll('.set-row').forEach(row => row.classList.remove('row-elevated'));
+    if (!visible) {
+        menu.style.display = 'flex';
+        menu.closest('.set-row')?.classList.add('row-elevated');
+    }
+};
+
+window.autoRes = function autoRes(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+};
+
+function initTheme() {
+    window.applyThemeChoice(localStorage.getItem('helper_theme_pref') || 'system');
+}
+
+function initSidebarSwipe() {
+    const sidebar = document.getElementById('sidebar');
+    const scrim = document.getElementById('sidebar-scrim');
+    if (!sidebar || !scrim) return;
+    let startX = 0;
+    let currentX = 300;
+    let dragging = false;
+    let horizontal = false;
+    sidebar.addEventListener('touchstart', event => {
+        if (!sidebar.classList.contains('open') || window.innerWidth > 992) return;
+        startX = event.touches[0].clientX;
+        currentX = 300;
+        dragging = true;
+        horizontal = false;
+        sidebar.style.transition = 'none';
+        scrim.style.transition = 'none';
+    }, { passive: true });
+    sidebar.addEventListener('touchmove', event => {
+        if (!dragging) return;
+        const deltaX = event.touches[0].clientX - startX;
+        const deltaY = event.touches[0].clientY - startX;
+        if (!horizontal) {
+            if (Math.abs(deltaX) > Math.abs(deltaY) * 1.5) horizontal = true;
+            else if (Math.abs(deltaY) > 5) { dragging = false; return; }
+            else return;
+        }
+        currentX = Math.min(300, Math.max(0, 300 + deltaX));
+        sidebar.style.transform = `translateX(${currentX}px)`;
+        scrim.style.opacity = currentX / 300;
+    }, { passive: true });
+    sidebar.addEventListener('touchend', () => {
+        if (!dragging) return;
+        dragging = false;
+        sidebar.style.transition = 'transform 0.4s cubic-bezier(0.25,0.8,0.25,1)';
+        scrim.style.transition = 'opacity 0.4s ease';
+        if (currentX < 200) {
+            sidebar.style.transform = 'translateX(0px)';
+            scrim.style.opacity = '0';
+            setTimeout(() => {
+                sidebar.classList.remove('open');
+                document.body.classList.remove('sidebar-open');
+                sidebar.style.transform = '';
+                sidebar.style.transition = '';
+                scrim.style.opacity = '';
+                scrim.style.transition = '';
+            }, 400);
+        } else {
+            sidebar.style.transform = 'translateX(300px)';
+            scrim.style.opacity = '1';
+            setTimeout(() => { sidebar.style.transition = ''; scrim.style.transition = ''; }, 400);
+        }
+    });
+    sidebar.onclick = event => event.stopPropagation();
+}
+
+function initNeuralGrab() {
+    window.isGDown = false;
+    function update(on) {
+        window.isGDown = on;
+        document.querySelectorAll('.msg .txt').forEach(message => {
+            message.setAttribute('draggable', on ? 'true' : 'false');
+            message.classList.toggle('grab-mode', on);
+        });
+        document.body.classList.toggle('neural-grab-active', on);
+    }
+    document.addEventListener('keydown', event => {
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+        if (event.key.toLowerCase() === 'g' && !window.isGDown) update(true);
+    });
+    document.addEventListener('keyup', event => { if (event.key.toLowerCase() === 'g') update(false); });
+    window.addEventListener('blur', () => update(false));
+}
+
+function initPullRefresh() {
+    let startY = 0;
+    let deltaY = 0;
+    window.addEventListener('touchstart', event => {
+        const y = event.touches[0].pageY;
+        const chatArea = document.getElementById('chat-area');
+        startY = ((window.scrollY === 0 || chatArea?.scrollTop === 0) && y < 60) ? y : 999999;
+    }, { passive: true });
+    window.addEventListener('touchmove', event => {
+        deltaY = event.touches[0].pageY - startY;
+        const chatArea = document.getElementById('chat-area');
+        if (deltaY > 0 && (window.scrollY === 0 || chatArea?.scrollTop === 0)) {
+            const indicator = document.getElementById('pull-indicator');
+            if (indicator) {
+                const progress = Math.min(deltaY, 180);
+                indicator.style.top = (progress - 60) + 'px';
+                indicator.style.opacity = Math.min(progress / 120, 1);
+            }
+        }
+    }, { passive: true });
+    window.addEventListener('touchend', () => {
+        if (deltaY > 120) location.reload();
+        else {
+            const indicator = document.getElementById('pull-indicator');
+            if (indicator) { indicator.style.top = '-60px'; indicator.style.opacity = '0'; }
+        }
+        deltaY = 0;
+    });
 }
 
 function bindStaticEvents() {
@@ -322,7 +625,6 @@ function bindStaticEvents() {
     on('signup-btn', 'click', () => handleAuth('signup'));
     on('verify-btn', 'click', () => handleAuth('verify'));
     document.querySelectorAll('[data-auth-view]').forEach(el => el.addEventListener('click', () => ui.switchAuth(el.dataset.authView)));
-
     on('l-email', 'keydown', event => { if (event.key === 'Enter') document.getElementById('l-pwd')?.focus(); });
     on('l-pwd', 'keydown', event => { if (event.key === 'Enter') handleAuth('login'); });
     on('s-name', 'keydown', event => { if (event.key === 'Enter') document.getElementById('s-email')?.focus(); });
@@ -330,13 +632,12 @@ function bindStaticEvents() {
     on('s-pwd', 'keydown', event => { if (event.key === 'Enter') handleAuth('signup'); });
     on('v-otp', 'input', event => { event.currentTarget.value = event.currentTarget.value.replace(/[^0-9]/g, '').slice(0, 6); });
     on('v-otp', 'keydown', event => { if (event.key === 'Enter') handleAuth('verify'); });
-
+    document.querySelectorAll('#new-chat-btn, .new-chat').forEach(el => el.addEventListener('click', startNewChat));
     on('mobile-menu-btn', 'click', ui.toggleSidebar);
     on('sidebar-scrim', 'click', ui.toggleSidebar);
     on('main-logo-img', 'click', mascot.jiggleLogo);
-    on('new-chat-btn', 'click', startNewChat);
     on('hist-search', 'input', event => ui.filterHist(event.currentTarget.value));
-    on('open-settings-btn', 'click', ui.openSettings);
+    document.querySelectorAll('#open-settings-btn, .set-btn').forEach(el => el.addEventListener('click', ui.openSettings));
     on('model-toggle', 'click', ui.toggleDropdown);
     document.querySelectorAll('[data-model-id]').forEach(el => el.addEventListener('click', () => ui.selModel(el.dataset.modelId, el.dataset.modelName)));
     on('img-in', 'change', event => {
@@ -378,203 +679,149 @@ function bindStaticEvents() {
         event.preventDefault();
         addAttachedContext(textVal);
     });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && event.target?.classList?.contains('rename-in')) {
+            setTimeout(() => requestChatPersist({ immediate: true }), 0);
+        }
+    });
+    document.addEventListener('focusout', event => {
+        if (event.target?.classList?.contains('rename-in')) {
+            setTimeout(() => requestChatPersist({ immediate: true }), 0);
+        }
+    });
 }
 
-// --- Toggle Pin & Export ---
-function togglePin(id) {
-    const chat = state.chats.find(c => c.id === id);
-    if (chat) { chat.pinned = !chat.pinned; saveUserChats(); ui.renderHist(); }
-}
-function exportChat() {
-    const chat = state.chats.find(c => c.id === state.activeId);
-    if (!chat || !chat.ms.length) return;
-    let md = `# ${chat.title || 'Conversation'}\n\n`;
-    chat.ms.forEach(m => { md += `### ${m.r === 'u' ? 'User' : 'Assistant'}\n${m.c}\n\n---\n\n`; });
-    const blob = new Blob([md], { type: 'text/markdown' }); const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `chat_${state.activeId}.md`; a.click(); URL.revokeObjectURL(url);
-}
-
-// --- Neural Context Retrieval ---
-async function retrieveContext(text) {
-    const m = document.getElementById('mascot-container'); if (m) m.classList.add('thinking');
-    try {
-        const data = await api.retrieveContext(text);
-        if (data.success) ui.showNeuralContext(data.results, data.explanation);
-    } finally { if (m) m.classList.remove('thinking'); }
-}
-
-// --- Theme Engine ---
-window.applyThemeChoice = function(choice) {
-    localStorage.setItem('helper_theme_pref', choice);
-    const iconMap = { light: '☀️', dark: '🌙', system: '🌓' };
-    const labels = { light: 'Light', dark: 'Dark', system: 'System' };
-    const ti = document.getElementById('current-theme-icon'); if (ti) ti.innerText = iconMap[choice] || '🌓';
-    const ts = document.getElementById('current-theme-icon-settings'); if (ts) ts.innerText = (iconMap[choice] || '🌓') + ' ' + (labels[choice] || 'System');
-    document.querySelectorAll('.theme-opt, .menu-item').forEach(o => { o.classList.remove('active'); if (o.innerText.toLowerCase().includes(choice)) o.classList.add('active'); });
-    if (choice === 'system') { ui.setThemeUI(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } else ui.setThemeUI(choice);
-    document.querySelectorAll('.dropdown-menu').forEach(m => m.style.display = 'none');
-    document.querySelectorAll('.set-row').forEach(r => r.classList.remove('row-elevated'));
-    if (document.getElementById('theme-modal').style.display === 'flex') setTimeout(() => document.getElementById('theme-modal').style.display = 'none', 400);
-};
-window.toggleThemeMenu = function(e, menuId) {
-    if (e) e.stopPropagation(); const target = menuId || 'theme-menu'; const menu = document.getElementById(target); if (!menu) return;
-    const vis = menu.style.display === 'flex';
-    document.querySelectorAll('.dropdown-menu').forEach(m => m.style.display = 'none');
-    document.querySelectorAll('.set-row').forEach(r => r.classList.remove('row-elevated'));
-    if (!vis) { menu.style.display = 'flex'; const pr = menu.closest('.set-row'); if (pr) pr.classList.add('row-elevated'); }
-};
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => { if (localStorage.getItem('helper_theme_pref') === 'system') ui.setThemeUI(e.matches ? 'dark' : 'light'); });
-function initTheme() { window.applyThemeChoice(localStorage.getItem('helper_theme_pref') || 'system'); }
-
-// --- Auto-resize ---
-window.autoRes = function(el) { if (!el) return; el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; };
-
-// --- Sidebar Swipe ---
-function initSidebarSwipe() {
-    const sb = document.getElementById('sidebar'), scr = document.getElementById('sidebar-scrim');
-    let sX = 0, cX = 300, isD = false, isH = false;
-    if (!sb || !scr) return;
-    sb.addEventListener('touchstart', e => { if (!sb.classList.contains('open') || window.innerWidth > 992) return; sX = e.touches[0].clientX; cX = 300; isD = true; isH = false; sb.style.transition = 'none'; scr.style.transition = 'none'; }, { passive: true });
-    sb.addEventListener('touchmove', e => { if (!isD) return; const dX = e.touches[0].clientX - sX, dY = e.touches[0].clientY - sX; if (!isH) { if (Math.abs(dX) > Math.abs(dY) * 1.5) isH = true; else if (Math.abs(dY) > 5) { isD = false; return; } else return; } cX = Math.min(300, Math.max(0, 300 + dX)); sb.style.transform = `translateX(${cX}px)`; scr.style.opacity = cX / 300; }, { passive: true });
-    sb.addEventListener('touchend', () => { if (!isD) return; isD = false; sb.style.transition = 'transform 0.4s cubic-bezier(0.25,0.8,0.25,1)'; scr.style.transition = 'opacity 0.4s ease'; if (cX < 200) { sb.style.transform = 'translateX(0px)'; scr.style.opacity = '0'; setTimeout(() => { sb.classList.remove('open'); document.body.classList.remove('sidebar-open'); sb.style.transform = ''; sb.style.transition = ''; scr.style.opacity = ''; scr.style.transition = ''; }, 400); } else { sb.style.transform = 'translateX(300px)'; scr.style.opacity = '1'; setTimeout(() => { sb.style.transition = ''; scr.style.transition = ''; }, 400); } });
-    sb.onclick = e => e.stopPropagation();
+function bindGlobalDismissals() {
+    document.addEventListener('click', event => {
+        const sidebar = document.getElementById('sidebar');
+        if (window.innerWidth <= 850 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !document.getElementById('mobile-menu-btn')?.contains(event.target)) ui.toggleSidebar();
+        const themeMenu = document.getElementById('theme-menu');
+        if (themeMenu && themeMenu.style.display === 'flex' && !themeMenu.contains(event.target) && !document.getElementById('theme-btn')?.contains(event.target) && !document.getElementById('theme-btn-settings')?.contains(event.target)) themeMenu.style.display = 'none';
+        const modelMenu = document.getElementById('model-menu');
+        if (modelMenu?.classList.contains('active') && !modelMenu.contains(event.target) && !document.getElementById('model-toggle')?.contains(event.target)) modelMenu.classList.remove('active');
+    });
+    window.addEventListener('popstate', () => {
+        if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
+        if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
+        if (document.getElementById('sidebar')?.classList.contains('open')) { ui.toggleSidebar(); return; }
+        const confirm = document.getElementById('delete-confirm-modal');
+        if (confirm?.style.display === 'flex') confirm.style.display = 'none';
+    });
+    window.addEventListener('keydown', event => {
+        if (event.key !== 'Escape') return;
+        if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
+        if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
+        if (document.getElementById('delete-confirm-modal')?.style.display === 'flex') { document.getElementById('delete-confirm-modal').style.display = 'none'; return; }
+        if (document.getElementById('sidebar')?.classList.contains('open')) ui.toggleSidebar();
+    });
 }
 
-// --- Neural Grab (Hold G) ---
-function initNeuralGrab() {
-    window.isGDown = false;
-    function upd(on) {
-        window.isGDown = on;
-        document.querySelectorAll('.msg .txt').forEach(m => { m.setAttribute('draggable', on ? 'true' : 'false'); m.classList.toggle('grab-mode', on); });
-        document.body.classList.toggle('neural-grab-active', on);
-    }
-    document.addEventListener('keydown', e => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; if (e.key.toLowerCase() === 'g' && !window.isGDown) upd(true); });
-    document.addEventListener('keyup', e => { if (e.key.toLowerCase() === 'g') upd(false); });
-    window.addEventListener('blur', () => upd(false));
+function initImageModal() {
+    const image = document.getElementById('modal-img');
+    const container = document.getElementById('image-modal');
+    if (!image || !container) return;
+    image.onclick = event => { event.stopPropagation(); image.classList.toggle('is-zoomed'); };
+    container.onclick = event => {
+        if (event.target === container || event.target.classList.contains('lightbox-close')) {
+            image.classList.remove('is-zoomed');
+            ui.closeImageModal();
+        }
+    };
 }
 
-// --- Pull to Refresh ---
-function initPullRefresh() {
-    let tsy = 0, tdy = 0;
-    window.addEventListener('touchstart', e => { const y = e.touches[0].pageY; tsy = ((window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0) && y < 60) ? y : 999999; }, { passive: true });
-    window.addEventListener('touchmove', e => { tdy = e.touches[0].pageY - tsy; if (tdy > 0 && (window.scrollY === 0 || document.getElementById('chat-area').scrollTop === 0)) { const ind = document.getElementById('pull-indicator'); if (ind) { const p = Math.min(tdy, 180); ind.style.top = (p - 60) + 'px'; ind.style.opacity = Math.min(p / 120, 1); } } }, { passive: true });
-    window.addEventListener('touchend', () => { if (tdy > 120) location.reload(); else { const ind = document.getElementById('pull-indicator'); if (ind) { ind.style.top = '-60px'; ind.style.opacity = '0'; } } tdy = 0; });
+function installWindowBridge() {
+    window.handleAuth = handleAuth;
+    window.switchAuth = ui.switchAuth;
+    window.signOut = ui.signOut;
+    window.toggleDropdown = ui.toggleDropdown;
+    window.selModel = ui.selModel;
+    window.send = send;
+    window.startNewChat = startNewChat;
+    window.loadChat = loadChat;
+    window.showDeleteConfirm = ui.showDeleteConfirm;
+    window.closeDeleteConfirm = ui.closeDeleteConfirm;
+    window.clearImgPreview = ui.clearImgPreview;
+    window.previewImg = ui.previewImg;
+    window.toggleSidebar = ui.toggleSidebar;
+    window.triggerBotReaction = mascot.triggerBotReaction;
+    window.startEditPrompt = ui.startEditPrompt;
+    window.cancelEdit = ui.cancelEdit;
+    window.submitEdit = submitEdit;
+    window.openSettings = ui.openSettings;
+    window.closeSettings = ui.closeSettings;
+    window.handleChatKey = handleChatKey;
+    window.stopAI = stopAI;
+    window.openImageModal = ui.openImageModal;
+    window.closeImageModal = ui.closeImageModal;
+    window.toggleSet = ui.toggleSet;
+    window.filterHist = ui.filterHist;
+    window.startRename = ui.startRename;
+    window.closeNeuralContext = ui.closeNeuralContext;
+    window.handleDragStart = ui.handleDragStart;
+    window.handleDragEnd = ui.handleDragEnd;
+    window.jiggleLogo = mascot.jiggleLogo;
+    window.togglePin = togglePin;
+    window.exportChat = exportChat;
+    window.renderHist = ui.renderHist;
+    window.requestChatPersist = requestChatPersist;
+    window.deleteSelectedChat = deleteSelectedChat;
+    syncWindowState();
+    window.__helperAppBridgeReady = true;
 }
 
-// ==================== DOMContentLoaded ====================
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+    if (localStorage.getItem('helper_theme_pref') === 'system') ui.setThemeUI(event.matches ? 'dark' : 'light');
+});
+
+installWindowBridge();
+
 document.addEventListener('DOMContentLoaded', () => {
     try {
-        console.log("DEBUG: app.js orchestrator initializing...");
+        console.log('DEBUG: app.js orchestrator initializing...');
+        installWindowBridge();
         clearPendingComposerDrafts();
         initTheme();
         bindStaticEvents();
-        document.getElementById('active-model-name').innerText = 'Gemma 4';
+        const activeModel = document.getElementById('active-model-name');
+        if (activeModel) activeModel.innerText = 'Gemma 4';
 
         const savedUser = localStorage.getItem('helper_user_v2');
         if (savedUser) {
             state.set('user', JSON.parse(savedUser));
-            document.getElementById('auth-overlay').style.display = 'none';
+            const auth = document.getElementById('auth-overlay');
+            if (auth) auth.style.display = 'none';
             loadUserChats();
             if (localStorage.getItem('helper_active_modal_v2') === 'settings') ui.openSettings();
             ui.updUI();
-            if (!localStorage.getItem('helper_theme_pref')) document.getElementById('theme-modal').style.display = 'flex';
+            const themeModal = document.getElementById('theme-modal');
+            if (!localStorage.getItem('helper_theme_pref') && themeModal) themeModal.style.display = 'flex';
             ui.smartFocus('prompt');
-        } else { document.getElementById('l-email').focus(); ui.renderHist(); }
-
-        // Mouse tracking
-        mascot.bindMouseListeners();
-
-        // Prompt input
-        const promptIn = document.getElementById('prompt');
-        const sendBtn = document.getElementById('main-send-btn');
-        if (promptIn) {
-            promptIn.addEventListener('input', () => { window.autoRes(promptIn); sendBtn?.classList.toggle('pulsing', promptIn.value.trim().length > 0); });
-            promptIn.addEventListener('keydown', handleChatKey);
+        } else {
+            document.getElementById('l-email')?.focus();
+            ui.renderHist();
         }
 
-        // Persona toggle
-        const pt = document.getElementById('persona-toggle'), pi = document.querySelector('.persona-switch-item');
-        function syncP() { if (pt && pi) pi.classList.toggle('persona-active', pt.checked); }
-        if (pt) { pt.addEventListener('change', syncP); syncP(); }
+        mascot.bindMouseListeners();
+        const prompt = document.getElementById('prompt');
+        const sendBtn = document.getElementById('main-send-btn');
+        if (prompt) {
+            prompt.addEventListener('input', () => { window.autoRes(prompt); sendBtn?.classList.toggle('pulsing', prompt.value.trim().length > 0); });
+            prompt.addEventListener('keydown', handleChatKey);
+        }
+        const personaToggle = document.getElementById('persona-toggle');
+        const personaItem = document.querySelector('.persona-switch-item');
+        const syncPersona = () => { if (personaToggle && personaItem) personaItem.classList.toggle('persona-active', personaToggle.checked); };
+        if (personaToggle) { personaToggle.addEventListener('change', syncPersona); syncPersona(); }
 
-        // Click-outside handlers
-        document.addEventListener('click', e => {
-            const sb = document.getElementById('sidebar');
-            if (window.innerWidth <= 850 && sb?.classList.contains('open') && !sb.contains(e.target) && !document.getElementById('mobile-menu-btn')?.contains(e.target)) ui.toggleSidebar();
-            const tm = document.getElementById('theme-menu');
-            if (tm && tm.style.display === 'flex' && !tm.contains(e.target) && !document.getElementById('theme-btn')?.contains(e.target) && !document.getElementById('theme-btn-settings')?.contains(e.target)) tm.style.display = 'none';
-            const mm = document.getElementById('model-menu');
-            if (mm && mm.classList.contains('active') && !mm.contains(e.target) && !document.getElementById('model-toggle')?.contains(e.target)) mm.classList.remove('active');
-        });
-
-        // Image zoom
-        (function() {
-            const img = document.getElementById('modal-img'), cont = document.getElementById('image-modal');
-            if (!img || !cont) return;
-            img.onclick = e => { e.stopPropagation(); img.classList.toggle('is-zoomed'); };
-            cont.onclick = e => { if (e.target === cont || e.target.classList.contains('lightbox-close')) { img.classList.remove('is-zoomed'); ui.closeImageModal(); } };
-        })();
-
-        // Popstate
-        window.addEventListener('popstate', () => {
-            if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
-            if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
-            if (document.getElementById('sidebar')?.classList.contains('open')) { ui.toggleSidebar(); return; }
-            const c = document.getElementById('delete-confirm-modal'); if (c && c.style.display === 'flex') c.style.display = 'none';
-        });
-
-        // Escape key
-        window.addEventListener('keydown', e => {
-            if (e.key === 'Escape') {
-                if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
-                if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
-                if (document.getElementById('delete-confirm-modal')?.style.display === 'flex') { document.getElementById('delete-confirm-modal').style.display = 'none'; return; }
-                if (document.getElementById('sidebar')?.classList.contains('open')) ui.toggleSidebar();
-            }
-        });
-
+        bindGlobalDismissals();
+        initImageModal();
         mascot.initMascotDrop(retrieveContext);
         initNeuralGrab();
         initSidebarSwipe();
         initPullRefresh();
-
-        // --- Window Bridge ---
-        window.handleAuth = handleAuth;
-        window.switchAuth = ui.switchAuth;
-        window.signOut = ui.signOut;
-        window.toggleDropdown = ui.toggleDropdown;
-        window.selModel = ui.selModel;
-        window.send = send;
-        window.startNewChat = startNewChat;
-        window.loadChat = loadChat;
-        window.showDeleteConfirm = ui.showDeleteConfirm;
-        window.closeDeleteConfirm = ui.closeDeleteConfirm;
-        window.clearImgPreview = ui.clearImgPreview;
-        window.previewImg = ui.previewImg;
-        window.toggleSidebar = ui.toggleSidebar;
-        window.triggerBotReaction = mascot.triggerBotReaction;
-        window.startEditPrompt = ui.startEditPrompt;
-        window.cancelEdit = ui.cancelEdit;
-        window.submitEdit = submitEdit;
-        window.openSettings = ui.openSettings;
-        window.closeSettings = ui.closeSettings;
-        window.handleChatKey = handleChatKey;
-        window.stopAI = stopAI;
-        window.openImageModal = ui.openImageModal;
-        window.closeImageModal = ui.closeImageModal;
-        window.toggleSet = ui.toggleSet;
-        window.filterHist = ui.filterHist;
-        window.startRename = ui.startRename;
-        window.closeNeuralContext = ui.closeNeuralContext;
-        window.handleDragStart = ui.handleDragStart;
-        window.handleDragEnd = ui.handleDragEnd;
-        window.jiggleLogo = mascot.jiggleLogo;
-        window.togglePin = togglePin;
-        window.exportChat = exportChat;
-        window.renderHist = ui.renderHist;
-        window.chats = state.chats;
-        window.activeId = state.activeId;
-
-        console.log("DEBUG: app.js orchestrator ready.");
-    } catch (e) { console.error("Critical Runtime Error:", e); }
+        installWindowBridge();
+        console.log('DEBUG: app.js orchestrator ready.');
+    } catch (error) {
+        console.error('Critical Runtime Error:', error);
+    }
 });
