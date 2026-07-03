@@ -17,6 +17,10 @@
         el.addEventListener(eventName, handler);
     }
 
+    function has(name) {
+        return typeof window[name] === 'function';
+    }
+
     function call(name, ...args) {
         const fn = window[name];
         if (typeof fn === 'function') {
@@ -24,6 +28,11 @@
         }
         console.warn(`[RuntimeRecovery] ${name} is not ready yet.`);
         return undefined;
+    }
+
+    function callOr(name, fallback, ...args) {
+        if (has(name)) return call(name, ...args);
+        return fallback(...args);
     }
 
     function toggleDisplay(el, display = 'flex') {
@@ -81,15 +90,18 @@
             once(el, 'click', 'rrAuthView', () => call('switchAuth', el.dataset.authView));
         });
 
-        once($('mobile-menu-btn'), 'click', 'rrSidebar', () => call('toggleSidebar') || fallbackToggleSidebar());
-        once($('sidebar-scrim'), 'click', 'rrSidebarScrim', () => call('toggleSidebar') || fallbackToggleSidebar());
+        once($('mobile-menu-btn'), 'click', 'rrSidebar', () => callOr('toggleSidebar', fallbackToggleSidebar));
+        once($('sidebar-scrim'), 'click', 'rrSidebarScrim', () => callOr('toggleSidebar', fallbackToggleSidebar));
         once($('new-chat-btn'), 'click', 'rrNewChat', () => call('startNewChat'));
-        once($('open-settings-btn'), 'click', 'rrSettings', () => call('openSettings') || fallbackOpenSettings());
+        once($('open-settings-btn'), 'click', 'rrSettings', () => callOr('openSettings', fallbackOpenSettings));
         once($('signout-btn'), 'click', 'rrSignout', () => call('signOut'));
 
-        once($('model-toggle'), 'click', 'rrModelToggle', () => call('toggleDropdown') || fallbackToggleModelMenu());
+        once($('model-toggle'), 'click', 'rrModelToggle', () => callOr('toggleDropdown', fallbackToggleModelMenu));
         document.querySelectorAll('[data-model-id]').forEach(el => {
-            once(el, 'click', 'rrModelOpt', () => call('selModel', el.dataset.modelId, el.dataset.modelName) || fallbackSelectModel(el.dataset.modelId, el.dataset.modelName));
+            once(el, 'click', 'rrModelOpt', () => {
+                if (has('selModel')) return call('selModel', el.dataset.modelId, el.dataset.modelName);
+                return fallbackSelectModel(el.dataset.modelId, el.dataset.modelName);
+            });
         });
 
         once($('main-send-btn'), 'click', 'rrSend', () => call('send'));
@@ -104,12 +116,12 @@
         });
 
         once($('theme-btn-settings'), 'click', 'rrThemeMenu', event => {
-            if (typeof window.toggleThemeMenu === 'function') window.toggleThemeMenu(event, 'theme-menu-settings');
+            if (has('toggleThemeMenu')) window.toggleThemeMenu(event, 'theme-menu-settings');
             else toggleDisplay($('theme-menu-settings'), 'flex');
         });
         document.querySelectorAll('[data-theme-choice]').forEach(el => {
             once(el, 'click', 'rrThemeChoice', () => {
-                if (typeof window.applyThemeChoice === 'function') window.applyThemeChoice(el.dataset.themeChoice);
+                if (has('applyThemeChoice')) window.applyThemeChoice(el.dataset.themeChoice);
                 else fallbackTheme(el.dataset.themeChoice);
             });
         });
