@@ -3,7 +3,11 @@
 The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 frontend, a CrewAI-driven backend, local Ollama fallback, and ChromaDB-backed neural memory.
 
 ## Core Layers
-- `app/main.py`: FastAPI app startup, lifespan work, CORS, static files, and API wiring.
+- `app/factory.py`: FastAPI construction, lifespan work, CORS, static files, and router wiring.
+- `app/main.py`: Thin ASGI import and local run entry point.
+- `app/routes/health.py`: UI, health, and upscale-status routes.
+- `app/routes/proxy.py`: SSRF-resistant image proxy route.
+- `app/services/ngrok.py`: Optional local Ngrok lifecycle, enabled only with `ENABLE_NGROK`.
 - `app/routes/chat.py`: streaming chat transport and final result yielding.
 - `app/logic/agents.py`: intent classification, routing, direct tool execution, and agent orchestration.
 - `app/logic/tools.py`: image, email, search, and memory-facing tools.
@@ -17,4 +21,3 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - Keep `main_v3.js` archived as rollback only.
 - Use `InferenceQueue` for inference instead of raw thread offload.
 - Keep frontend state in `state.js`, DOM work in `ui.js`, and network calls in `api.js`.
-

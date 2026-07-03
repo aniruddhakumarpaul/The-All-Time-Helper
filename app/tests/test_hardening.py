@@ -744,7 +744,7 @@ class HardeningTests(unittest.TestCase):
     def test_ngrok_cors_update_uses_middleware_kwargs(self):
         from fastapi import FastAPI
         from fastapi.middleware.cors import CORSMiddleware
-        from app import main
+        from app import factory
 
         test_app = FastAPI()
         test_app.add_middleware(
@@ -755,8 +755,7 @@ class HardeningTests(unittest.TestCase):
             allow_headers=["*"],
         )
 
-        with patch.object(main, "ALLOWED_ORIGINS", ["http://localhost:9000"]):
-            added = main._append_cors_origin(test_app, "https://example.ngrok-free.dev/")
+        added = factory.append_cors_origin(test_app, "https://example.ngrok-free.dev/")
 
         self.assertEqual(added, ["https://example.ngrok-free.dev"])
         self.assertIn("https://example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
@@ -849,24 +848,25 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("Body with { braces }", result["draft"]["body"])
 
     def test_upscale_status_returns_registry_ready(self):
-        from app import main
+        from app.routes import health
 
         with patch.object(
-            main.UpscaleManager,
+            health.UpscaleManager,
             "get_status",
             return_value={"status": "ready", "url": "/static/uploads/upscaled_registry.jpg"},
         ):
-            result = asyncio.run(main.get_upscale_status("registry"))
+            result = asyncio.run(health.get_upscale_status("registry"))
 
         self.assertTrue(result["success"])
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["url"], "/static/uploads/upscaled_registry.jpg")
 
     def test_upscale_status_recovers_ready_from_disk(self):
-        from app import main
+        from app.factory import BASE_DIR
+        from app.routes import health
 
         job_id = "test_status_disk"
-        upload_dir = os.path.join(main.base_dir, "static", "uploads")
+        upload_dir = os.path.join(BASE_DIR, "static", "uploads")
         file_path = os.path.join(upload_dir, f"upscaled_{job_id}.jpg")
         os.makedirs(upload_dir, exist_ok=True)
 
@@ -874,8 +874,8 @@ class HardeningTests(unittest.TestCase):
             f.write(b"fake image bytes")
 
         try:
-            with patch.object(main.UpscaleManager, "get_status", return_value=None):
-                result = asyncio.run(main.get_upscale_status(job_id))
+            with patch.object(health.UpscaleManager, "get_status", return_value=None):
+                result = asyncio.run(health.get_upscale_status(job_id))
         finally:
             if os.path.exists(file_path):
                 os.remove(file_path)
@@ -885,15 +885,16 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(result["url"], f"/static/uploads/upscaled_{job_id}.jpg")
 
     def test_upscale_status_reports_missing_when_registry_and_disk_miss(self):
-        from app import main
+        from app.factory import BASE_DIR
+        from app.routes import health
 
         job_id = "test_status_missing"
-        file_path = os.path.join(main.base_dir, "static", "uploads", f"upscaled_{job_id}.jpg")
+        file_path = os.path.join(BASE_DIR, "static", "uploads", f"upscaled_{job_id}.jpg")
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        with patch.object(main.UpscaleManager, "get_status", return_value=None):
-            result = asyncio.run(main.get_upscale_status(job_id))
+        with patch.object(health.UpscaleManager, "get_status", return_value=None):
+            result = asyncio.run(health.get_upscale_status(job_id))
 
         self.assertFalse(result["success"])
         self.assertEqual(result["status"], "missing")
@@ -1383,13 +1384,14 @@ class HardeningTests(unittest.TestCase):
         self.assertNotIn("nologo=true", result)
 
     def test_image_proxy_returns_clear_pollinations_402_error(self):
-        from app import main
+        from app.routes import proxy
         from unittest.mock import Mock
 
         upstream = Mock()
         upstream.status_code = 402
         upstream.content = b""
         upstream.headers = {}
+        upstream.iter_content.return_value = []
 
         requested_urls = []
 
@@ -1399,7 +1401,7 @@ class HardeningTests(unittest.TestCase):
 
         async def run_test():
             with patch("requests.get", side_effect=fake_get):
-                return await main.image_proxy(
+                return await proxy.image_proxy(
                     "https://image.pollinations.ai/prompt/cat?model=turbo&nologo=true&seed=1"
                 )
 
