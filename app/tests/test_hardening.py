@@ -6,6 +6,32 @@ from unittest.mock import mock_open, patch
 
 
 class HardeningTests(unittest.TestCase):
+    def test_admin_key_validation_requires_exact_configured_secret(self):
+        from app import security
+
+        with patch.object(security, "ADMIN_KEY", "configured-secret"):
+            self.assertTrue(security.verify_admin_key("configured-secret"))
+            self.assertFalse(security.verify_admin_key("wrong-secret"))
+            self.assertFalse(security.verify_admin_key(None))
+
+    def test_local_email_execution_ignores_persistent_admin_state(self):
+        from app.logic import agents
+        from app.logic.memory import admin_auth_context
+
+        token = admin_auth_context.set(None)
+        try:
+            result = agents._execute_local(
+                {"requires_tools": True},
+                {"final_prompt": "send an email"},
+                "gemma2:2b",
+                {},
+                [],
+            )
+        finally:
+            admin_auth_context.reset(token)
+
+        self.assertIn("AUTH_REQUIRED", result)
+
     def test_inference_queue_cancel_marks_job_cancelled(self):
         from app.inference_queue import InferenceJob, InferenceQueue
         import threading

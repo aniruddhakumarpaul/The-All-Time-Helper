@@ -1756,19 +1756,9 @@ def _execute_cloud(intent, context_data, target_model, sys_config, history, stat
     # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
     prompt_scan = context_data.get("final_prompt", "").lower()
     if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
-        from app.logic.memory import admin_auth_context, user_context
-        import sqlite3
-        from app.database import DB_FILE
-        
-        auth_ok = admin_auth_context.get()
-        if not auth_ok:
-            try:
-                with sqlite3.connect(DB_FILE) as conn:
-                    row = conn.execute("SELECT admin_authorized FROM users WHERE email=?", (user_context.get(),)).fetchone()
-                    auth_ok = row and row[0]
-            except Exception:
-                logger.warning(f"[Agents] Admin auth DB check failed for cloud path")
+        from app.logic.memory import admin_auth_context
 
+        auth_ok = admin_auth_context.get()
         if not auth_ok:
             return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
     
@@ -1911,19 +1901,9 @@ def _execute_local(intent, context_data, target_model, sys_config, history, stat
     # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
     prompt_scan = context_data.get("final_prompt", "").lower()
     if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
-        from app.logic.memory import admin_auth_context, user_context
-        import sqlite3
-        from app.database import DB_FILE
-        
-        auth_ok = admin_auth_context.get()
-        if not auth_ok:
-            try:
-                with sqlite3.connect(DB_FILE) as conn:
-                    row = conn.execute("SELECT admin_authorized FROM users WHERE email=?", (user_context.get(),)).fetchone()
-                    auth_ok = row and row[0]
-            except Exception:
-                logger.warning(f"[Agents] Admin auth DB check failed for local path")
+        from app.logic.memory import admin_auth_context
 
+        auth_ok = admin_auth_context.get()
         if not auth_ok:
             return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
 
