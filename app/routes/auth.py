@@ -59,6 +59,10 @@ SENDER_PWD = os.getenv("SENDER_PWD")
 
 
 def send_otp_email(target_email, otp):
+    if os.getenv("EMAIL_MODE", "").upper() == "SIMULATE":
+        logger.info(f"[SIMULATED EMAIL] To: {target_email} | OTP: {otp}")
+        return True
+
     if not SENDER_EMAIL or not SENDER_PWD:
         logger.warning("SMTP credentials missing; OTP email was not sent.")
         return False
