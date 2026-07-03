@@ -1,5 +1,4 @@
 import os
-from concurrent.futures import ThreadPoolExecutor
 import requests
 import json
 import base64
@@ -15,6 +14,25 @@ from app.logic import tools
 from app.logger import logger, log_agent_step
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
+from app.logic.agent_model_registry import (
+    CLOUD_MODEL_CONFIG,
+    cloud_candidate_models as _cloud_candidate_models,
+    get_cloud_api_key as _get_cloud_api_key,
+    get_cloud_config as _get_cloud_config,
+    get_next_groq_key,
+    is_cloud_model as _is_cloud_model,
+    is_rate_limit_error as _is_rate_limit_error,
+)
+from app.logic.agent_hardening import harden_result
+from app.logic.agent_intent import (
+    CODE_KEYWORDS,
+    EMAIL_KEYWORDS,
+    VISUAL_KEYWORDS,
+    analyze_prompt_via_llm,
+)
+from app.logic.agent_context import ContextRuntime, assemble_context
+from app.logic.agent_cloud import CloudRuntime, execute_cloud
+from app.logic.agent_local import LocalRuntime, execute_local
 import cv2
 import numpy as np
 
@@ -23,104 +41,6 @@ load_dotenv()
 
 # Global Constants
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-
-# --- Intent Classification Keyword Constants (Single source of truth) ---
-# FIX: Extracted from _detect_intent, _execute_cloud, _execute_local, chat.py to eliminate DRY violation
-CODE_KEYWORDS = ['code', 'bug', 'logic', 'python', 'javascript', 'html', 'css', 'develop', 'compile', 'debug', 'git', 'refactor', 'function', 'class']
-VISUAL_KEYWORDS = ['draw', 'paint', 'sketch', 'scetch', 'generate', 'create', 'artwork', 'photo of', 'show me a picture of', 'real picture of', 'look like', 'image', 'shot', 'wallpaper', 'render', 'pics', 'pic', 'capture', 'acrylic', 'acrilic', 'drawing', 'drawin', 'painting', 'panting', 'illustration', 'portrait', 'potrait', 'canvas', 'sketching']
-EMAIL_KEYWORDS = ['email', 'send', 'sent', 'dispatch', 'mail', 'forward', 'admin_key_provided', 'to him', 'to her', 'to them', 'tell him', 'tell her', 'tell them', 'message him', 'message her']
-
-# API Key Rotation Pool (Thread-safe)
-GROQ_KEYS = [os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_BACKUP")]
-GROQ_KEYS = [k for k in GROQ_KEYS if k]
-_key_index = 0
-_key_lock = threading.Lock()
-
-CLOUD_MODEL_CONFIG = {
-    "agentic-pro": {
-        "provider": "groq",
-        "model": "groq/llama-3.3-70b-versatile",
-        "classifier_model": "groq/llama-3.1-8b-instant",
-        "key_envs": ("GROQ_API_KEY",),
-    },
-    "gemma4-cloud": {
-        "provider": "groq",
-        "model": "groq/llama-3.1-8b-instant",
-        "classifier_model": "groq/llama-3.1-8b-instant",
-        "key_envs": ("GROQ_API_KEY",),
-    },
-    "gemma4-openrouter": {
-        "provider": "openrouter",
-        "model": "openrouter/google/gemma-4-26b-a4b-it:free",
-        "classifier_model": "openrouter/google/gemma-4-26b-a4b-it:free",
-        "fallback_models": (
-            "openrouter/google/gemma-4-31b-it:free",
-            "openrouter/google/gemma-3-27b-it",
-            "openrouter/google/gemma-3-12b-it",
-        ),
-        "key_envs": ("OPENROUTER_API_KEY",),
-    },
-    "gemini-1.5-flash-latest": {
-        "provider": "gemini",
-        "model": "gemini/gemini-1.5-flash-latest",
-        "classifier_model": "gemini/gemini-1.5-flash-latest",
-        "key_envs": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    },
-    "gemini-1.5-pro-latest": {
-        "provider": "gemini",
-        "model": "gemini/gemini-1.5-pro-latest",
-        "classifier_model": "gemini/gemini-1.5-flash-latest",
-        "key_envs": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
-    },
-}
-
-def get_next_groq_key():
-    global _key_index
-    if not GROQ_KEYS: return None
-    with _key_lock:
-        key = GROQ_KEYS[_key_index % len(GROQ_KEYS)]
-        _key_index += 1
-    return key
-
-
-def _is_cloud_model(model_id: str) -> bool:
-    return model_id in CLOUD_MODEL_CONFIG
-
-
-def _get_cloud_config(model_id: str) -> dict:
-    if model_id not in CLOUD_MODEL_CONFIG:
-        raise ValueError(f"Unknown cloud model '{model_id}'.")
-    return CLOUD_MODEL_CONFIG[model_id]
-
-
-def _get_cloud_api_key(model_id: str, explicit_key: str = None) -> str:
-    cfg = _get_cloud_config(model_id)
-    if explicit_key:
-        return explicit_key
-    if cfg["provider"] == "groq":
-        key = get_next_groq_key()
-        if key:
-            return key
-    for env_name in cfg["key_envs"]:
-        key = os.getenv(env_name)
-        if key:
-            return key
-    env_display = " or ".join(cfg["key_envs"])
-    raise ValueError(f"{env_display} missing - required for {model_id}.")
-
-
-def _cloud_candidate_models(cfg: dict) -> list:
-    models = [cfg["model"]]
-    for model in cfg.get("fallback_models", ()):
-        if model not in models:
-            models.append(model)
-    return models
-
-
-def _is_rate_limit_error(error: Exception) -> bool:
-    message = str(error).lower()
-    return "rate_limit" in message or "rate limit" in message or "429" in message or "too many requests" in message
-
 
 POLLINATIONS_IMAGE_HOST = getattr(tools, "POLLINATIONS_IMAGE_HOST", "image.pollinations.ai")
 POLLINATIONS_IMAGE_MODEL = getattr(tools, "POLLINATIONS_IMAGE_MODEL", "flux")
@@ -1330,68 +1250,17 @@ def _detect_complexity_heuristically(user_prompt: str) -> Optional[str]:
     return None
 
 def _analyze_prompt_via_llm(user_prompt: str, target_model: str) -> dict:
-    """Uses a fast cloud or local LLM call to analyze the user's prompt for intent, tools, and complexity."""
-    system_prompt = (
-        "You are a structured prompt analyzer for an agentic helper.\n"
-        "Analyze the user's prompt and return a valid JSON object with the following keys:\n"
-        "- \"requires_tools\": boolean (true if the user wants to execute a tool like sending/drafting emails, generating/drawing/sketching images, searching the web, or writing/modifying code files; false for casual conversation, explanations, greetings, or analyzing/describing an uploaded image).\n"
-        "- \"complexity\": string, one of [\"direct\", \"single\", \"swarm\"].\n"
-        "  - \"direct\": Conversational questions, conceptual explanations, or describing uploaded images.\n"
-        "  - \"single\": Needs a single tool action (e.g. generating an image, web search, code writing/editing).\n"
-        "  - \"swarm\": Needs complex workflows (e.g. drafting/sending emails).\n"
-        "- \"category\": string, one of [\"email\", \"visual\", \"code\", \"search\", \"casual\"].\n\n"
-        "Provide ONLY the raw JSON object. Do not include markdown formatting or backticks. Example:\n"
-        "{\"requires_tools\": true, \"complexity\": \"single\", \"category\": \"visual\"}"
+    """Compatibility wrapper for structured intent classification."""
+    return analyze_prompt_via_llm(
+        user_prompt,
+        target_model,
+        is_cloud_model=_is_cloud_model,
+        get_cloud_config=_get_cloud_config,
+        get_cloud_api_key=_get_cloud_api_key,
+        ollama_url=OLLAMA_URL,
+        logger=logger,
     )
-    
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Prompt: {user_prompt}"}
-    ]
-    
-    try:
-        if _is_cloud_model(target_model):
-            import litellm
-            cfg = _get_cloud_config(target_model)
-            key = _get_cloud_api_key(target_model)
-            res = litellm.completion(
-                model=cfg["classifier_model"],
-                messages=messages,
-                api_key=key,
-                temperature=0.0,
-                max_tokens=40,
-                timeout=4.0
-            )
-            raw = res.choices[0].message.content.strip()
-        else:
-            payload = {
-                "model": target_model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "temperature": 0.0,
-                    "num_predict": 40
-                }
-            }
-            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=6.0, verify=False)
-            res.raise_for_status()
-            raw = res.json().get("message", {}).get("content", "").strip()
 
-        # Clean JSON wrappers if present
-        if raw.startswith("```"):
-            raw = re.sub(r'^```(?:json)?\s*', '', raw)
-            raw = re.sub(r'\s*```$', '', raw)
-            raw = raw.strip()
-            
-        data = json.loads(raw)
-        return {
-            "requires_tools": bool(data.get("requires_tools", False)),
-            "complexity": data.get("complexity", "direct") if data.get("complexity") in ["direct", "single", "swarm"] else "direct",
-            "category": data.get("category", "casual")
-        }
-    except Exception as e:
-        logger.warning(f"[Prompt Analyzer] Failed structured analysis: {e}")
-        return None
 
 def _detect_intent(user_prompt: str, target_model: str, history: list = None) -> dict:
     """Detects user intent using a hybrid approach: Structured LLM Analyzer + Heuristic fallback.
@@ -1482,561 +1351,104 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
 
 
 def _assemble_context(user_prompt, img_data, history, intent, user_id=None, status_callback=None):
-    """Stage 2: Merge Vision, Neural Memory (RAG), and Conversation History (Parallelized)."""
-    clean_prompt = clean_user_prompt(user_prompt)
-    
-    # 1. Vision Logic (defined as a sub-task for parallel execution)
-    def task_vision():
-        if status_callback: status_callback("👁️ Analyzing Visual Context...")
-        logger.debug("task_vision started")
-        image_reference_keywords = ['this', 'that', 'image', 'picture', 'photo', 'look', 'see', 'describe', 'analyze', 'what is', 'tell me about', 'color', 'colour', 'who', 'where', 'context']
-        is_referring_to_image = any(kw in clean_prompt.lower() for kw in image_reference_keywords)
-        
-        img_desc = "No image context available."
-        prompt_with_img = user_prompt
- 
-        if img_data:
-            imgs = _image_items(img_data)
-            
-            local_urls = []
-            for item in imgs:
-                image_base64 = _image_base64_from_item(item)
-                local_url = save_uploaded_image(image_base64) if image_base64 else None
-                if local_url:
-                    local_urls.append(local_url)
-            
-            if local_urls:
-                img_markdown = "\n".join(f"![Uploaded Image]({url})" for url in local_urls)
-                prompt_with_img = f"{img_markdown}\n{user_prompt}"
-            
-            if is_referring_to_image:
-                descs = []
-                for item in imgs:
-                    image_base64 = _image_base64_from_item(item)
-                    vision_source = _image_source_for_vision(item)
-                    if not intent["is_local"]:
-                        desc = process_image_cloud(image_base64, get_next_groq_key()) if image_base64 else None
-                        desc = desc or (process_image_local(image_base64) if image_base64 else None)
-                    else:
-                        vision_result = vision_sys.analyze_chat_images([vision_source], clean_prompt) if vision_source else None
-                        desc = vision_result["description"] if vision_result else (process_image_local(image_base64) if image_base64 else None)
-                    if desc:
-                        descs.append(desc)
-                
-                img_desc = "\n".join(f"Image {idx+1}: {d}" for idx, d in enumerate(descs)) if descs else "No image context available."
-                return f"--- YOUR VISUAL PERCEPTION ---\n{img_desc}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}", img_desc
- 
-        elif is_referring_to_image and history:
-            all_img_urls = []
-            for msg in reversed(history):
-                content = msg.get("content", msg.get("c", ""))
-                matches = re.findall(r'!\[.*?\]\((https?://.*?|/static/.*?|/api/image_proxy.*?)\)', content)
-                if matches:
-                    all_img_urls.extend(reversed(matches))
-                    if len(all_img_urls) >= 3: break 
-            
-            if all_img_urls:
-                generic_queries = ["how does the image look", "describe it", "what is this", "tell me about it", "look at this", "this", "what is that", "tell me about the image", "in the picture", "in the image"]
-                target_urls = [all_img_urls[0]] if any(q in clean_prompt.lower() for q in generic_queries) else all_img_urls
-                
-                vision_result = vision_sys.analyze_chat_images(target_urls, clean_prompt)
-                if vision_result:
-                    img_desc = vision_result["description"]
-                    return f"--- CURRENT VISUAL FOCUS ---\nImage: {vision_result['url']}\nActual Content: {img_desc}\n--- END VISUAL FOCUS ---\n\n{user_prompt}", img_desc
-        
-        return prompt_with_img, img_desc
- 
-    # 2. Memory Logic (sub-task for parallel execution)
-    def task_memory():
-        p_lower = clean_prompt.lower()
-        # Skip semantic memory search for direct/conversational questions that don't ask about the project, files, code or database
-        rag_triggers = ["architecture", "code", "function", "file", "logic", "decide", "decision", "plan", "why did", "project", "helper", "memory", "database", "implement", "design"]
-        if not intent.get("requires_tools") and not any(tg in p_lower for tg in rag_triggers):
-            logger.debug("[Memory] Skipping RAG for non-project casual query to save latency.")
-            return ""
- 
-        if status_callback: status_callback("🧠 Accessing Neural Memory...")
-        logger.debug("task_memory started")
-        mem_filter = None
-        if any(kw in clean_prompt.lower() for kw in ["decide", "decision", "architecture", "plan", "why did"]):
-            mem_filter = {"type": "insight"}
-        elif any(kw in clean_prompt.lower() for kw in ["code", "function", "file", "logic"]):
-            mem_filter = {"type": "code"}
- 
-        semantic_memories = query_memory(clean_prompt, n_results=5, filter_dict=mem_filter, threshold=0.95, user_id=user_id)
-        if semantic_memories:
-            return "\n<neural_context>\n" + "".join([f"- {m['content']}\n" for m in semantic_memories]) + "</neural_context>\n"
-        return ""
+    """Stage 2 compatibility wrapper for context assembly."""
+    runtime = ContextRuntime(
+        clean_prompt=clean_user_prompt,
+        image_items=_image_items,
+        image_base64=_image_base64_from_item,
+        image_source=_image_source_for_vision,
+        save_image=save_uploaded_image,
+        process_cloud=process_image_cloud,
+        process_local=process_image_local,
+        next_groq_key=get_next_groq_key,
+        vision_system=vision_sys,
+        query_memory=query_memory,
+        logger=logger,
+    )
+    return assemble_context(
+        user_prompt,
+        img_data,
+        history,
+        intent,
+        runtime=runtime,
+        user_id=user_id,
+        status_callback=status_callback,
+    )
 
-    # Execute Parallel Swarm
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_vision = executor.submit(task_vision)
-        future_memory = executor.submit(task_memory)
-        
-        final_prompt, image_description = future_vision.result()
-        try:
-            memory_block = future_memory.result()
-        except Exception as e:
-            logger.error(f"[Memory] Context assembly continuing without neural memory: {e}", exc_info=True)
-            memory_block = ""
-
-    # 3. History (Ultra-Compact for speed)
-    history_context = ""
-    if history:
-        history_context = "\n<history>\n"
-        # OPTIMIZATION: limit to last 5 turns if it requires tools, otherwise 15
-        limit = 5 if intent.get("requires_tools") else 15
-        current_prompt_raw = str(user_prompt or "").strip()
-        for msg in history[-limit:]:
-            r = msg.get('role', msg.get('r', ''))
-            role = "U" if r in ['user', 'u'] else "A"
-            content = msg.get('content', msg.get('c', '')).strip()
-            if current_prompt_raw and content == current_prompt_raw:
-                continue
-            
-            if msg.get('masked', False):
-                content = "[MASKED_SECRET]"
-            
-            # Truncate very long history turns to keep context window clean
-            if len(content) > 3000:
-                content = content[:3000] + "..."
-                
-            if content: history_context += f"{role}: {content}\n"
-        history_context += "</history>\n"
-
-    # 4. Entity Extraction for Pronoun Resolution
-    resolved_email = None
-    if history:
-        for msg in reversed(history[-15:]):
-            content = msg.get('content', msg.get('c', ''))
-            # Simple email regex
-            emails = re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', content)
-            if emails:
-                resolved_email = emails[-1]
-                break
-
-    return {
-        "final_prompt": final_prompt,
-        "memory_block": memory_block,
-        "history_context": history_context,
-        "image_description": image_description,
-        "resolved_email": resolved_email
-    }
 
 def _harden_result(result, sys_config, target_model="gemma4:e2b", intent=None, user_prompt: str = None):
-    """Stage 4: Post-processing and strict enforcement."""
-    if not result: return result
-    
-    # Strip prompt leaks
-    for marker in ["### System:", "STRICT RULE:", "Your personal goal is:", "Role:", "Goal:", "Backstory:"]:
-        if marker in str(result):
-            result = str(result).split(marker)[0].strip()
-
-    result = _rewrite_pollinations_markdown_images(str(result))
-
-    if (
-        intent
-        and not intent.get("requires_tools")
-        and intent.get("complexity") == "direct"
-        and _is_pasted_technical_explanation_request(user_prompt or "")
-        and _looks_like_raw_tool_call_leak(str(result))
-    ):
-        logger.warning("[Agents] Suppressed raw tool-call leak for direct pasted technical explanation request")
-        return (
-            "I could not produce a valid direct explanation because the model returned an invalid tool-call plan. "
-            "Please retry the same explanation request."
-        )
-
-    res_str = str(result).strip()
-    if "EMAIL_DRAFT_PAYLOAD:" not in res_str and "send_email_tool" in res_str:
-        payload = _email_draft_payload_from_json_result(res_str)
-        if payload:
-            logger.warning("[Agents] Converted leaked send_email_tool JSON plan into email draft payload")
-            return payload
-            
-    # Fallback email JSON detection - strictly only for local models
-    is_local = True
-    if target_model:
-        is_local = not _is_cloud_model(target_model)
-        
-    if is_local:
-        if "EMAIL_DRAFT_PAYLOAD:" not in res_str:
-            # Match either a JSON object { ... } or a JSON array [ ... ]
-            json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', res_str)
-            if json_match:
-                try:
-                    candidate = json.loads(json_match.group(1))
-                    
-                    # Recursive function to locate the email dictionary
-                    def find_email_dict(data):
-                        if isinstance(data, dict):
-                            if any(k in data for k in ["recipient", "to"]) and "subject" in data and "body" in data:
-                                return data
-                            for val in data.values():
-                                res = find_email_dict(val)
-                                if res:
-                                    return res
-                        elif isinstance(data, list):
-                            for item in data:
-                                res = find_email_dict(item)
-                                if res:
-                                    return res
-                        return None
-                    
-                    email_data = find_email_dict(candidate)
-                    if email_data:
-                        draft = {
-                            "recipient": email_data.get("recipient") or email_data.get("to"),
-                            "subject": email_data.get("subject"),
-                            "body": email_data.get("body"),
-                            "tone": email_data.get("tone", "modern"),
-                            "attachment_content": email_data.get("attachment_content"),
-                            "attachment_filename": email_data.get("attachment_filename") or "report.txt"
-                        }
-                        prefix_text = res_str.split(json_match.group(1))[0].strip()
-                        prefix_text = re.sub(r'```json\s*$', '', prefix_text).strip()
-                        prefix_text = re.sub(r'```\s*$', '', prefix_text).strip()
-                        
-                        if prefix_text:
-                            return f"{prefix_text}\n\nEMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
-                        else:
-                            return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
-                except Exception:
-                    pass
-
-                try:
-                    candidate = json.loads(json_match.group(1))
-
-                    def contains_send_email_plan(data):
-                        if isinstance(data, dict):
-                            return "send_email_tool" in data or any(contains_send_email_plan(val) for val in data.values())
-                        if isinstance(data, list):
-                            return any(contains_send_email_plan(item) for item in data)
-                        return False
-
-                    def find_image_generation(data):
-                        if isinstance(data, dict):
-                            if "image_generate_tool" in data and isinstance(data["image_generate_tool"], dict):
-                                return data["image_generate_tool"].get("description")
-                            for val in data.values():
-                                res = find_image_generation(val)
-                                if res:
-                                    return res
-                        elif isinstance(data, list):
-                            for item in data:
-                                res = find_image_generation(item)
-                                if res:
-                                    return res
-                        return None
-
-                    description = None if contains_send_email_plan(candidate) else find_image_generation(candidate)
-                    if description:
-                        return tools.image_generate_tool.func(description=description)
-                except Exception as e:
-                    logger.warning(f"[Agents] Failed to recover image tool plan from final answer: {e}")
-
-    return result
+    """Compatibility entry point for output hardening."""
+    return harden_result(
+        result,
+        target_model=target_model,
+        intent=intent,
+        user_prompt=user_prompt,
+        is_cloud_model=_is_cloud_model,
+        rewrite_pollinations_images=_rewrite_pollinations_markdown_images,
+        is_pasted_explanation=_is_pasted_technical_explanation_request,
+        looks_like_tool_leak=_looks_like_raw_tool_call_leak,
+        email_payload_from_json=_email_draft_payload_from_json_result,
+        image_generate=tools.image_generate_tool.func,
+        logger=logger,
+    )
 
 # Callbacks moved above _build_agents for proper forward referencing
 
 def _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None):
-    """Stage 3a: Dispatch to Groq/Cloud Engine."""
-    try:
-        target_key = _get_cloud_api_key(target_model)
-    except ValueError as e:
-        return f"Cloud Engine Error: {str(e)}"
-    cloud_cfg = _get_cloud_config(target_model)
-    is_groq = cloud_cfg["provider"] == "groq"
-    candidate_models = _cloud_candidate_models(cloud_cfg)
-    if status_callback:
-        active_status_callback.set(status_callback)
-    if abort_event:
-        active_abort_event.set(abort_event)
+    """Stage 3a compatibility wrapper for the cloud execution module."""
+    runtime = CloudRuntime(
+        get_api_key=_get_cloud_api_key,
+        get_config=_get_cloud_config,
+        candidate_models=_cloud_candidate_models,
+        next_groq_key=get_next_groq_key,
+        is_rate_limit_error=_is_rate_limit_error,
+        rate_limit_message=_cloud_rate_limit_message,
+        get_agent_swarm=get_agent_swarm,
+        extract_crew_result=_extract_crew_result,
+        step_callback=global_step_callback,
+        clean_prompt=clean_user_prompt,
+        status_context=active_status_callback,
+        abort_context=active_abort_event,
+        logger=logger,
+    )
+    return execute_cloud(
+        intent,
+        context_data,
+        target_model,
+        sys_config,
+        history,
+        runtime=runtime,
+        status_callback=status_callback,
+        chunk_callback=chunk_callback,
+        abort_event=abort_event,
+    )
 
-    # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
-    prompt_scan = context_data.get("final_prompt", "").lower()
-    if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
-        from app.logic.memory import admin_auth_context
-
-        auth_ok = admin_auth_context.get()
-        if not auth_ok:
-            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
-    
-    # Standard Cloud Task
-    max_attempts = 3 if is_groq else len(candidate_models)
-    for attempt in range(max_attempts):
-        if abort_event and abort_event.is_set():
-            return "Operation cancelled."
-        current_key = target_key
-        if is_groq and attempt > 0:
-            current_key = get_next_groq_key() or os.getenv("GROQ_API_KEY")
-        active_cloud_model = cloud_cfg["model"] if is_groq else candidate_models[attempt]
-        try:
-            if intent["requires_tools"]:
-                entity_hint = f"\nRESOLVED ENTITY: If the user says 'send to him/her', use this email: {context_data['resolved_email']}\n" if context_data.get('resolved_email') else ""
-                grounding = f"GROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}{entity_hint}\nSTRICT MANDATE: If the user intent involves 'send', 'search', 'draw', or 'archive', you MUST call the corresponding tool for the CURRENT request. Use web_search_text for text info, image_search_tool for real photos, and image_generate_tool for creative art. FIDELITY: If the user provided a block of technical text, you MUST pass it verbatim to the 'raw_attachment_text' parameter of the send_email_tool. However, you MUST convert any nested double quotes (\") in that text to single quotes (') or escape them strictly as \\\" to ensure valid JSON arguments. BROADCAST: When sending to multiple recipients, write the 'body' WITHOUT any salutation (no 'Hi', 'Dear'); start directly with the content. The tool handles personalization."
-                
-                if intent.get("complexity") == "swarm":
-                    # Full Hierarchical Swarm — Manager delegates to Secretary/Developer/Artist
-                    developer, secretary, artist, manager, generalist = get_agent_swarm(target_model, current_key, force_no_tools=False, sys_config=sys_config, model_override=active_cloud_model)
-                    main_task = Task(
-                        description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}', 
-                        expected_output="A final summary of the task result or a direct answer.", 
-                        agent=manager
-                    )
-                    try:
-                        return _extract_crew_result(Crew(agents=[developer, secretary, artist, manager], tasks=[main_task], step_callback=global_step_callback))
-                    except AgentFastExit as e:
-                        return e.result
-                else:
-                    # Single-Agent Fast Path — route directly to the designated specialist agent
-                    developer, secretary, artist, manager, generalist = get_agent_swarm(target_model, current_key, force_no_tools=False, sys_config=sys_config, model_override=active_cloud_model)
-                    
-                    # Determine which specialist is needed
-                    p = clean_user_prompt(context_data["final_prompt"]).lower()
-                    needs_code = any(kw in p for kw in CODE_KEYWORDS)
-                    needs_visual = any(kw in p for kw in VISUAL_KEYWORDS)
-                    needs_email = any(kw in p for kw in EMAIL_KEYWORDS)
-
-                    if needs_email:
-                        specialist = secretary
-                        specialist_name = "secretary"
-                    elif needs_code:
-                        specialist = developer
-                        specialist_name = "developer"
-                    elif needs_visual:
-                        specialist = artist
-                        specialist_name = "artist"
-                    else:
-                        specialist = generalist
-                        specialist_name = "generalist"
-
-                    logger.debug(f"Cloud Single-Agent Fast Path to specialist: {specialist_name} (complexity: {intent.get('complexity')})")
-                    
-                    fast_task = Task(
-                        description=f'Execute: "{context_data["final_prompt"]}"\n\n{grounding}',
-                        expected_output="The raw result of the tool call or a direct response.",
-                        agent=specialist
-                    )
-                    try:
-                        return _extract_crew_result(Crew(agents=[specialist], tasks=[fast_task], step_callback=global_step_callback))
-                    except AgentFastExit as e:
-                        return e.result
-            
-            # Direct Call for Speed (Grounded with larger context)
-            import litellm
-            system_prompt = (
-                "You are 'The All Time Helper', a high-capability AI assistant and professional software architect. "
-                "You are helpful, technical, and proactive. If you see context from <neural_context> or 'VISUAL CONTEXT', integrate it into your response naturally. "
-                "CRITICAL: Never claim you cannot perform actions like sending emails or searching if you are in a standard conversation; instead, provide the best possible information or acknowledge the user's intent. "
-                "Maintain a premium, sophisticated tone at all times."
-            )
-            messages = [{"role": "system", "content": system_prompt}]
-            if context_data["memory_block"]: 
-                messages.append({"role": "system", "content": f"NEURAL MEMORY (Long-term Context):\n{context_data['memory_block']}"})
-            
-            if history:
-                # INCREASED WINDOW: 30 messages
-                for msg in history[-30:]:
-                    role = "user" if str(msg.get("role")).lower() in ["user", "u", "human"] else "assistant"
-                    content = msg.get("content", "").strip()
-                    if msg.get("masked") or msg.get("masked", False):
-                        content = "[MASKED_SECRET]"
-                    elif len(content) > 3000:
-                        content = content[:3000] + "..."
-                    messages.append({"role": role, "content": content})
-            
-            messages.append({"role": "user", "content": context_data["final_prompt"]})
-            
-            litellm_model = active_cloud_model
-
-            if chunk_callback:
-                logger.debug(f"Starting Character Streaming (Cloud: {litellm_model})")
-                res = litellm.completion(model=litellm_model, messages=messages, api_key=current_key, stream=True)
-                full_response = ""
-                for chunk in res:
-                    content = chunk.choices[0].delta.content
-                    if content:
-                        full_response += content
-                        chunk_callback(content)
-                return full_response
-            else:
-                res = litellm.completion(model=litellm_model, messages=messages, api_key=current_key)
-                return res.choices[0].message.content
-        except Exception as e:
-            is_rate_limit = _is_rate_limit_error(e)
-            if abort_event and abort_event.is_set():
-                return "Operation cancelled."
-            if is_rate_limit and is_groq:
-                if target_model != "gemma4-cloud" and "llama-3.1-8b" not in str(e).lower():
-                    logger.warning("Cloud Llama 70B rate limited. Retrying with Llama 3.1 8B Cloud model...")
-                    target_model = "gemma4-cloud"
-                    cloud_cfg = _get_cloud_config(target_model)
-                    candidate_models = _cloud_candidate_models(cloud_cfg)
-                    current_key = get_next_groq_key() or os.getenv("GROQ_API_KEY")
-                    continue
-                if attempt < max_attempts - 1:
-                    logger.warning(f"Cloud Engine rate limited on attempt {attempt+1}. Retrying with key rotation in 3s...")
-                    for _ in range(30):
-                        if abort_event and abort_event.is_set():
-                            return "Operation cancelled."
-                        time.sleep(0.1)
-                    continue
-            if is_rate_limit and not is_groq:
-                if attempt < max_attempts - 1:
-                    logger.warning(
-                        f"Cloud model {active_cloud_model} rate limited. Trying fallback {candidate_models[attempt + 1]}..."
-                    )
-                    continue
-                return _cloud_rate_limit_message(target_model)
-            return f"Cloud Engine Error: {str(e)}"
 
 def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None):
-    """Stage 3b: Dispatch to Ollama/Local Engine."""
-    if status_callback:
-        active_status_callback.set(status_callback)
-    if abort_event:
-        active_abort_event.set(abort_event)
+    """Stage 3b compatibility wrapper for the local execution module."""
+    runtime = LocalRuntime(
+        get_agent_swarm=get_agent_swarm,
+        extract_crew_result=_extract_crew_result,
+        step_callback=global_step_callback,
+        clean_prompt=clean_user_prompt,
+        execute_cloud=_execute_cloud,
+        status_context=active_status_callback,
+        abort_context=active_abort_event,
+        logger=logger,
+        ollama_url=OLLAMA_URL,
+    )
+    return execute_local(
+        intent,
+        context_data,
+        target_model,
+        sys_config,
+        history,
+        runtime=runtime,
+        status_callback=status_callback,
+        chunk_callback=chunk_callback,
+        abort_event=abort_event,
+    )
 
-    # PROACTIVE SECURITY CHECK: If task involves email but no key is present, fail fast.
-    prompt_scan = context_data.get("final_prompt", "").lower()
-    if intent["requires_tools"] and any(kw in prompt_scan for kw in ["email", "mail", "send"]):
-        from app.logic.memory import admin_auth_context
-
-        auth_ok = admin_auth_context.get()
-        if not auth_ok:
-            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
-
-    try:
-        if abort_event and abort_event.is_set():
-            return "Operation cancelled."
-        if intent["requires_tools"]:
-            logger.debug(f"STARTING LOCAL TOOL EXECUTION (Model: {target_model})")
-            developer, secretary, artist, manager, generalist = get_agent_swarm(target_model, None, force_no_tools=False, sys_config=sys_config)
-            
-            # Determine which specialist is needed
-            p = clean_user_prompt(context_data["final_prompt"]).lower()
-            needs_code = any(kw in p for kw in CODE_KEYWORDS)
-            needs_visual = any(kw in p for kw in VISUAL_KEYWORDS)
-            needs_email = any(kw in p for kw in EMAIL_KEYWORDS)
-
-            if intent.get("complexity") == "swarm":
-                specialist = manager
-                specialist_name = "manager"
-            elif needs_email:
-                specialist = secretary
-                specialist_name = "secretary"
-            elif needs_code:
-                specialist = developer
-                specialist_name = "developer"
-            elif needs_visual:
-                specialist = artist
-                specialist_name = "artist"
-            else:
-                specialist = generalist
-                specialist_name = "generalist"
-
-            logger.debug(f"Local Execution path routed to: {specialist_name}")
-            
-            local_task = Task(
-                description=(
-                    f"Action: Execute the user request using the appropriate tool if needed.\n"
-                    f"Current Request: {context_data.get('final_prompt', '')}\n\n"
-                    f"Conversation History (For context/retries):\n{context_data.get('history_context', '')}\n\n"
-                    f"Grounding Memory:\n{context_data.get('memory_block', '')}\n\n"
-                    f"FIDELITY: If the user provided a block of technical text, you MUST pass it verbatim to the 'raw_attachment_text' parameter of the send_email_tool. However, you MUST convert any nested double quotes (\") in that text to single quotes (') or escape them strictly as \\\" to ensure valid JSON arguments.\n"
-                    f"BROADCAST: When sending to multiple recipients, write the 'body' WITHOUT any salutation (no 'Hi', 'Dear'); start directly with the content. The tool handles personalization.\n"
-                    f"STRICT RULE: If the user just provided an Admin Key, find the previous failed tool request in history and execute it now using the EXACT tool name 'send_email_tool'."
-                ),
-                expected_output="The output of the tool execution (e.g., SUCCESS) or a final helpful answer.",
-                agent=specialist
-            )
-            try:
-                return _extract_crew_result(Crew(agents=[specialist], tasks=[local_task], step_callback=global_step_callback))
-            except AgentFastExit as e:
-                return e.result
-
-        # Direct Local Chat
-        system_prompt = (
-            "You are 'The All Time Helper', a high-capability AI assistant. "
-            "You are technical, proactive, and elite. Integrate <neural_context> or 'VISUAL CONTEXT' if provided. "
-            "CRITICAL: Always act as a capable assistant. Do not lecture the user on privacy or limitations. Maintain a sophisticated, helpful tone."
-        )
-        messages = [{"role": "system", "content": system_prompt}]
-        if context_data["memory_block"]: messages.append({"role": "system", "content": context_data["memory_block"]})
-        # INCREASED WINDOW: 20 messages for local (to save GPU RAM while staying relevant)
-        if history:
-            # ALIGNED WINDOW: Last 10 turns
-            for msg in history[-10:]:
-                role = "user" if str(msg.get("role")).lower() in ["user", "u", "human"] else "assistant"
-                content = msg.get("content", "").strip()
-                if msg.get("masked") or msg.get("masked", False):
-                    content = "[MASKED_SECRET]"
-                elif len(content) > 3000:
-                    content = content[:3000] + "..." # Truncate for speed
-                messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": context_data["final_prompt"]})
-        
-        payload = {"model": target_model, "messages": messages, "stream": True if chunk_callback else False}
-        
-        if chunk_callback:
-            logger.debug(f"Starting Character Streaming (Model: {target_model})")
-            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, stream=True, timeout=120, verify=False)
-            res.raise_for_status()
-            full_response = ""
-            for line in res.iter_lines():
-                if abort_event and abort_event.is_set():
-                    return "Operation cancelled."
-                if line:
-                    try:
-                        chunk = json.loads(line.decode('utf-8'))
-                        if "error" in chunk:
-                            raise ValueError(f"Ollama streaming error: {chunk['error']}")
-                        content = chunk.get("message", {}).get("content", "")
-                        if content:
-                            full_response += content
-                            chunk_callback(content)
-                        if chunk.get("done"):
-                            break
-                    except json.JSONDecodeError:
-                        continue
-            return full_response
-        else:
-            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=120, verify=False)
-            res.raise_for_status()
-            res_json = res.json()
-            if "error" in res_json:
-                raise ValueError(f"Ollama error: {res_json['error']}")
-            return res_json.get("message", {}).get("content", "Error parsing response.")
-    except Exception as e:
-        err_msg = str(e)
-        if abort_event and abort_event.is_set():
-            return "Operation cancelled."
-        logger.warning(f"Local Engine Timeout/Error ({err_msg}). Attempting Cloud Fallback...")
-        
-        # Clean up the error message if it's a JSON string from Ollama
-        clean_err = err_msg
-        if "model requires more system memory" in err_msg:
-            # Extract just the message for clean display
-            match = re.search(r'"message":\s*"([^"]+)"', err_msg) or re.search(r"'message':\s*'([^']+)'", err_msg)
-            if match:
-                clean_err = match.group(1)
-        
-        warning_msg = f"⚠️ **System Alert**: Local model `{target_model}` failed to load ({clean_err}). Falling back to Cloud engine...\n\n"
-        
-        if chunk_callback:
-            chunk_callback(warning_msg)
-            
-        fallback_model = "gemma4-cloud" if target_model == "gemma4:e2b" else "agentic-pro"
-        
-        try:
-            cloud_res = _execute_cloud(intent, context_data, fallback_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
-            return f"{warning_msg}{cloud_res}"
-        except Exception as cloud_err:
-            fail_msg = f"Cloud fallback failed: {str(cloud_err)}"
-            if chunk_callback:
-                chunk_callback(fail_msg)
-            return f"{warning_msg}{fail_msg}"
 
 def _extract_image_prompt(user_prompt: str, history: list) -> str:
     """
