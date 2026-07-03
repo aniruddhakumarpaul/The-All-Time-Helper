@@ -1,143 +1,85 @@
+import ipaddress
 import os
+import socket
 import sys
-import subprocess
-import logging
-import os
-import sys
+from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 # --- BOOTSTRAP PATHS ---
-# This allows running main.py directly from any directory
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Request, BackgroundTasks
-from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.middleware.cors import CORSMiddleware
-from app.routes import auth, chat
 from app.database import init_db
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
+from app.routes import auth, chat
 
-# Ensure the parent project directory is injected into the Python path
-# This allows you to run this file directly from anywhere without breaking imports!
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:9000").split(",") if origin.strip()]
 
 
-from contextlib import asynccontextmanager
+def _is_blocked_ip(ip_text: str) -> bool:
+    ip = ipaddress.ip_address(ip_text)
+    return any([
+        ip.is_private,
+        ip.is_loopback,
+        ip.is_link_local,
+        ip.is_multicast,
+        ip.is_reserved,
+        ip.is_unspecified,
+    ])
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Run Pre-Flight Diagnostics
+
+def _host_resolves_to_blocked_address(hostname: str) -> bool:
+    host = (hostname or "").strip().strip("[]").lower().rstrip(".")
+    if not host:
+        return True
+    if host == "localhost" or host.endswith(".local"):
+        return True
+
     try:
-        from app.diagnostics import run_startup_diagnostics
-        run_startup_diagnostics()
-        
-        # Memory Optimization Hook
-        from app.logic.memory import prune_stale_memories
-        prune_stale_memories(days=30)
-    except Exception as e:
-        logger.error(f"[!] Diagnostics/Pruning Error: {e}")
-        
-    # Startup logic: Ngrok Bridge
+        return _is_blocked_ip(host)
+    except ValueError:
+        pass
+
     try:
-        from pyngrok import ngrok
-        ngrok_token = os.getenv("NGROK_TOKEN")
-        if ngrok_token:
-            ngrok.set_auth_token(ngrok_token)
-            
-            # Check for existing tunnels via pyngrok
-            tunnels = ngrok.get_tunnels()
-            public_url = None
-            
-            if not tunnels:
-                # Fallback: Check local ngrok API directly (handles cases where ngrok was started externally)
-                import requests
-                try:
-                    res = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
-                    if res.status_code == 200:
-                        data = res.json().get("tunnels", [])
-                        if data:
-                            public_url = data[0].get("public_url")
-                            logger.info(f"🌍 Detected external Ngrok tunnel: {public_url}")
-                except Exception:
-                    pass
-            else:
-                public_url = tunnels[0].public_url
-                logger.info(f"🌍 THE ALL TIME HELPER - PRO IS ONLINE via {public_url}")
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return True
 
-            if not public_url:
-                # Try to kill ghost ngrok instances quietly on Windows
-                if os.name == 'nt':
-                    subprocess.run("taskkill /F /IM ngrok.exe /T", shell=True, capture_output=True)
-                
-                try:
-                    tunnel = ngrok.connect(9000)
-                    public_url = tunnel.public_url
-                    logger.info(f"🚀 Started NEW Ngrok tunnel: {public_url}")
-                except Exception as e:
-                    logger.error(f"❌ Ngrok connect failed: {e}")
+    if not infos:
+        return True
 
-            # Ensure the public URL is in ALLOWED_ORIGINS for CORS
-            if public_url and public_url not in ALLOWED_ORIGINS:
-                ALLOWED_ORIGINS.append(public_url)
-                # Also add the base domain without protocol if needed by some middlewares
-                domain = public_url.replace("https://", "").replace("http://", "")
-                if domain not in ALLOWED_ORIGINS:
-                    ALLOWED_ORIGINS.append(domain)
-                logger.info(f"🔒 CORS origins updated to include Ngrok")
-    except Exception as e:
-        logger.error(f"Ngrok manager failure: {e}")
-    
-    yield
-    # Shutdown logic (optional)
-    if os.getenv("NGROK_TOKEN"):
+    for info in infos:
+        address = info[4][0]
         try:
-            from pyngrok import ngrok
-            ngrok.kill()
-        except:
-            pass
+            if _is_blocked_ip(address):
+                return True
+        except ValueError:
+            return True
+    return False
 
-app = FastAPI(title="The All Time Helper - Pro", lifespan=lifespan)
 
-# SECURITY FIX: Lock CORS to known origins instead of wildcard
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:9000").split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize Database
-init_db()
-
-# Ensure static and template directories exist for Mounting
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-static_dir = os.path.join(base_dir, "static")
-templates_dir = os.path.join(base_dir, "templates")
-
-if os.path.exists(static_dir):
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-if os.path.exists(templates_dir):
-    templates = Jinja2Templates(directory=templates_dir)
-
-# Include Routers
-app.include_router(auth.router)
-app.include_router(chat.router)
+def _validate_proxy_url(url: str):
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Unsupported URL scheme")
+    if _host_resolves_to_blocked_address(parsed.hostname):
+        raise ValueError("Blocked proxy target")
+    return parsed
 
 
 def _normalize_pollinations_image_url(url: str) -> str:
     """Normalize Pollinations image URLs before proxying."""
-    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
     if not url:
         return url
 
@@ -167,36 +109,123 @@ def _normalize_pollinations_image_url(url: str) -> str:
         return url
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        from app.diagnostics import run_startup_diagnostics
+        run_startup_diagnostics()
+
+        from app.logic.memory import prune_stale_memories
+        prune_stale_memories(days=30)
+    except Exception as e:
+        logger.error(f"[!] Diagnostics/Pruning Error: {e}")
+
+    try:
+        from pyngrok import ngrok
+        ngrok_token = os.getenv("NGROK_TOKEN")
+        if ngrok_token:
+            ngrok.set_auth_token(ngrok_token)
+            tunnels = ngrok.get_tunnels()
+            public_url = None
+
+            if not tunnels:
+                import requests
+                try:
+                    res = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=2)
+                    if res.status_code == 200:
+                        data = res.json().get("tunnels", [])
+                        if data:
+                            public_url = data[0].get("public_url")
+                            logger.info(f"Detected external Ngrok tunnel: {public_url}")
+                except Exception:
+                    pass
+            else:
+                public_url = tunnels[0].public_url
+                logger.info(f"THE ALL TIME HELPER - PRO is online via {public_url}")
+
+            if not public_url:
+                try:
+                    tunnel = ngrok.connect(9000)
+                    public_url = tunnel.public_url
+                    logger.info(f"Started new Ngrok tunnel: {public_url}")
+                except Exception as e:
+                    logger.error(f"Ngrok connect failed: {e}")
+
+            if public_url and public_url not in ALLOWED_ORIGINS:
+                ALLOWED_ORIGINS.append(public_url)
+                logger.info("CORS origins updated to include Ngrok")
+    except Exception as e:
+        logger.error(f"Ngrok manager failure: {e}")
+
+    yield
+
+    if os.getenv("NGROK_TOKEN"):
+        try:
+            from pyngrok import ngrok
+            ngrok.kill()
+        except Exception:
+            pass
+
+
+app = FastAPI(title="The All Time Helper - Pro", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+init_db()
+
+static_dir = os.path.join(BASE_DIR, "static")
+templates_dir = os.path.join(BASE_DIR, "templates")
+
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+if os.path.exists(templates_dir):
+    templates = Jinja2Templates(directory=templates_dir)
+
+app.include_router(auth.router)
+app.include_router(chat.router)
+
+
 @app.get("/api/image_proxy")
 async def image_proxy(url: str):
-    """Proxies image requests to bypass CORS/Referrer blocks using 'requests'."""
-    import requests
+    """Proxy image requests with SSRF-resistant target validation."""
     import anyio
-    from urllib.parse import urlparse
-    
-    # SECURITY FIX #15: Validate URL to prevent SSRF attacks
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            return Response(status_code=400)
-        # Block internal/private IPs
-        blocked_hosts = ["localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254", "metadata.google.internal"]
-        if parsed.hostname and (parsed.hostname in blocked_hosts or parsed.hostname.startswith("10.") or parsed.hostname.startswith("192.168.")):
-            return Response(status_code=403)
-    except Exception:
-        return Response(status_code=400)
-    
+    import requests
+
     try:
         normalized_url = _normalize_pollinations_image_url(url)
+        _validate_proxy_url(normalized_url)
+    except ValueError:
+        return Response(status_code=403)
 
-        def fetch():
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-            }
-            return requests.get(normalized_url, headers=headers, timeout=60.0, allow_redirects=True)
-            
-        response = await anyio.to_thread.run_sync(fetch)
+    def fetch_with_validated_redirects():
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+        current_url = normalized_url
+        for _ in range(4):
+            parsed_current = _validate_proxy_url(current_url)
+            response = requests.get(current_url, headers=headers, timeout=60.0, allow_redirects=False)
+            if response.is_redirect or response.is_permanent_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    return response
+                current_url = urljoin(urlunparse(parsed_current), location)
+                _validate_proxy_url(current_url)
+                continue
+            return response
+        raise ValueError("Too many redirects")
+
+    try:
+        response = await anyio.to_thread.run_sync(fetch_with_validated_redirects)
+        parsed = urlparse(normalized_url)
 
         if (
             parsed.hostname
@@ -210,26 +239,28 @@ async def image_proxy(url: str):
             )
 
         if response.status_code != 200:
-            print(f"DEBUG: Proxy failed for {url} with status {response.status_code}")
+            logger.debug(f"Proxy failed for {normalized_url} with status {response.status_code}")
             return Response(status_code=response.status_code)
-            
-        return Response(
-            content=response.content, 
-            media_type=response.headers.get("content-type", "image/png")
-        )
+
+        content_type = response.headers.get("content-type", "image/png")
+        if not content_type.lower().startswith("image/"):
+            return Response(status_code=415)
+
+        return Response(content=response.content, media_type=content_type)
     except Exception as e:
-        print(f"DEBUG: Proxy Exception: {e}")
+        logger.debug(f"Proxy exception: {e}")
         return Response(status_code=500)
+
 
 @app.get("/")
 async def serve_ui(request: Request):
     return templates.TemplateResponse(request, "index.html", {"request": request})
 
+
 @app.get("/status")
 async def get_status():
-    # FIX #12: Non-blocking status check using anyio
-    import requests
     import anyio
+    import requests
     try:
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         await anyio.to_thread.run_sync(lambda: requests.get(ollama_url, timeout=0.5))
@@ -237,7 +268,7 @@ async def get_status():
     except Exception:
         return {"running": False}
 
-# API: Upscale Status Polling
+
 @app.get("/api/upscale/status/{job_id}")
 async def get_upscale_status(job_id: str):
     status = UpscaleManager.get_status(job_id)
@@ -245,12 +276,14 @@ async def get_upscale_status(job_id: str):
         return {"success": False, "error": "Job not found"}
     return {"success": True, **status}
 
+
 if __name__ == "__main__":
     import uvicorn
-    logger.info("[Main] BINDING TO: 0.0.0.0:9000 (Ngrok Bridge Optimized)")
-    # FIX #14: Exclude .project_brain (ChromaDB) and scratch dirs from reload watching
+    logger.info("[Main] BINDING TO: 0.0.0.0:9000")
     uvicorn.run(
-        "app.main:app", host="0.0.0.0", port=9000, 
-        reload=True, 
-        reload_dirs=[os.path.join(base_dir, "app"), os.path.join(base_dir, "static"), os.path.join(base_dir, "templates")]
+        "app.main:app",
+        host="0.0.0.0",
+        port=9000,
+        reload=True,
+        reload_dirs=[os.path.join(BASE_DIR, "app"), os.path.join(BASE_DIR, "static"), os.path.join(BASE_DIR, "templates")],
     )
