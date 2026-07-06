@@ -4,6 +4,21 @@ import time
 from typing import List, Dict, Optional
 
 
+CHAT_TIMESTAMP_MILLISECONDS_THRESHOLD = 100_000_000_000
+CHAT_TIMESTAMP_SECONDS_FLOOR = 1_000_000_000
+
+
+def normalize_chat_timestamp(value, default=None) -> float:
+    fallback = time.time() * 1000 if default is None else float(default)
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if CHAT_TIMESTAMP_SECONDS_FLOOR <= timestamp < CHAT_TIMESTAMP_MILLISECONDS_THRESHOLD:
+        timestamp *= 1000
+    return timestamp
+
+
 class ChatRepository:
     @staticmethod
     def get_chats_for_user(db: sqlite3.Connection, user_email: str) -> List[Dict]:
@@ -19,7 +34,7 @@ class ChatRepository:
                     ms = parsed if isinstance(parsed, list) else []
                 except Exception:
                     ms = []
-            updated_at = float(r['updated_at'] or 0)
+            updated_at = normalize_chat_timestamp(r['updated_at'] or 0, default=0)
             chats_array.append({
                 "id": r['id'],
                 "title": r['title'],
@@ -45,7 +60,7 @@ class ChatRepository:
         if len(chats) > MAX_CHATS:
             raise ValueError(f"Too many chats to sync ({len(chats)}). Maximum is {MAX_CHATS}.")
 
-        now = time.time()
+        now = time.time() * 1000
         c = db.cursor()
         for chat in chats:
             if not isinstance(chat, dict):
@@ -70,11 +85,10 @@ class ChatRepository:
                     cleaned['c'] = cleaned['c'][:MAX_MESSAGE_CHARS]
                 cleaned_messages.append(cleaned)
 
-            updated_at = chat.get('updated_at') or chat.get('updatedAt') or now
-            try:
-                updated_at = float(updated_at)
-            except (TypeError, ValueError):
-                updated_at = now
+            updated_at = normalize_chat_timestamp(
+                chat.get('updated_at') or chat.get('updatedAt'),
+                default=now,
+            )
 
             messages_json = json.dumps(cleaned_messages)
             c.execute(

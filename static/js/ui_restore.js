@@ -23,7 +23,8 @@
         const id = String(item.id || '').trim();
         if (!id) return null;
         const ms = Array.isArray(item.ms) ? item.ms : Array.isArray(item.messages) ? item.messages : [];
-        const updated = Number(item.updated_at || item.updatedAt || 0) || 0;
+        let updated = Number(item.updated_at || item.updatedAt || 0) || 0;
+        if (updated >= 1_000_000_000 && updated < 100_000_000_000) updated *= 1000;
         return { ...item, id, title: String(item.title || 'New Chat'), ms, updated_at: updated, updatedAt: updated };
     }
 

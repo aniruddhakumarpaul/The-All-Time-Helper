@@ -2,6 +2,7 @@
 
 ## Chat Sync
 - Browser chat state is local-first and uses newest-wins timestamps (`updatedAt`/`updated_at`) when merging with cloud state.
+- Chat timestamps use Unix epoch milliseconds; legacy second-based values are normalized at migration, API, and browser boundaries.
 - New user messages update the per-user local cache and active-chat ID immediately, before the debounced cloud sync, so refresh cannot reopen an older conversation.
 - `/sync_chats` is merge-based; it no longer deletes unmentioned chats from a stale client snapshot.
 - Chat deletion uses explicit tombstones (`deleted_chat_ids`) so deletes are intentional and can be retried safely.

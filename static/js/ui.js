@@ -3,7 +3,7 @@
  * All DOM manipulation logic extracted from main_v3.js.
  */
 import { state } from './state.js';
-import { sortChatsNewestFirst } from './chat_sync.js';
+import { sortChatsNewestFirst } from './chat_sync.js?v=203';
 
 const LOGO_DATA = "/static/img/logo.png";
 const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";

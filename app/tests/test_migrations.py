@@ -22,7 +22,40 @@ class MigrationTests(unittest.TestCase):
                 conn.close()
 
         self.assertNotIn("admin_authorized", columns)
-        self.assertEqual(versions, [1, 2])
+        self.assertEqual(versions, [1, 2, 3])
+
+    def test_existing_chat_timestamps_are_normalized_to_milliseconds(self):
+        from app import database
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_file = str(Path(temp_dir) / "users.db")
+            conn = sqlite3.connect(db_file)
+            try:
+                conn.execute(
+                    "CREATE TABLE chats (id TEXT PRIMARY KEY, user_email TEXT, title TEXT, messages_json TEXT, updated_at REAL)"
+                )
+                conn.execute(
+                    "INSERT INTO chats VALUES (?, ?, ?, ?, ?)",
+                    ("c1", "user@example.com", "Keep content", '[{"c":"hello"}]', 1_700_000_100),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            with patch.object(database, "DB_FILE", db_file):
+                database.init_db()
+
+            conn = sqlite3.connect(db_file)
+            try:
+                row = conn.execute(
+                    "SELECT title, messages_json, updated_at FROM chats WHERE id = 'c1'"
+                ).fetchone()
+            finally:
+                conn.close()
+
+        self.assertEqual(row[0], "Keep content")
+        self.assertEqual(row[1], '[{"c":"hello"}]')
+        self.assertEqual(row[2], 1_700_000_100_000)
 
     def test_existing_persistent_admin_grants_are_cleared(self):
         from app import database

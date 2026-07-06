@@ -19,11 +19,11 @@ class FrontendChatSyncTests(unittest.TestCase):
             const { mergeChatsByRecency } = await import(process.argv[1]);
             const local = [
                 { id: 'same', title: 'local-new', ms: [{ c: 'new' }], updated_at: 20, pinned: true },
-                { id: 'local-only', title: 'local only', ms: [], updated_at: 30 }
+                { id: 'local-only', title: 'local only', ms: [], updated_at: 1700000100 }
             ];
             const remote = [
                 { id: 'same', title: 'remote-old', ms: [], updated_at: 10 },
-                { id: 'remote-only', title: 'remote only', ms: [], updated_at: 25 }
+                { id: 'remote-only', title: 'remote only', ms: [], updated_at: 1700000000000 }
             ];
             process.stdout.write(JSON.stringify(mergeChatsByRecency(local, remote)));
         """
@@ -45,9 +45,9 @@ class FrontendChatSyncTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId)", app_js)
-        self.assertIn("chat.updated_at = Date.now() / 1000;\n    requestChatPersist();", app_js)
+        self.assertIn("chat.updated_at = Date.now();\n    requestChatPersist();", app_js)
         self.assertIn("mergeChatsByRecency(state.chats, data.chats)", app_js)
-        self.assertIn('/static/js/app.js?v=202', template)
+        self.assertIn('/static/js/app.js?v=203', template)
 
 
 if __name__ == "__main__":

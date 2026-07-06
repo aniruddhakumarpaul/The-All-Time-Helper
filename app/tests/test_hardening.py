@@ -1271,6 +1271,25 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(stored["title"], "New")
         self.assertEqual(stored["ms"][0]["c"], "new")
 
+    def test_chat_repository_normalizes_mixed_timestamp_units(self):
+        from app.repository import ChatRepository
+
+        db = self._chat_db()
+        ChatRepository.sync_user_chats(
+            db,
+            "user@example.com",
+            [{"id": "c1", "title": "Old milliseconds", "ms": [], "updatedAt": 1_700_000_000_000}],
+        )
+        ChatRepository.sync_user_chats(
+            db,
+            "user@example.com",
+            [{"id": "c1", "title": "New seconds", "ms": [], "updatedAt": 1_700_000_100}],
+        )
+
+        stored = ChatRepository.get_chats_for_user(db, "user@example.com")[0]
+        self.assertEqual(stored["title"], "New seconds")
+        self.assertEqual(stored["updated_at"], 1_700_000_100_000)
+
     def test_chat_repository_legacy_array_does_not_delete_missing_chats(self):
         from app.repository import ChatRepository
 

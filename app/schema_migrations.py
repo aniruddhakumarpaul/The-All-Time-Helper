@@ -55,9 +55,20 @@ def _deprecate_persistent_admin_authorization(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE users SET admin_authorized = 0")
 
 
+def _normalize_chat_timestamps_to_milliseconds(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        UPDATE chats
+        SET updated_at = updated_at * 1000
+        WHERE updated_at >= 1000000000 AND updated_at < 100000000000
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "create core schema", _create_core_schema),
     Migration(2, "deprecate persistent admin authorization", _deprecate_persistent_admin_authorization),
+    Migration(3, "normalize chat timestamps to milliseconds", _normalize_chat_timestamps_to_milliseconds),
 )
 
 

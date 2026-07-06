@@ -1,8 +1,8 @@
 import { state } from './state.js';
 import { api } from './api.js';
-import { ui } from './ui.js?v=202';
+import { ui } from './ui.js?v=203';
 import { mascot } from './mascot.js';
-import { mergeChatsByRecency } from './chat_sync.js';
+import { mergeChatsByRecency } from './chat_sync.js?v=203';
 
 const MAX_ATTACHED_CONTEXTS = 6;
 const MAX_CONTEXT_CHARS = 6000;
@@ -265,7 +265,7 @@ async function send() {
 
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) {
-        chat = { id: state.activeId, title: userText.substring(0, 35) || 'New Chat', ms: [], updated_at: Date.now() / 1000 };
+        chat = { id: state.activeId, title: userText.substring(0, 35) || 'New Chat', ms: [], updated_at: Date.now() };
         state.chats.push(chat);
     }
     syncWindowState();
@@ -285,7 +285,7 @@ async function send() {
 
     ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked);
     chat.ms.push({ r: 'u', c: userText, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
-    chat.updated_at = Date.now() / 1000;
+    chat.updated_at = Date.now();
     requestChatPersist();
     mascot.triggerBotReaction(userText);
     ui.clearImgPreview();
@@ -336,7 +336,7 @@ async function send() {
             const errorText = `System Error ${response.status}: Backend overloaded. Try again.`;
             botText.innerText = errorText;
             chat.ms.push({ r: 'b', c: errorText, m: modelName });
-            chat.updated_at = Date.now() / 1000;
+            chat.updated_at = Date.now();
             await requestChatPersist({ immediate: true });
             return;
         }
@@ -395,7 +395,7 @@ async function send() {
             chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
         }
         chat.ms.push({ r: 'b', c: fullText, m: modelName });
-        chat.updated_at = Date.now() / 1000;
+        chat.updated_at = Date.now();
         botText.innerHTML = window.renderMarkdown(fullText);
         window.hydrateRenderedMarkdown?.(botText);
         botText.querySelectorAll('img').forEach(img => {
@@ -451,7 +451,7 @@ function togglePin(id) {
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
     chat.pinned = !chat.pinned;
-    chat.updated_at = Date.now() / 1000;
+    chat.updated_at = Date.now();
     ui.renderHist();
     requestChatPersist();
 }

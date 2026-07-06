@@ -1,6 +1,7 @@
 function chatTimestamp(chat) {
     const value = Number(chat?.updated_at ?? chat?.updatedAt ?? 0);
-    return Number.isFinite(value) ? value : 0;
+    if (!Number.isFinite(value)) return 0;
+    return value >= 1_000_000_000 && value < 100_000_000_000 ? value * 1000 : value;
 }
 
 function normalizeChat(chat) {
