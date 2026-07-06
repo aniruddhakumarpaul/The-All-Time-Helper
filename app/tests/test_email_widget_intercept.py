@@ -25,27 +25,29 @@ class EmailWidgetInterceptTests(unittest.TestCase):
         self.assertEqual(draft["attachment_content"], "base64-image")
         self.assertEqual(draft["attachment_filename"], "apple.png")
 
-    def test_intercept_uses_plain_ndjson_response_not_streaming_response(self):
+    def test_middleware_is_body_safe_pass_through(self):
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
         source = (root / "app" / "services" / "email_widget_intercept.py").read_text(encoding="utf-8")
-        self.assertIn("from fastapi.responses import Response", source)
-        self.assertIn("_email_widget_ndjson", source)
-        self.assertIn("Response(content=_email_widget_ndjson(message), media_type=\"application/x-ndjson\")", source)
+        self.assertIn("return await call_next(request)", source)
+        self.assertNotIn("await request.body()", source)
+        self.assertNotIn("request._receive", source)
         self.assertNotIn("StreamingResponse", source)
+        self.assertNotIn("anyio.sleep", source)
 
-    def test_request_body_replay_is_one_shot(self):
+    def test_email_widget_shortcut_lives_inside_chat_route(self):
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
-        source = (root / "app" / "services" / "email_widget_intercept.py").read_text(encoding="utf-8")
-        self.assertIn("sent = False", source)
-        self.assertIn("if not sent:", source)
-        self.assertIn("sent = True", source)
-        self.assertIn("await anyio.sleep(86400)", source)
+        chat = (root / "app" / "routes" / "chat.py").read_text(encoding="utf-8")
+        self.assertIn("_is_email_widget_attachment_request(prompt)", chat)
+        self.assertIn("_latest_image_email_draft(history)", chat)
+        self.assertIn("Response(content=_email_widget_ndjson(message), media_type=\"application/x-ndjson\")", chat)
+        self.assertIn("except ValueError", chat)
+        self.assertIn("User context reset skipped", chat)
 
-    def test_factory_installs_intercept_middleware(self):
+    def test_factory_still_imports_compatibility_middleware(self):
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
