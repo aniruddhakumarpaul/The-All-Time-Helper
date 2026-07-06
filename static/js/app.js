@@ -1,7 +1,8 @@
 import { state } from './state.js';
 import { api } from './api.js';
-import { ui } from './ui.js';
+import { ui } from './ui.js?v=202';
 import { mascot } from './mascot.js';
+import { mergeChatsByRecency } from './chat_sync.js';
 
 const MAX_ATTACHED_CONTEXTS = 6;
 const MAX_CONTEXT_CHARS = 6000;
@@ -17,6 +18,16 @@ function ensureDeletedChatIds() {
 function syncWindowState() {
     window.chats = state.chats;
     window.activeId = state.activeId;
+}
+
+function persistLocalChatCache() {
+    if (!state.user?.email) return;
+    try {
+        localStorage.setItem('helper_chats_v2_' + state.user.email, JSON.stringify(state.chats));
+        if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId);
+    } catch (error) {
+        console.warn('Local chat cache could not be updated:', error);
+    }
 }
 
 function addAttachedContext(text, kind = 'text') {
@@ -151,7 +162,7 @@ async function loadUserChats() {
     if (localStr) {
         try {
             const parsed = JSON.parse(localStr);
-            state.chats = Array.isArray(parsed) ? parsed : [];
+            state.chats = mergeChatsByRecency(Array.isArray(parsed) ? parsed : [], []);
             syncWindowState();
             ui.renderHist();
             const savedId = localStorage.getItem('helper_active_chat_v2');
@@ -163,14 +174,12 @@ async function loadUserChats() {
     try {
         const data = await api.fetchChats();
         if (data?.success && Array.isArray(data.chats)) {
-            if (data.chats.length > 0 || state.chats.length === 0) {
-                state.chats = data.chats;
-                syncWindowState();
-                localStorage.setItem(key, JSON.stringify(state.chats));
-                ui.renderHist();
-                const savedId = localStorage.getItem('helper_active_chat_v2');
-                if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
-            }
+            state.chats = mergeChatsByRecency(state.chats, data.chats);
+            syncWindowState();
+            persistLocalChatCache();
+            ui.renderHist();
+            const savedId = localStorage.getItem('helper_active_chat_v2');
+            if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
         }
     } catch (error) {
         console.error('Cloud fetch failed:', error);
@@ -181,7 +190,7 @@ async function saveUserChats() {
     if (!state.user?.email) return;
     const deletedIds = ensureDeletedChatIds();
     const payload = { chats: state.chats, deleted_chat_ids: deletedIds.slice() };
-    localStorage.setItem('helper_chats_v2_' + state.user.email, JSON.stringify(state.chats));
+    persistLocalChatCache();
     const result = await api.syncChats(payload);
     if (!result || result.success !== false) deletedIds.length = 0;
     syncWindowState();
@@ -190,6 +199,7 @@ async function saveUserChats() {
 
 function requestChatPersist({ immediate = false } = {}) {
     if (syncTimer) clearTimeout(syncTimer);
+    persistLocalChatCache();
     if (immediate) return saveUserChats();
     syncTimer = setTimeout(() => { saveUserChats().catch(error => console.warn('Chat sync failed:', error)); }, CHAT_SYNC_DEBOUNCE_MS);
     return Promise.resolve();
@@ -276,6 +286,7 @@ async function send() {
     ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked);
     chat.ms.push({ r: 'u', c: userText, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
     chat.updated_at = Date.now() / 1000;
+    requestChatPersist();
     mascot.triggerBotReaction(userText);
     ui.clearImgPreview();
     promptEl.value = '';

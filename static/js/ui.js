@@ -3,6 +3,7 @@
  * All DOM manipulation logic extracted from main_v3.js.
  */
 import { state } from './state.js';
+import { sortChatsNewestFirst } from './chat_sync.js';
 
 const LOGO_DATA = "/static/img/logo.png";
 const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";
@@ -198,7 +199,7 @@ function renderHist() {
     if (state.isRenaming) return;
     const list = document.getElementById('history-list'); if (!list) return;
     list.textContent = '';
-    const sorted = state.chats.slice().reverse().sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+    const sorted = sortChatsNewestFirst(state.chats);
     sorted.forEach(c => {
         const title = (c.title || 'New Chat').toLowerCase();
         if (state.currentSearch && !title.includes(state.currentSearch.toLowerCase())) return;
