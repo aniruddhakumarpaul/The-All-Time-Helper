@@ -142,6 +142,7 @@ function loadChat(id) {
     if (welcome) welcome.style.display = 'none';
     ui.clearImgPreview();
     chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked));
+    window.initUpscaleImagePolling?.(chatArea);
     ui.renderHist();
     const sidebar = document.getElementById('sidebar');
     if (window.innerWidth <= 850 && sidebar?.classList.contains('open')) ui.toggleSidebar();

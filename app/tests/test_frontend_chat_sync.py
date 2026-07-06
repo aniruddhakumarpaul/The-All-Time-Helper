@@ -47,7 +47,7 @@ class FrontendChatSyncTests(unittest.TestCase):
         self.assertIn("if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId)", app_js)
         self.assertIn("chat.updated_at = Date.now();\n    requestChatPersist();", app_js)
         self.assertIn("mergeChatsByRecency(state.chats, data.chats)", app_js)
-        self.assertIn('/static/js/app.js?v=203', template)
+        self.assertIn('/static/js/app.js?v=204', template)
 
 
 if __name__ == "__main__":

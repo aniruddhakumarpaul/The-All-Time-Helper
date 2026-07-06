@@ -9,6 +9,7 @@ Generated images follow a two-stage path:
 - Pollinations-generated markdown is rendered through the local upscale polling flow.
 - The browser should not hammer `/api/image_proxy` for generated images.
 - Once the upscale job is `ready`, the visible card should switch to the local static file.
+- Rehydrated chats must re-attach the upscale poller after render so refreshed pages can promote hidden Pollinations cards to the local file.
 - Saved chat content should store the local `/static/uploads/upscaled_*.jpg` URL after success.
 
 ## Email Attachments
