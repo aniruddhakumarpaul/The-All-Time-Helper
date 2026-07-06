@@ -20,15 +20,18 @@ function paletteActions() {
 
 function paletteModels() {
     return [
-        { t: 'Model: Antigravity Flash', i: '⚡', id: 'gemini-1.5-flash-latest', name: 'Antigravity Flash (Cloud)' },
-        { t: 'Model: Antigravity Pro', i: '💎', id: 'gemini-1.5-pro-latest', name: 'Antigravity Pro (Cloud)' },
-        { t: 'Model: Agentic Swarm', i: '🧠', id: 'agentic-pro', name: 'Agentic Swarm (Supervisor)' },
-        { t: 'Model: Gemma 4', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
-        { t: 'Model: Gemma 2', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
-        { t: 'Model: Mistral', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
-        { t: 'Model: Llama Sensitive', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
-        { t: 'Model: Phi 3', i: 'φ', id: 'phi3', name: 'Phi 3' },
-        { t: 'Model: Moondream Vision', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
+        { t: 'Model: GLM 5.2 Agentic', i: '🧠', id: 'agentic-pro', name: 'GLM 5.2 Agentic (OpenRouter)' },
+        { t: 'Model: OpenRouter Auto', i: '🧭', id: 'openrouter-auto', name: 'OpenRouter Auto' },
+        { t: 'Model: Claude Sonnet 5', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 (OpenRouter)' },
+        { t: 'Model: Kimi K2.7 Code', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code (OpenRouter)' },
+        { t: 'Model: Laguna XS Code', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code (OpenRouter)' },
+        { t: 'Model: Nemotron Free', i: '🆓', id: 'openrouter-nemotron-free', name: 'Nemotron 3 Ultra Free (OpenRouter)' },
+        { t: 'Model: Gemma 4 Local', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
+        { t: 'Model: Gemma 2 Local', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
+        { t: 'Model: Mistral Local', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
+        { t: 'Model: Llama Sensitive Local', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
+        { t: 'Model: Phi 3 Local', i: 'φ', id: 'phi3', name: 'Phi 3' },
+        { t: 'Model: Moondream Vision Local', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
     ].map(model => ({
         ...model,
         a: () => window.selModel?.(model.id, model.name),
@@ -45,6 +48,41 @@ function paletteChats(query) {
             i: iconSvg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>'),
             a: () => window.loadChat?.(chat.id),
         }));
+}
+
+function installModelMenuFromPalette() {
+    const menu = document.getElementById('model-menu');
+    if (!menu || menu.dataset.paletteModelMenu === 'true') return;
+    menu.dataset.paletteModelMenu = 'true';
+    const models = paletteModels();
+    menu.textContent = '';
+    const cloudHeader = document.createElement('div');
+    cloudHeader.className = 'dropdown-header';
+    cloudHeader.textContent = 'Cloud via OpenRouter';
+    menu.appendChild(cloudHeader);
+    models.slice(0, 6).forEach(model => {
+        const option = document.createElement('div');
+        option.className = 'model-opt';
+        option.dataset.modelId = model.id;
+        option.dataset.modelName = model.name;
+        option.textContent = model.t.replace('Model: ', '');
+        option.addEventListener('click', model.a);
+        menu.appendChild(option);
+    });
+    const localHeader = document.createElement('div');
+    localHeader.className = 'dropdown-header';
+    localHeader.style.borderTop = '1px solid var(--glass-border)';
+    localHeader.textContent = 'Local (Private)';
+    menu.appendChild(localHeader);
+    models.slice(6).forEach(model => {
+        const option = document.createElement('div');
+        option.className = 'model-opt';
+        option.dataset.modelId = model.id;
+        option.dataset.modelName = model.name;
+        option.textContent = model.t.replace('Model: ', '').replace(' Local', '');
+        option.addEventListener('click', model.a);
+        menu.appendChild(option);
+    });
 }
 
 window.addEventListener('keydown', event => {
@@ -120,6 +158,8 @@ function selectPal() {
     closePalette();
 }
 
+document.addEventListener('DOMContentLoaded', installModelMenuFromPalette);
 window.openPalette = openPalette;
 window.closePalette = closePalette;
 window.updPal = updPal;
+window.installModelMenuFromPalette = installModelMenuFromPalette;
