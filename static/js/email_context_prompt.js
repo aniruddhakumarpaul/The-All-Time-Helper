@@ -2,6 +2,7 @@ import { state } from './state.js';
 
 const DRAFT_MIME = window.__EMAIL_DRAFT_MIME || 'application/x-helper-email-draft';
 const CONTEXT_MARKER = 'EMAIL_DRAFT_CONTEXT:';
+let lastSavedSnapshot = '';
 
 function normalizeDraft(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -57,8 +58,11 @@ function renderTray() {
     const drafts = (state.attachedContexts || []).filter(ctx => ctx.kind === 'email_draft');
     tray.textContent = '';
     tray.style.display = drafts.length ? 'flex' : 'none';
-    drafts.forEach((ctx, index) => {
-        const draft = ctx.draft || normalizeDraft(JSON.parse(ctx.text.replace(CONTEXT_MARKER, '') || '{}'));
+    drafts.forEach(ctx => {
+        let draft = ctx.draft;
+        if (!draft) {
+            try { draft = normalizeDraft(JSON.parse(ctx.text.replace(CONTEXT_MARKER, '') || '{}')); } catch (_) { draft = null; }
+        }
         const chip = document.createElement('div');
         chip.className = 'prompt-context-chip email-draft-context-chip';
         chip.style.cssText = 'display:flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--glass-border);background:rgba(255,255,255,.07);border-radius:999px;padding:7px 10px;color:var(--text-main);font-size:.78rem;';
@@ -114,14 +118,37 @@ function installPromptDrop() {
     }, true);
 }
 
+function saveLocalChatCache() {
+    if (!state.user?.email || !Array.isArray(state.chats)) return;
+    if (!state.chats.length) return;
+    let snapshot = '';
+    try { snapshot = JSON.stringify(state.chats); } catch (_) { return; }
+    if (!snapshot || snapshot === lastSavedSnapshot) return;
+    lastSavedSnapshot = snapshot;
+    localStorage.setItem('helper_chats_v2_' + state.user.email, snapshot);
+    if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId);
+}
+
+function installPromptWhitespaceStyle() {
+    if (document.getElementById('prompt-whitespace-preserve-style')) return;
+    const style = document.createElement('style');
+    style.id = 'prompt-whitespace-preserve-style';
+    style.textContent = '.u-msg .txt [id^="msg-text-"]{white-space:pre-wrap}.email-draft-drop-active{outline:1px solid var(--accent-blue);outline-offset:3px}';
+    document.head.appendChild(style);
+}
+
 function init() {
     ensureTray();
     installPromptDrop();
+    installPromptWhitespaceStyle();
     renderTray();
     setInterval(() => {
         installPromptDrop();
+        saveLocalChatCache();
         if (!(state.attachedContexts || []).some(ctx => ctx.kind === 'email_draft')) renderTray();
-    }, 1500);
+    }, 1000);
+    window.addEventListener('beforeunload', saveLocalChatCache);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveLocalChatCache(); });
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
@@ -129,3 +156,4 @@ else init();
 
 window.attachEmailDraftToPrompt = attachEmailDraftToPrompt;
 window.renderEmailDraftPromptTray = renderTray;
+window.__helperSaveLocalChatCache = saveLocalChatCache;
