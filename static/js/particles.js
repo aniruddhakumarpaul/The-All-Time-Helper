@@ -2,7 +2,7 @@
  * particles.js
  * Custom interactive particle system for The All Time Helper - Pro - 3D/HD Upgrade
  */
-import('/static/js/ui_restore.js?v=2').catch(() => {});
+import('/static/js/ui_restore.js?v=3').catch(() => {});
 import('/static/js/image_retry_guard.js?v=1').catch(() => {});
 import('/static/js/latest_view_guard.js?v=1').catch(() => {});
 
