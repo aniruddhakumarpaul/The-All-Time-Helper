@@ -75,9 +75,22 @@ class AppState {
 // Singleton instance
 const state = new AppState();
 
+function loadEmailDraftRepairLayer() {
+    if (document.querySelector('script[data-helper-extension="email-draft-repair"]')) return;
+    const script = document.createElement('script');
+    script.src = '/static/js/email_draft_repair.js?v=1';
+    script.defer = true;
+    script.dataset.helperExtension = 'email-draft-repair';
+    document.body.appendChild(script);
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadEmailDraftRepairLayer);
+else loadEmailDraftRepairLayer();
+
 // Expose to window for legacy inline handlers
 window.botState = state.botState;
 window.chats = state.chats;
 window.activeId = state.activeId;
+window.__helperState = state;
 
 export { state, AppState };
