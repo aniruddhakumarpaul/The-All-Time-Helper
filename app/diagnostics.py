@@ -6,6 +6,7 @@ import requests
 from dotenv import load_dotenv
 
 from app.logger import logger
+from app.logic.cloud_token_budget import cloud_output_token_budget
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -75,6 +76,7 @@ def run_startup_diagnostics():
     openrouter_name, openrouter_key = _first_real_env(OPENROUTER_KEY_ENVS)
     if openrouter_key:
         print_status("Environment (OpenRouter)", "OK", f"{openrouter_name} loaded (...{openrouter_key[-4:] if len(openrouter_key)>4 else '***'})")
+        print_status("Cloud Token Budget", "OK", f"max_tokens capped at {cloud_output_token_budget()} per OpenRouter request")
     else:
         print_status("Environment (OpenRouter)", "WARN", "Missing OpenRouter key. Cloud models will be unavailable.")
 
