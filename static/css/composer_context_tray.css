@@ -1,21 +1,26 @@
 /* composer_context_tray.css
  * Prompt-target context chips for dragged chat text, images, and widgets.
+ * The tray is intentionally in normal composer flow above the prompt pill.
  */
 .pill-bar-container {
     position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
 }
 
 #composer-context-tray {
-    position: absolute;
-    left: 10px;
-    right: 10px;
-    bottom: calc(100% + 10px);
+    position: static;
+    width: 100%;
     z-index: 1003;
     display: none;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
     pointer-events: auto;
+    box-sizing: border-box;
+    order: -2;
 }
 
 #composer-context-tray.has-context,
@@ -147,9 +152,7 @@ body.composer-context-dragging .pill-bar {
 
 @media (max-width: 850px) {
     #composer-context-tray {
-        left: 6px;
-        right: 6px;
-        bottom: calc(100% + 8px);
+        width: 100%;
     }
 
     .composer-context-chip {
