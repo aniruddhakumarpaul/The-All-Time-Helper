@@ -9,7 +9,7 @@ import uuid
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
@@ -21,6 +21,12 @@ from app.logic.memory import admin_auth_context, query_memory, user_context
 from app.logic.neural_explainer import explain_neural_context
 from app.repository import ChatRepository
 from app.security import get_current_user, verify_admin_key
+from app.services.email_widget_intercept import (
+    _email_widget_message,
+    _email_widget_ndjson,
+    _is_email_widget_attachment_request,
+    _latest_image_email_draft,
+)
 
 router = APIRouter()
 
@@ -168,6 +174,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     history = req.history
     sys_config = req.sys
 
+    if not req.isMasked and _is_email_widget_attachment_request(prompt):
+        try:
+            draft = _latest_image_email_draft(history)
+            message = _email_widget_message(draft)
+            logger.info("[EmailWidget] Routed latest image attachment request inside chat endpoint.")
+            return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
+        except Exception as exc:
+            logger.warning(f"[EmailWidget] Route shortcut failed, continuing normal chat flow: {exc}")
+
     admin_key_value = None
     if req.isMasked:
         candidate_key = req.prompt.strip()
@@ -206,8 +221,9 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
         async def agent_stream():
             token = user_context.set(current_user)
+            admin_token = None
             if admin_key_value:
-                admin_auth_context.set(admin_key_value)
+                admin_token = admin_auth_context.set(admin_key_value)
             listener_task = asyncio.create_task(listen_for_disconnect())
             try:
                 yield json.dumps({"job_id": job_id}).encode() + b'\n'
@@ -286,13 +302,29 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
 
                 yield json.dumps({"done": True}).encode() + b'\n'
+            except asyncio.CancelledError:
+                abort_event.set()
+                inference_queue.cancel(job_id, current_user)
+                raise
+            except GeneratorExit:
+                abort_event.set()
+                inference_queue.cancel(job_id, current_user)
+                raise
             except Exception as exc:
                 logger.error(f"Agent Error: {str(exc)}")
                 yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(exc)}"}, "done": True}).encode() + b'\n'
             finally:
                 abort_event.set()
                 listener_task.cancel()
-                user_context.reset(token)
+                if admin_token is not None:
+                    try:
+                        admin_auth_context.reset(admin_token)
+                    except ValueError:
+                        logger.debug("[Chat] Admin context reset skipped after stream context switch.")
+                try:
+                    user_context.reset(token)
+                except ValueError:
+                    logger.debug("[Chat] User context reset skipped after stream context switch.")
 
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as exc:
