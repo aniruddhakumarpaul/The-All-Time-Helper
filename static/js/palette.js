@@ -20,12 +20,14 @@ function paletteActions() {
 
 function paletteModels() {
     return [
-        { t: 'Model: GLM 5.2 Agentic', i: '🧠', id: 'agentic-pro', name: 'GLM 5.2 Agentic (OpenRouter)' },
+        { t: 'Model: Free Agentic Workflow', i: '🆓', id: 'agentic-pro', name: 'Free Agentic Workflow (OpenRouter)' },
+        { t: 'Model: Laguna XS Code Free', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code Free (OpenRouter)' },
+        { t: 'Model: North Mini Code Free', i: '⌨️', id: 'openrouter-free-code', name: 'North Mini Code Free (OpenRouter)' },
+        { t: 'Model: Nemotron Nano Free', i: '🧠', id: 'openrouter-nemotron-free', name: 'Nemotron Nano Free (OpenRouter)' },
         { t: 'Model: OpenRouter Auto', i: '🧭', id: 'openrouter-auto', name: 'OpenRouter Auto' },
-        { t: 'Model: Claude Sonnet 5', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 (OpenRouter)' },
-        { t: 'Model: Kimi K2.7 Code', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code (OpenRouter)' },
-        { t: 'Model: Laguna XS Code', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code (OpenRouter)' },
-        { t: 'Model: Nemotron Free', i: '🆓', id: 'openrouter-nemotron-free', name: 'Nemotron 3 Ultra Free (OpenRouter)' },
+        { t: 'Model: GLM 5.2 Paid Agentic', i: '💎', id: 'openrouter-glm-agentic', name: 'GLM 5.2 Paid Agentic (OpenRouter)' },
+        { t: 'Model: Claude Sonnet 5 Paid', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 Paid (OpenRouter)' },
+        { t: 'Model: Kimi K2.7 Code Paid', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code Paid (OpenRouter)' },
         { t: 'Model: Gemma 4 Local', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
         { t: 'Model: Gemma 2 Local', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
         { t: 'Model: Mistral Local', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
@@ -60,7 +62,7 @@ function installModelMenuFromPalette() {
     cloudHeader.className = 'dropdown-header';
     cloudHeader.textContent = 'Cloud via OpenRouter';
     menu.appendChild(cloudHeader);
-    models.slice(0, 6).forEach(model => {
+    models.slice(0, 8).forEach(model => {
         const option = document.createElement('div');
         option.className = 'model-opt';
         option.dataset.modelId = model.id;
@@ -74,7 +76,7 @@ function installModelMenuFromPalette() {
     localHeader.style.borderTop = '1px solid var(--glass-border)';
     localHeader.textContent = 'Local (Private)';
     menu.appendChild(localHeader);
-    models.slice(6).forEach(model => {
+    models.slice(8).forEach(model => {
         const option = document.createElement('div');
         option.className = 'model-opt';
         option.dataset.modelId = model.id;
