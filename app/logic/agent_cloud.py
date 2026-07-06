@@ -1,13 +1,14 @@
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from crewai import Crew, Task
 
+from app.logic import tools
 from app.logic.agent_intent import specialist_for_prompt
 from app.logic.exceptions import AgentFastExit
-from app.logic.memory import admin_auth_context
 
 
 @dataclass(frozen=True)
@@ -30,13 +31,12 @@ class CloudRuntime:
 def _conversation_messages(context_data: dict, history: list) -> list[dict]:
     system_prompt = (
         "You are 'The All Time Helper', a high-capability AI assistant and professional software architect. "
-        "You are helpful, technical, and proactive. Integrate supplied neural or visual context naturally. "
-        "Never claim you cannot perform actions during standard conversation; provide the best available information. "
-        "Maintain a premium, sophisticated tone."
+        "You are helpful, technical, and proactive. Integrate supplied context naturally. "
+        "Provide the best available answer. Maintain a premium, sophisticated tone."
     )
     messages = [{"role": "system", "content": system_prompt}]
     if context_data.get("memory_block"):
-        messages.append({"role": "system", "content": f"NEURAL MEMORY (Long-term Context):\n{context_data['memory_block']}"})
+        messages.append({"role": "system", "content": f"NEURAL MEMORY:\n{context_data['memory_block']}"})
     for message in (history or [])[-30:]:
         role = "user" if str(message.get("role")).lower() in {"user", "u", "human"} else "assistant"
         content = str(message.get("content", "")).strip()
@@ -47,6 +47,26 @@ def _conversation_messages(context_data: dict, history: list) -> list[dict]:
         messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": context_data["final_prompt"]})
     return messages
+
+
+def _is_direct_image_generation(prompt: str) -> bool:
+    text = str(prompt or "").lower().strip()
+    if not text:
+        return False
+    if any(marker in text for marker in ("search image", "search photo", "find image", "find photo", "real picture", "real photo")):
+        return False
+    if any(term in text for term in ("draw", "paint", "sketch", "artwork", "painting", "drawing", "portrait", "wallpaper")):
+        return True
+    return bool(re.search(r"\b(generate|create|make|render)\s+(?:[a-z0-9]+\s+){0,5}(image|picture|pic|photo|artwork|scene|illustration|apple|car|dog|cat)\b", text))
+
+
+def _image_description(prompt: str) -> str:
+    clean = str(prompt or "").strip()
+    clean = re.sub(r"(?i)^\s*(please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+)?", "", clean)
+    clean = re.sub(r"(?i)^\s*(generate|create|make|draw|paint|sketch|render)\s+(me\s+)?(an?\s+)?(image|picture|pic|photo|artwork|illustration)\s*(of\s+)?", "", clean)
+    clean = re.sub(r"(?i)^\s*(generate|create|make|draw|paint|sketch|render)\s+(me\s+)?", "", clean)
+    clean = re.sub(r"[?.!]+$", "", clean).strip()
+    return clean or prompt or "a polished creative image"
 
 
 def execute_cloud(
@@ -61,6 +81,23 @@ def execute_cloud(
     chunk_callback=None,
     abort_event=None,
 ):
+    prompt_text = context_data.get("final_prompt", "")
+    if intent.get("requires_tools") and _is_direct_image_generation(prompt_text):
+        if abort_event and abort_event.is_set():
+            return "Operation cancelled."
+        if status_callback:
+            status_callback("🎨 Generating creative visual...")
+        description = _image_description(prompt_text)
+        runtime.logger.info(f"[Cloud Direct Tool] image_generate_tool: '{description}'")
+        try:
+            result = tools.image_generate_tool.func(description=description)
+            if chunk_callback:
+                chunk_callback(result)
+            return result
+        except Exception as exc:
+            runtime.logger.error(f"[Cloud Direct Tool] image_generate_tool failed: {exc}", exc_info=True)
+            return f"Error generating image: {exc}"
+
     try:
         target_key = runtime.get_api_key(target_model)
     except ValueError as exc:
@@ -73,11 +110,6 @@ def execute_cloud(
     if abort_event:
         runtime.abort_context.set(abort_event)
 
-    prompt_scan = context_data.get("final_prompt", "").lower()
-    if intent["requires_tools"] and any(keyword in prompt_scan for keyword in ("email", "mail", "send")):
-        if not admin_auth_context.get():
-            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
-
     max_attempts = 3 if is_groq else len(candidate_models)
     for attempt in range(max_attempts):
         if abort_event and abort_event.is_set():
@@ -88,40 +120,21 @@ def execute_cloud(
         active_model = cloud_cfg["model"] if is_groq else candidate_models[attempt]
         try:
             if intent["requires_tools"]:
-                entity_hint = (
-                    f"\nRESOLVED ENTITY: If the user says 'send to him/her', use this email: {context_data['resolved_email']}\n"
-                    if context_data.get("resolved_email") else ""
-                )
+                entity_hint = f"\nRESOLVED ENTITY: {context_data['resolved_email']}\n" if context_data.get("resolved_email") else ""
                 grounding = (
                     f"GROUNDING CONTEXT:\n{context_data['memory_block']}\n{context_data['history_context']}{entity_hint}\n"
-                    "Use the corresponding tool for current send, search, draw, or archive requests. Preserve supplied technical text."
+                    "Use the corresponding tool when needed. Preserve supplied technical text."
                 )
-                agents = runtime.get_agent_swarm(
-                    target_model, current_key, force_no_tools=False, sys_config=sys_config, model_override=active_model
-                )
+                agents = runtime.get_agent_swarm(target_model, current_key, force_no_tools=False, sys_config=sys_config, model_override=active_model)
                 developer, secretary, artist, manager, generalist = agents
                 if intent.get("complexity") == "swarm":
-                    task = Task(
-                        description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}',
-                        expected_output="A final summary of the task result or a direct answer.",
-                        agent=manager,
-                    )
+                    task = Task(description=f'Respond to: "{context_data["final_prompt"]}"\n\n{grounding}', expected_output="A final summary or direct answer.", agent=manager)
                     selected = [developer, secretary, artist, manager]
                 else:
                     specialist_name = specialist_for_prompt(runtime.clean_prompt(context_data["final_prompt"]))
-                    specialist = {
-                        "developer": developer,
-                        "secretary": secretary,
-                        "artist": artist,
-                        "manager": manager,
-                        "generalist": generalist,
-                    }[specialist_name]
+                    specialist = {"developer": developer, "secretary": secretary, "artist": artist, "manager": manager, "generalist": generalist}[specialist_name]
                     runtime.logger.debug(f"Cloud Single-Agent Fast Path to specialist: {specialist_name}")
-                    task = Task(
-                        description=f'Execute: "{context_data["final_prompt"]}"\n\n{grounding}',
-                        expected_output="The raw result of the tool call or a direct response.",
-                        agent=specialist,
-                    )
+                    task = Task(description=f'Execute: "{context_data["final_prompt"]}"\n\n{grounding}', expected_output="The raw tool result or a direct response.", agent=specialist)
                     selected = [specialist]
                 try:
                     crew = Crew(agents=selected, tasks=[task], step_callback=runtime.step_callback)
@@ -144,27 +157,19 @@ def execute_cloud(
             response = litellm.completion(model=active_model, messages=messages, api_key=current_key)
             return response.choices[0].message.content
         except Exception as exc:
-            rate_limited = runtime.is_rate_limit_error(exc)
+            retryable = runtime.is_rate_limit_error(exc)
             if abort_event and abort_event.is_set():
                 return "Operation cancelled."
-            if rate_limited and is_groq:
-                if target_model != "gemma4-cloud" and "llama-3.1-8b" not in str(exc).lower():
-                    runtime.logger.warning("Cloud Llama 70B rate limited. Retrying with Llama 3.1 8B Cloud model...")
-                    target_model = "gemma4-cloud"
-                    cloud_cfg = runtime.get_config(target_model)
-                    candidate_models = runtime.candidate_models(cloud_cfg)
-                    continue
+            if retryable and is_groq:
                 if attempt < max_attempts - 1:
                     for _ in range(30):
                         if abort_event and abort_event.is_set():
                             return "Operation cancelled."
                         time.sleep(0.1)
                     continue
-            if rate_limited and not is_groq:
+            if retryable and not is_groq:
                 if attempt < max_attempts - 1:
-                    runtime.logger.warning(
-                        f"Cloud model {active_model} rate limited. Trying fallback {candidate_models[attempt + 1]}..."
-                    )
+                    runtime.logger.warning(f"Cloud model {active_model} unavailable. Trying fallback {candidate_models[attempt + 1]}...")
                     continue
                 return runtime.rate_limit_message(target_model)
             return f"Cloud Engine Error: {exc}"
