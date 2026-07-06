@@ -1,5 +1,16 @@
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
+
+OPENROUTER_KEY_ENVS = (
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_KEY",
+    "OPENROUTER_TOKEN",
+)
 
 CLOUD_MODEL_CONFIG = {
     "agentic-pro": {
@@ -11,56 +22,57 @@ CLOUD_MODEL_CONFIG = {
             "openrouter/moonshotai/kimi-k2.7-code",
             "openrouter/poolside/laguna-xs-2.1:free",
         ),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-auto": {
         "provider": "openrouter",
         "model": "openrouter/openrouter/auto",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/z-ai/glm-5.2",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-claude-sonnet-5": {
         "provider": "openrouter",
         "model": "openrouter/anthropic/claude-sonnet-5",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/z-ai/glm-5.2",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-kimi-code": {
         "provider": "openrouter",
         "model": "openrouter/moonshotai/kimi-k2.7-code",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/z-ai/glm-5.2",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-laguna-code": {
         "provider": "openrouter",
         "model": "openrouter/poolside/laguna-xs-2.1:free",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/cohere/north-mini-code:free",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-nemotron-free": {
         "provider": "openrouter",
         "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/cohere/north-mini-code:free",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
     "gemma4-openrouter": {
         "provider": "openrouter",
         "model": "openrouter/z-ai/glm-5.2",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/poolside/laguna-xs-2.1:free",),
-        "key_envs": ("OPENROUTER_API_KEY",),
+        "key_envs": OPENROUTER_KEY_ENVS,
     },
 }
 
 
 def _looks_fake_key(value: str | None) -> bool:
-    cleaned = str(value or "").strip().lower()
-    return not cleaned or cleaned.startswith("your-") or "placeholder" in cleaned or "optional-" in cleaned
+    cleaned = str(value or "").strip().strip('"').strip("'")
+    lowered = cleaned.lower()
+    return not cleaned or lowered.startswith("your-") or "placeholder" in lowered or "optional-" in lowered
 
 
 def get_next_groq_key():
@@ -78,13 +90,14 @@ def get_cloud_config(model_id: str) -> dict:
 
 
 def get_cloud_api_key(model_id: str, explicit_key: str = None) -> str:
+    load_dotenv(ROOT_DIR / ".env", override=False)
     cfg = get_cloud_config(model_id)
     if explicit_key and not _looks_fake_key(explicit_key):
-        return explicit_key
+        return str(explicit_key).strip().strip('"').strip("'")
     for env_name in cfg["key_envs"]:
         key = os.getenv(env_name)
         if not _looks_fake_key(key):
-            return key
+            return str(key).strip().strip('"').strip("'")
     raise ValueError(f"{' or '.join(cfg['key_envs'])} missing - required for {model_id}.")
 
 
