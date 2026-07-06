@@ -1,4 +1,4 @@
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import anyio
 from fastapi import APIRouter
@@ -10,20 +10,46 @@ from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
 router = APIRouter()
 
 
-def normalize_pollinations_image_url(url: str) -> str:
-    """Normalize supported Pollinations query options before proxying."""
-    parsed = urlparse(str(url or ""))
-    if parsed.scheme not in {"http", "https"} or (parsed.hostname or "").lower() != "image.pollinations.ai":
-        return str(url or "")
+POLLINATIONS_HOSTS = {"image.pollinations.ai", "pollinations.ai"}
 
+
+def _normalize_pollinations_query(parsed):
     query_items = []
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-        if key == "model" and value.lower() == "turbo":
+        lowered_key = key.lower()
+        lowered_value = value.lower()
+        if lowered_key == "model" and lowered_value == "turbo":
             value = "flux"
-        if key == "nologo" and value.lower() == "true":
+        if lowered_key == "nologo" and lowered_value == "true":
             continue
         query_items.append((key, value))
-    return urlunparse(parsed._replace(query=urlencode(query_items, doseq=True)))
+    return urlencode(query_items, doseq=True)
+
+
+def normalize_pollinations_image_url(url: str) -> str:
+    """Normalize supported Pollinations image URL variants before proxying."""
+    parsed = urlparse(str(url or "").replace("&amp;", "&"))
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in POLLINATIONS_HOSTS:
+        return str(url or "")
+
+    query = _normalize_pollinations_query(parsed)
+
+    if host == "pollinations.ai" and parsed.path.startswith("/p/"):
+        prompt = parsed.path[len("/p/"):].strip("/") or "image"
+        return urlunparse((
+            "https",
+            "image.pollinations.ai",
+            "/prompt/" + quote(prompt, safe=""),
+            "",
+            query,
+            "",
+        ))
+
+    if host == "image.pollinations.ai":
+        return urlunparse(parsed._replace(query=query))
+
+    return str(url or "")
 
 
 @router.get("/api/image_proxy")
@@ -45,9 +71,9 @@ async def image_proxy(url: str):
         return Response(status_code=500)
 
     parsed = urlparse(normalized_url)
-    if (parsed.hostname or "").lower() == "image.pollinations.ai" and response.status_code in {401, 402, 403}:
+    if (parsed.hostname or "").lower() == "image.pollinations.ai" and response.status_code in {401, 402, 403, 429}:
         return Response(
-            content="Pollinations rejected this model or account/budget.",
+            content="Pollinations rejected or rate-limited this image request.",
             media_type="text/plain",
             status_code=response.status_code,
         )
@@ -56,5 +82,5 @@ async def image_proxy(url: str):
 
     content_type = response.headers.get("content-type") or response.headers.get("Content-Type") or "image/png"
     if not content_type.lower().startswith("image/"):
-        return Response(status_code=415)
+        return Response(content="Image provider returned a non-image response.", media_type="text/plain", status_code=415)
     return Response(content=response.content, media_type=content_type)
