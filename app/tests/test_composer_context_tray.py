@@ -3,18 +3,17 @@ from pathlib import Path
 
 
 class ComposerContextTrayTests(unittest.TestCase):
-    def test_composer_context_script_is_loaded(self):
+    def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
-        bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray", bootstrap)
-        self.assertIn("composer-context-tray", bootstrap)
-        self.assertIn("'3', 'composer-context-tray'", bootstrap)
-        self.assertNotIn("context_drag_drop", bootstrap)
+        template = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("composer_context_tray.js?v=4", template)
+        self.assertIn('data-helper-extension="composer-context-tray"', template)
+        self.assertNotIn("context_drag_drop", template)
 
-    def test_composer_context_stylesheet_is_loaded(self):
+    def test_composer_context_stylesheet_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
-        animations = (root / "static" / "css" / "animations.css").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.css?v=2", animations)
+        template = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("composer_context_tray.css?v=3", template)
 
     def test_drag_sources_include_text_images_and_widgets(self):
         root = Path(__file__).resolve().parents[2]
@@ -36,7 +35,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("order: -2", css)
         self.assertNotIn("bottom: calc(100% + 10px)", css)
         self.assertIn("composer-context-chip", css)
-        self.assertIn("Drop to target next prompt", css)
+        self.assertIn("Drop to target next message", css)
 
     def test_context_items_feed_existing_send_path(self):
         root = Path(__file__).resolve().parents[2]
@@ -54,6 +53,18 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("promptCleared && requestStarted", script)
         self.assertIn("main-send-btn", script)
         self.assertIn("clearComposerContextTray", script)
+
+    def test_context_widgets_are_visible_in_sent_chat_messages(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
+        css = (root / "static" / "css" / "composer_context_tray.css").read_text(encoding="utf-8")
+        self.assertIn("pendingSentContexts", script)
+        self.assertIn("attachPendingContextsToLatestUserMessage", script)
+        self.assertIn("message.contexts", script)
+        self.assertIn("renderChatContextWidgets", script)
+        self.assertIn("chat-context-strip", css)
+        self.assertIn("chat-context-card", css)
+        self.assertIn("Targeted Context", script)
 
     def test_context_tray_does_not_observe_its_own_rendering(self):
         root = Path(__file__).resolve().parents[2]
