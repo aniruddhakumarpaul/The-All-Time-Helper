@@ -16,13 +16,19 @@ class FrontendEmailDraftTests(unittest.TestCase):
         self.assertIn('function buildEmailDraftDragContext(message, widgetEl = null)', helper_js)
         self.assertIn('function getVisibleUserMessageContent(message, element = null)', helper_js)
         self.assertIn('function collectEmailDraftForDrag(card)', helper_js)
+        self.assertIn('function approveEmailDraft(card)', helper_js)
         self.assertIn('EMAIL_DRAFT_CONTEXT:', helper_js)
         self.assertIn('EMAIL_DRAFT_PAYLOAD:', helper_js)
         self.assertIn('application/x-helper-email-draft', helper_js)
         self.assertIn('card.__emailDraft = draft', helper_js)
+        self.assertIn('email-draft-approve-btn', helper_js)
+        self.assertIn("fetch('/email/send-draft'", helper_js)
+        self.assertIn('admin_key: adminKey', helper_js)
         self.assertIn('event.dataTransfer.setData("text/plain", `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`)', helper_js)
         self.assertIn("iframe.setAttribute('sandbox', '')", helper_js)
         self.assertNotIn('allow-scripts', helper_js)
+        self.assertNotIn('localStorage.setItem(\'admin', helper_js)
+        self.assertNotIn('localStorage.setItem("admin', helper_js)
 
 
 if __name__ == "__main__":
