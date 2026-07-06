@@ -2,16 +2,25 @@ import os
 from functools import wraps
 
 DEFAULT_CLOUD_MAX_TOKENS = 4096
+DEFAULT_FREE_CLOUD_MAX_TOKENS = 2048
 MIN_CLOUD_MAX_TOKENS = 256
 MAX_CLOUD_MAX_TOKENS = 12000
+MAX_FREE_CLOUD_MAX_TOKENS = 4096
 
 
-def cloud_output_token_budget() -> int:
+def _read_budget(env_name: str, default: int, max_value: int) -> int:
     try:
-        configured = int(os.getenv("OPENROUTER_MAX_TOKENS", str(DEFAULT_CLOUD_MAX_TOKENS)))
+        configured = int(os.getenv(env_name, str(default)))
     except ValueError:
-        configured = DEFAULT_CLOUD_MAX_TOKENS
-    return max(MIN_CLOUD_MAX_TOKENS, min(configured, MAX_CLOUD_MAX_TOKENS))
+        configured = default
+    return max(MIN_CLOUD_MAX_TOKENS, min(configured, max_value))
+
+
+def cloud_output_token_budget(model: object = None) -> int:
+    model_name = str(model or "")
+    if model_name.endswith(":free"):
+        return _read_budget("OPENROUTER_FREE_MAX_TOKENS", DEFAULT_FREE_CLOUD_MAX_TOKENS, MAX_FREE_CLOUD_MAX_TOKENS)
+    return _read_budget("OPENROUTER_MAX_TOKENS", DEFAULT_CLOUD_MAX_TOKENS, MAX_CLOUD_MAX_TOKENS)
 
 
 def _is_cloud_model_name(model: object) -> bool:
@@ -22,7 +31,7 @@ def _cap_kwargs(kwargs: dict) -> dict:
     model = kwargs.get("model")
     if not _is_cloud_model_name(model):
         return kwargs
-    budget = cloud_output_token_budget()
+    budget = cloud_output_token_budget(model)
     current = kwargs.get("max_tokens")
     try:
         current_int = int(current) if current is not None else None
