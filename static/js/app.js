@@ -20,6 +20,43 @@ function syncWindowState() {
     window.activeId = state.activeId;
 }
 
+function chooseActiveChatId(chats, preferredId) {
+    const preferred = String(preferredId || '').trim();
+    if (preferred && chats.some(chat => chat.id === preferred)) return preferred;
+    return chats[0]?.id || '';
+}
+
+function showWelcomeState() {
+    const chatArea = document.getElementById('chat-area');
+    const welcome = document.getElementById('welcome');
+    if (chatArea) {
+        chatArea.innerHTML = '';
+        chatArea.style.display = 'none';
+    }
+    if (welcome) welcome.style.display = 'flex';
+    ui.clearImgPreview();
+    const prompt = document.getElementById('prompt');
+    if (prompt) {
+        prompt.value = '';
+        prompt.style.height = 'auto';
+        prompt.placeholder = 'Message The All Time Helper...';
+        prompt.classList.remove('auth-waiting');
+    }
+}
+
+function scrollChatToLatest(chatArea) {
+    if (!chatArea || !chatArea.querySelector('.msg')) return;
+    requestAnimationFrame(() => {
+        const lastMessage = chatArea.querySelector('.msg:last-child');
+        if (lastMessage?.scrollIntoView) {
+            lastMessage.scrollIntoView({ block: 'end', inline: 'nearest' });
+        }
+        chatArea.scrollTop = chatArea.scrollHeight;
+        const root = document.scrollingElement || document.documentElement;
+        if (root) root.scrollTop = root.scrollHeight;
+    });
+}
+
 function persistLocalChatCache() {
     if (!state.user?.email) return;
     try {
@@ -131,11 +168,17 @@ function startNewChat() {
     syncWindowState();
 }
 
-function loadChat(id) {
+function loadChat(id, options = {}) {
+    const {
+        setActiveId = true,
+        persistActiveId = true,
+        renderHistory = true,
+        focusPrompt = true,
+    } = options;
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
-    state.set('activeId', id);
-    localStorage.setItem('helper_active_chat_v2', id);
+    if (setActiveId) state.set('activeId', id);
+    if (persistActiveId) localStorage.setItem('helper_active_chat_v2', id);
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
     if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'block'; }
@@ -143,17 +186,19 @@ function loadChat(id) {
     ui.clearImgPreview();
     chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked));
     window.initUpscaleImagePolling?.(chatArea);
-    ui.renderHist();
+    if (renderHistory) ui.renderHist();
     const sidebar = document.getElementById('sidebar');
     if (window.innerWidth <= 850 && sidebar?.classList.contains('open')) ui.toggleSidebar();
-    ui.smartFocus('prompt');
+    if (focusPrompt) ui.smartFocus('prompt');
     ui.checkAuthMode();
+    scrollChatToLatest(chatArea);
     syncWindowState();
 }
 
 async function loadUserChats() {
     if (!state.user?.email) return;
     const key = 'helper_chats_v2_' + state.user.email;
+    let localChats = [];
     let localStr = localStorage.getItem(key);
     if (!localStr && localStorage.getItem('helper_chats_v2')) {
         localStr = localStorage.getItem('helper_chats_v2');
@@ -163,28 +208,46 @@ async function loadUserChats() {
     if (localStr) {
         try {
             const parsed = JSON.parse(localStr);
-            state.chats = mergeChatsByRecency(Array.isArray(parsed) ? parsed : [], []);
-            syncWindowState();
-            ui.renderHist();
-            const savedId = localStorage.getItem('helper_active_chat_v2');
-            if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
+            localChats = Array.isArray(parsed) ? parsed : [];
         } catch (error) {
             console.warn('Local chat cache could not be parsed:', error);
         }
     }
+    let remoteChats = [];
     try {
         const data = await api.fetchChats();
         if (data?.success && Array.isArray(data.chats)) {
-            state.chats = mergeChatsByRecency(state.chats, data.chats);
-            syncWindowState();
-            persistLocalChatCache();
-            ui.renderHist();
-            const savedId = localStorage.getItem('helper_active_chat_v2');
-            if (savedId && state.chats.find(c => c.id === savedId)) loadChat(savedId);
+            remoteChats = data.chats;
         }
     } catch (error) {
         console.error('Cloud fetch failed:', error);
     }
+    const mergedChats = mergeChatsByRecency(localChats, remoteChats);
+    state.chats = mergedChats;
+    syncWindowState();
+
+    const savedActiveChatId = localStorage.getItem('helper_active_chat_v2');
+    const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);
+    if (!activeChatId) {
+        state.set('activeId', null);
+        localStorage.removeItem('helper_active_chat_v2');
+        persistLocalChatCache();
+        ui.renderHist();
+        showWelcomeState();
+        syncWindowState();
+        return;
+    }
+
+    state.set('activeId', activeChatId);
+    persistLocalChatCache();
+    ui.renderHist();
+    loadChat(activeChatId, {
+        setActiveId: false,
+        persistActiveId: false,
+        renderHistory: false,
+        focusPrompt: false,
+    });
+    syncWindowState();
 }
 
 async function saveUserChats() {
@@ -533,12 +596,14 @@ function initSidebarSwipe() {
     const scrim = document.getElementById('sidebar-scrim');
     if (!sidebar || !scrim) return;
     let startX = 0;
+    let startY = 0;
     let currentX = 300;
     let dragging = false;
     let horizontal = false;
     sidebar.addEventListener('touchstart', event => {
         if (!sidebar.classList.contains('open') || window.innerWidth > 992) return;
         startX = event.touches[0].clientX;
+        startY = event.touches[0].clientY;
         currentX = 300;
         dragging = true;
         horizontal = false;
@@ -548,7 +613,7 @@ function initSidebarSwipe() {
     sidebar.addEventListener('touchmove', event => {
         if (!dragging) return;
         const deltaX = event.touches[0].clientX - startX;
-        const deltaY = event.touches[0].clientY - startX;
+        const deltaY = event.touches[0].clientY - startY;
         if (!horizontal) {
             if (Math.abs(deltaX) > Math.abs(deltaY) * 1.5) horizontal = true;
             else if (Math.abs(deltaY) > 5) { dragging = false; return; }

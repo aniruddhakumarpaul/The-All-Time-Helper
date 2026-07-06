@@ -10,6 +10,14 @@
 users.db
 database.db
 
+# Runtime artifacts
+.runtime/
+.runtime_attachments/
+ngrok_url.txt
+static/uploads/upscaled_*
+static/uploads/generated_*
+static/uploads/tmp_*
+
 # Virtual environments
 .venv/
 venv/

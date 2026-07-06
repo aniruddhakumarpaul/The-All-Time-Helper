@@ -43,11 +43,24 @@ class FrontendChatSyncTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         app_js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        ui_restore = (root / "static" / "js" / "ui_restore.js").read_text(encoding="utf-8")
+        particles_js = (root / "static" / "js" / "particles.js").read_text(encoding="utf-8")
 
         self.assertIn("if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId)", app_js)
         self.assertIn("chat.updated_at = Date.now();\n    requestChatPersist();", app_js)
-        self.assertIn("mergeChatsByRecency(state.chats, data.chats)", app_js)
-        self.assertIn('/static/js/app.js?v=204', template)
+        self.assertIn("const mergedChats = mergeChatsByRecency(localChats, remoteChats);", app_js)
+        self.assertIn("function chooseActiveChatId(chats, preferredId)", app_js)
+        self.assertIn("const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);", app_js)
+        self.assertIn("scrollChatToLatest(chatArea);", app_js)
+        self.assertIn("let startY = 0;", app_js)
+        self.assertIn("const deltaY = event.touches[0].clientY - startY;", app_js)
+        self.assertNotIn("fetch('/get_chats')", ui_restore)
+        self.assertNotIn("loadChat(", ui_restore)
+        self.assertNotIn("latest_view_guard", particles_js)
+        self.assertIn("Nemotron Free Compatibility", template)
+        self.assertNotIn("Laguna XS Code Free", template)
+        self.assertIn('/static/js/particles.js?v=144', template)
+        self.assertIn('/static/js/app.js?v=205', template)
 
 
 if __name__ == "__main__":

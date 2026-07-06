@@ -4,7 +4,6 @@
  */
 import('/static/js/ui_restore.js?v=3').catch(() => {});
 import('/static/js/image_retry_guard.js?v=1').catch(() => {});
-import('/static/js/latest_view_guard.js?v=1').catch(() => {});
 
 const canvas = document.getElementById('particle-canvas');
 const ctx = canvas.getContext('2d');

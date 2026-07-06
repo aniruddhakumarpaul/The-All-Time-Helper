@@ -32,7 +32,6 @@ from app.services.ngrok import start_ngrok_if_enabled, stop_ngrok
 app = create_app()
 
 
-
 def run_local_server() -> None:
     import uvicorn
 
@@ -41,11 +40,11 @@ def run_local_server() -> None:
     if session.public_url:
         os.environ["NGROK_PUBLIC_URL"] = session.public_url
         append_cors_origin(app, session.public_url)
-        
-        # Write to file so user can easily find it
-        url_file = BASE_DIR / "ngrok_url.txt"
-        with open(url_file, "w") as f:
-            f.write(session.public_url)
+
+        runtime_dir = BASE_DIR / ".runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        url_file = runtime_dir / "ngrok_url.txt"
+        url_file.write_text(session.public_url, encoding="utf-8")
 
         banner = f"""
 =============================================================
