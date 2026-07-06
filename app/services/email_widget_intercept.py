@@ -1,9 +1,10 @@
+import anyio
 import json
 from typing import Any
 
 import jwt
 from fastapi import Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response
 
 from app.logger import logger
 from app.security import ALGORITHM, SECRET_KEY
@@ -13,8 +14,21 @@ _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
 
 def _restore_request_body(request: Request, body: bytes) -> None:
+    """Replay the consumed request body once for the downstream FastAPI route.
+
+    A repeated http.request after the response starts breaks Starlette streaming
+    disconnect handling, so the replay receive must not return the body more
+    than once.
+    """
+    sent = False
+
     async def receive():
-        return {"type": "http.request", "body": body, "more_body": False}
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await anyio.sleep(86400)
+        return {"type": "http.disconnect"}
 
     request._receive = receive
 
@@ -73,10 +87,13 @@ def _email_widget_message(draft: dict[str, Any] | None) -> str:
     return "Attached the latest image to a new editable email draft.\n\nEMAIL_DRAFT_PAYLOAD:" + json.dumps(draft)
 
 
-async def _email_widget_stream(message: str):
-    yield json.dumps({"status": "Attaching latest image to email draft..."}).encode() + b"\n"
-    yield json.dumps({"message": {"content": message}, "done": True}).encode() + b"\n"
-    yield json.dumps({"done": True}).encode() + b"\n"
+def _email_widget_ndjson(message: str) -> bytes:
+    lines = [
+        {"status": "Attaching latest image to email draft..."},
+        {"message": {"content": message}, "done": True},
+        {"done": True},
+    ]
+    return b"".join(json.dumps(line).encode() + b"\n" for line in lines)
 
 
 async def email_widget_chat_middleware(request: Request, call_next):
@@ -84,18 +101,20 @@ async def email_widget_chat_middleware(request: Request, call_next):
         return await call_next(request)
 
     body = await request.body()
-    _restore_request_body(request, body)
 
     try:
         payload = json.loads(body.decode("utf-8") or "{}")
     except (json.JSONDecodeError, UnicodeDecodeError):
+        _restore_request_body(request, body)
         return await call_next(request)
 
     prompt = str(payload.get("prompt") or "")
     if payload.get("isMasked") or not _is_email_widget_attachment_request(prompt):
+        _restore_request_body(request, body)
         return await call_next(request)
 
     if not _has_valid_bearer_token(request):
+        _restore_request_body(request, body)
         return await call_next(request)
 
     history = payload.get("history") if isinstance(payload.get("history"), list) else []
@@ -103,7 +122,8 @@ async def email_widget_chat_middleware(request: Request, call_next):
         draft = _latest_image_email_draft(history)
         message = _email_widget_message(draft)
         logger.info("[EmailWidget] Routed latest image attachment request without agent execution.")
-        return StreamingResponse(_email_widget_stream(message), media_type="application/x-ndjson")
+        return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
     except Exception as exc:
         logger.warning(f"[EmailWidget] Direct image attachment failed, falling back to chat route: {exc}")
+        _restore_request_body(request, body)
         return await call_next(request)
