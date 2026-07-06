@@ -9,6 +9,7 @@ from crewai import Crew, Task
 from app.logic import tools
 from app.logic.agent_intent import specialist_for_prompt
 from app.logic.exceptions import AgentFastExit
+from app.logic.profile_links import resolve_public_profile_link_request
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,12 @@ def execute_cloud(
     abort_event=None,
 ):
     prompt_text = context_data.get("final_prompt", "")
+    profile_link = resolve_public_profile_link_request(prompt_text)
+    if profile_link:
+        if chunk_callback:
+            chunk_callback(profile_link)
+        return profile_link
+
     if intent.get("requires_tools") and _is_direct_image_generation(prompt_text):
         if abort_event and abort_event.is_set():
             return "Operation cancelled."
