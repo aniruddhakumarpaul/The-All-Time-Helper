@@ -40,6 +40,19 @@ def run_local_server() -> None:
     if session.public_url:
         os.environ["NGROK_PUBLIC_URL"] = session.public_url
         append_cors_origin(app, session.public_url)
+        
+        # Write to file so user can easily find it
+        url_file = BASE_DIR / "ngrok_url.txt"
+        with open(url_file, "w") as f:
+            f.write(session.public_url)
+
+        banner = f"""
+=============================================================
+  NGROK TUNNEL ACTIVE
+  URL: {session.public_url}
+=============================================================
+"""
+        print(banner)
         logger.info(f"[Main] Public Ngrok URL: {session.public_url}")
 
     logger.info(f"[Main] Binding to http://0.0.0.0:{port}")

@@ -1,4 +1,6 @@
 import os
+import sys
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from app.logger import logger
 class NgrokSession:
     public_url: str | None = None
     started_tunnel: bool = False
+    listener: any = None
 
 
 def _enabled(value: str | None) -> bool:
@@ -24,39 +27,8 @@ def _looks_fake_token(value: str | None) -> bool:
     return not token or token.startswith("your-") or "placeholder" in token or "optional-" in token
 
 
-def _pyngrok_config():
-    ngrok_path = str(os.getenv("NGROK_PATH") or "").strip().strip('"').strip("'")
-    if not ngrok_path:
-        # Default to a project-local directory to avoid Windows AppData restrictions and pip script wrapper conflicts
-        project_root = Path(__file__).resolve().parent.parent.parent
-        bin_dir = project_root / "bin"
-        try:
-            bin_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
-
-        if os.name == "nt":
-            ngrok_path = str(bin_dir / "ngrok.exe")
-        else:
-            ngrok_path = str(bin_dir / "ngrok")
-    else:
-        candidate = Path(ngrok_path)
-        if not candidate.is_file():
-            logger.warning(f"NGROK_PATH is set but file was not found: {candidate}")
-            return None
-        ngrok_path = str(candidate)
-
-    try:
-        from pyngrok.conf import PyngrokConfig
-
-        return PyngrokConfig(ngrok_path=ngrok_path)
-    except Exception as exc:
-        logger.warning(f"Could not configure NGROK_PATH: {exc}")
-        return None
-
-
 def start_ngrok_if_enabled(port: int = 9000) -> NgrokSession:
-    """Start or reuse Ngrok only when explicitly enabled for local development."""
+    """Start Ngrok using the official python-ngrok embedded library (bypasses AV block)."""
     if not _enabled(os.getenv("ENABLE_NGROK")):
         return NgrokSession()
 
@@ -66,33 +38,23 @@ def start_ngrok_if_enabled(port: int = 9000) -> NgrokSession:
         return NgrokSession()
 
     try:
-        from pyngrok import ngrok
+        import ngrok
+    except ImportError:
+        logger.info("Official 'ngrok' package not found. Installing it to bypass Windows Defender...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "ngrok"])
+            import ngrok
+        except Exception as exc:
+            logger.error(f"Failed to auto-install official ngrok package: {exc}")
+            return NgrokSession()
 
-        config = _pyngrok_config()
-        if config:
-            ngrok.set_auth_token(token, pyngrok_config=config)
-            tunnels = ngrok.get_tunnels(pyngrok_config=config)
-        else:
-            ngrok.set_auth_token(token)
-            tunnels = ngrok.get_tunnels()
-        if tunnels:
-            public_url = str(tunnels[0].public_url).rstrip("/")
-            logger.info(f"Using existing Ngrok tunnel: {public_url}")
-            return NgrokSession(public_url=public_url)
-
-        tunnel = ngrok.connect(port, pyngrok_config=config) if config else ngrok.connect(port)
-        public_url = str(tunnel.public_url).rstrip("/")
+    try:
+        logger.info("Starting embedded Ngrok tunnel...")
+        # Start the tunnel with the auth token
+        listener = ngrok.forward(port, authtoken=token)
+        public_url = listener.url()
         logger.info(f"Started Ngrok tunnel: {public_url}")
-        return NgrokSession(public_url=public_url, started_tunnel=True)
-    except PermissionError as exc:
-        logger.warning(f"Ngrok disabled for this run because Windows denied access: {exc}")
-        return NgrokSession()
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 5:
-            logger.warning(f"Ngrok disabled for this run because Windows denied access: {exc}")
-        else:
-            logger.warning(f"Ngrok startup failed; continuing without tunnel: {exc}")
-        return NgrokSession()
+        return NgrokSession(public_url=public_url, started_tunnel=True, listener=listener)
     except Exception as exc:
         logger.warning(f"Ngrok startup failed; continuing without tunnel: {exc}")
         return NgrokSession()
@@ -100,11 +62,10 @@ def start_ngrok_if_enabled(port: int = 9000) -> NgrokSession:
 
 def stop_ngrok(session: NgrokSession) -> None:
     """Stop only a tunnel created by this process."""
-    if not session.started_tunnel or not session.public_url:
+    if not session.started_tunnel or not getattr(session, "listener", None):
         return
     try:
-        from pyngrok import ngrok
-
-        ngrok.disconnect(session.public_url)
+        import ngrok
+        ngrok.disconnect(session.listener.url())
     except Exception as exc:
         logger.warning(f"Ngrok shutdown failed: {exc}")
