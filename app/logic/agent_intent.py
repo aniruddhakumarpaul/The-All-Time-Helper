@@ -1,3 +1,8 @@
+import json
+import re
+
+import requests
+
 CODE_KEYWORDS = [
     "code", "bug", "logic", "python", "javascript", "html", "css", "develop", "compile", "debug", "git",
     "refactor", "function", "class",
@@ -9,7 +14,7 @@ VISUAL_KEYWORDS = [
     "canvas", "sketching",
 ]
 EMAIL_KEYWORDS = [
-    "email", "send", "sent", "dispatch", "mail", "forward", "admin_key_provided", "to him", "to her",
+    "email", "send", "sent", "dispatch", "mail", "forward", "admin_key_provided", "approval_confirmed", "to him", "to her",
     "to them", "tell him", "tell her", "tell them", "message him", "message her",
 ]
 
@@ -25,6 +30,14 @@ def specialist_for_prompt(prompt: str, *, swarm: bool = False) -> str:
     if any(keyword in text for keyword in VISUAL_KEYWORDS):
         return "artist"
     return "generalist"
+
+
+def _clean_classifier_text(value) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    return raw
 
 
 def analyze_prompt_via_llm(
@@ -58,7 +71,7 @@ def analyze_prompt_via_llm(
                 max_tokens=40,
                 timeout=4.0,
             )
-            raw = response.choices[0].message.content.strip()
+            raw = _clean_classifier_text(getattr(response.choices[0].message, "content", None))
         else:
             response = requests.post(
                 f"{ollama_url}/api/chat",
@@ -72,10 +85,9 @@ def analyze_prompt_via_llm(
                 verify=False,
             )
             response.raise_for_status()
-            raw = response.json().get("message", {}).get("content", "").strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw).strip()
+            raw = _clean_classifier_text(response.json().get("message", {}).get("content"))
+        if not raw:
+            return None
         data = json.loads(raw)
         complexity = data.get("complexity")
         return {
@@ -86,7 +98,3 @@ def analyze_prompt_via_llm(
     except Exception as exc:
         logger.warning(f"[Prompt Analyzer] Failed structured analysis: {exc}")
         return None
-import json
-import re
-
-import requests
