@@ -13,6 +13,10 @@ load_dotenv(BASE_DIR / ".env")
 
 from app.database import init_db
 from app.logger import logger
+from app.logic.cloud_token_budget import apply_cloud_token_budget
+
+apply_cloud_token_budget()
+
 from app.routes import auth, chat, email_delivery, health, proxy
 from app.services.ngrok import NgrokSession, start_ngrok_if_enabled, stop_ngrok
 
