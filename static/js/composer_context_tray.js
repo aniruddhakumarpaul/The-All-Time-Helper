@@ -13,6 +13,7 @@
 
     let renderQueued = false;
     let renderingTray = false;
+    let clearAfterSendQueued = false;
 
     function state() {
         return window.__helperState || null;
@@ -50,9 +51,7 @@
         tray = document.createElement('div');
         tray.id = 'composer-context-tray';
         tray.setAttribute('aria-label', 'Targeted prompt context');
-        const imagePreview = document.getElementById('img-preview-area');
-        if (imagePreview && imagePreview.parentNode === container) container.insertBefore(tray, imagePreview);
-        else container.insertBefore(tray, container.firstChild);
+        container.insertBefore(tray, container.firstChild);
         return tray;
     }
 
@@ -110,6 +109,40 @@
             renderQueued = false;
             renderTray();
         });
+    }
+
+    function clearContexts() {
+        const st = state();
+        if (st && Array.isArray(st.attachedContexts)) st.attachedContexts = [];
+        const tray = ensureTray();
+        if (tray) {
+            tray.classList.remove('has-context', 'composer-drop-active');
+            tray.innerHTML = '';
+        }
+        scheduleRender();
+    }
+
+    function scheduleClearAfterSend() {
+        if (clearAfterSendQueued) return;
+        clearAfterSendQueued = true;
+        let attempts = 0;
+        const tick = () => {
+            const prompt = document.getElementById('prompt');
+            const stopBtn = document.getElementById('stop-btn');
+            const sendBtn = document.getElementById('main-send-btn');
+            const promptCleared = !prompt || !String(prompt.value || '').trim();
+            const requestStarted = Boolean(state()?.abortController)
+                || stopBtn?.style.display === 'flex'
+                || sendBtn?.style.display === 'none';
+            if ((promptCleared && requestStarted) || attempts >= 120) {
+                clearAfterSendQueued = false;
+                clearContexts();
+                return;
+            }
+            attempts += 1;
+            setTimeout(tick, 50);
+        };
+        setTimeout(tick, 0);
     }
 
     function addContext(item) {
@@ -299,9 +332,9 @@
         for (const root of observedRoots) {
             observer.observe(root, { childList: true, subtree: true });
         }
-        document.getElementById('main-send-btn')?.addEventListener('click', () => setTimeout(scheduleRender, 300));
+        document.getElementById('main-send-btn')?.addEventListener('click', scheduleClearAfterSend);
         document.getElementById('prompt')?.addEventListener('keydown', event => {
-            if (event.key === 'Enter' && !event.shiftKey) setTimeout(scheduleRender, 300);
+            if (event.key === 'Enter' && !event.shiftKey) scheduleClearAfterSend();
         });
     }
 
@@ -312,6 +345,7 @@
         installDropTarget();
         installSourceObserver();
         window.addComposerContext = addContext;
+        window.clearComposerContextTray = clearContexts;
         window.renderComposerContextTray = scheduleRender;
     }
 
