@@ -1,10 +1,11 @@
 /* compact_density.css
- * Tighter desktop density pass for normal 100% browser zoom.
+ * Desktop density pass for normal 100% browser zoom.
+ * Keep icons/buttons visually proportional; shrink the surrounding structure, spacing, and content scale.
  * Loaded after style_v3.css through animations.css. Mobile breakpoints stay governed by style_v3.css.
  */
 @media (min-width: 851px) {
     #sidebar {
-        width: 268px;
+        width: 272px;
         padding: 14px;
         margin: 10px 0 10px 10px;
         border-radius: 20px;
@@ -16,29 +17,29 @@
     }
 
     .logo-container {
-        width: 72px;
-        height: 72px;
+        width: 80px;
+        height: 80px;
     }
 
     .logo-img {
-        width: 56px;
-        height: 56px;
+        width: 64px;
+        height: 64px;
         border-width: 1px;
     }
 
     .logo-text {
-        font-size: 0.74rem;
-        letter-spacing: 1.2px;
-        margin-top: 8px;
+        font-size: 0.78rem;
+        letter-spacing: 1.35px;
+        margin-top: 9px;
         gap: 5px;
     }
 
     .new-chat {
-        padding: 12px 13px;
+        padding: 12px 14px;
         border-radius: 14px;
         margin-bottom: 13px;
-        gap: 8px;
-        font-size: 0.84rem;
+        gap: 10px;
+        font-size: 0.86rem;
     }
 
     .new-chat svg,
@@ -46,20 +47,19 @@
     .history-actions svg,
     .del-chat-btn svg,
     .tool-icon svg {
-        width: 16px;
-        height: 16px;
-        stroke-width: 2.2;
+        width: 18px;
+        height: 18px;
     }
 
     .user-profile {
         padding: 10px !important;
         margin-bottom: 12px !important;
         border-radius: 13px !important;
-        gap: 9px !important;
+        gap: 10px !important;
     }
 
     #sidebar-greet {
-        font-size: 0.82rem !important;
+        font-size: 0.83rem !important;
     }
 
     #user-info {
@@ -74,13 +74,13 @@
     #hist-search {
         padding: 7px 10px !important;
         border-radius: 9px !important;
-        font-size: 0.75rem !important;
+        font-size: 0.76rem !important;
     }
 
     .history-item {
         padding: 8px 11px;
         border-radius: 12px;
-        font-size: 0.8rem;
+        font-size: 0.81rem;
         gap: 8px;
     }
 
@@ -100,8 +100,8 @@
     .set-btn {
         padding: 8px 9px;
         border-radius: 9px;
-        font-size: 0.78rem;
-        gap: 8px;
+        font-size: 0.8rem;
+        gap: 9px;
     }
 
     .persona-switch-item {
@@ -110,72 +110,75 @@
     }
 
     #main-view {
-        max-width: 960px;
+        max-width: 980px;
     }
 
     #welcome {
-        max-width: 720px;
+        max-width: 740px;
         padding: 0 28px;
     }
 
     .greet-text {
-        font-size: 2.85rem;
+        font-size: 2.95rem;
         letter-spacing: -1.2px;
     }
 
     .sub-text {
-        font-size: 1.18rem;
+        font-size: 1.22rem;
     }
 
     #chat-area {
-        padding: 22px 34px 24px 34px;
+        padding: 24px 36px 24px 36px;
     }
 
     .msg {
-        margin-bottom: 19px;
+        margin-bottom: 20px;
     }
 
     .av-wrap {
-        gap: 8px;
+        gap: 9px;
         margin-bottom: 5px;
     }
 
     .av,
     .b-av {
-        width: 30px;
-        height: 30px;
-        font-size: 0.76rem;
+        width: 34px;
+        height: 34px;
+        font-size: 0.82rem;
     }
 
     .orb-svg {
-        width: 22px;
-        height: 22px;
+        width: 28px;
+        height: 28px;
     }
 
     .av-label {
-        font-size: 0.72rem !important;
+        font-size: 0.74rem !important;
     }
 
     .av-wrap:hover .u-av {
-        width: 140px !important;
-        border-radius: 16px;
-        padding: 0 12px;
+        width: 152px !important;
+        border-radius: 17px;
+        padding: 0 13px;
     }
 
     .u-av .full-name {
-        font-size: 0.75rem;
+        font-size: 0.78rem;
     }
 
     .txt {
-        font-size: 0.93rem;
-        line-height: 1.5;
+        font-size: 0.94rem;
+        line-height: 1.52;
         padding: 11px 15px;
         max-width: 700px;
-        border-radius: 18px 18px 18px 4px;
     }
 
     .u-msg .txt {
-        border-radius: 18px 18px 4px 18px;
+        border-radius: 20px 20px 5px 20px;
+    }
+
+    .b-msg .txt {
+        border-radius: 20px 20px 20px 5px;
     }
 
     .txt>div pre {
@@ -185,12 +188,12 @@
     }
 
     .txt>div pre code {
-        font-size: 0.8em;
+        font-size: 0.82em;
     }
 
     .chat-rendered-img {
-        max-height: 380px;
-        border-radius: 12px;
+        max-height: 390px;
+        border-radius: 13px;
         margin: 8px 0;
     }
 
@@ -199,31 +202,32 @@
     }
 
     #input-wrap {
-        padding: 8px 0 14px 0;
+        padding: 8px 0 15px 0;
     }
 
     .pill-bar-container {
-        max-width: 710px;
+        max-width: 720px;
+        position: relative;
     }
 
     .pill-bar {
-        padding: 6px 10px 6px 14px;
-        gap: 7px;
-        border-radius: 28px;
+        padding: 6px 11px 6px 15px;
+        gap: 9px;
+        border-radius: 30px;
     }
 
     #prompt {
-        font-size: 0.82rem;
-        line-height: 1.45;
-        padding: 7px;
-        max-height: 140px;
+        font-size: 0.84rem;
+        line-height: 1.48;
+        padding: 7px 8px;
+        max-height: 145px;
     }
 
     #model-toggle {
-        padding: 6px 10px !important;
-        border-radius: 18px !important;
-        font-size: 0.74rem !important;
-        max-width: 168px;
+        padding: 7px 11px !important;
+        border-radius: 20px !important;
+        font-size: 0.76rem !important;
+        max-width: 176px;
         transform: none;
     }
 
@@ -234,17 +238,16 @@
     .send-btn svg,
     #export-chat-btn svg,
     #main-send-btn svg {
-        width: 16px;
-        height: 16px;
-        stroke-width: 2.2;
+        width: 20px;
+        height: 20px;
     }
 
     .action-btn,
     .tool-btn,
     .img-btn {
-        width: 32px !important;
-        min-width: 32px !important;
-        height: 32px !important;
+        width: 38px !important;
+        min-width: 38px !important;
+        height: 38px !important;
         padding: 0 !important;
         border-radius: 50% !important;
         display: inline-flex !important;
@@ -255,21 +258,76 @@
 
     #main-send-btn,
     .send-btn {
-        width: 34px !important;
-        min-width: 34px !important;
-        height: 34px !important;
+        width: 42px !important;
+        min-width: 42px !important;
+        height: 42px !important;
     }
 
     #stop-btn {
-        padding: 6px 11px !important;
+        padding: 7px 12px !important;
         border-radius: 18px !important;
-        font-size: 0.76rem !important;
-        gap: 6px !important;
+        font-size: 0.78rem !important;
+        gap: 7px !important;
     }
 
     .stop-pulse {
-        width: 8px !important;
-        height: 8px !important;
+        width: 9px !important;
+        height: 9px !important;
+    }
+
+    #img-preview-area {
+        position: absolute;
+        left: 18px;
+        bottom: calc(100% + 8px);
+        z-index: 1002;
+        display: none;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border: 1px solid var(--glass-border);
+        border-radius: 16px;
+        background: var(--pill-bar-bg);
+        backdrop-filter: var(--glass-blur);
+        box-shadow: var(--pill-bar-shadow);
+    }
+
+    #img-preview-area:empty {
+        display: none !important;
+    }
+
+    .img-thumb-wrap {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        border-radius: 13px;
+        overflow: hidden;
+        border: 1px solid var(--glass-border);
+        background: var(--item-hover);
+    }
+
+    .img-thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+
+    .img-remove-btn {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: 18px;
+        height: 18px;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-size: 12px;
+        line-height: 18px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
 
     .model-dropdown {
@@ -311,16 +369,16 @@
 
 @media (min-width: 851px) and (max-width: 1280px) {
     #sidebar {
-        width: 252px;
+        width: 256px;
     }
 
     #main-view {
-        max-width: calc(100vw - 276px);
+        max-width: calc(100vw - 282px);
     }
 
     #chat-area {
-        padding-left: 26px;
-        padding-right: 26px;
+        padding-left: 28px;
+        padding-right: 28px;
     }
 
     .txt {
@@ -328,10 +386,10 @@
     }
 
     .chat-rendered-img {
-        max-height: 340px;
+        max-height: 350px;
     }
 
     .pill-bar-container {
-        max-width: 680px;
+        max-width: 690px;
     }
 }
