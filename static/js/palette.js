@@ -5,6 +5,21 @@ function iconSvg(path) {
     return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${path}</svg>`;
 }
 
+const MODEL_OPTIONS = [
+    { t: 'Model: GLM 5.2 Agentic', i: '🧠', id: 'agentic-pro', name: 'GLM 5.2 Agentic (OpenRouter)' },
+    { t: 'Model: OpenRouter Auto', i: '🧭', id: 'openrouter-auto', name: 'OpenRouter Auto' },
+    { t: 'Model: Claude Sonnet 5', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 (OpenRouter)' },
+    { t: 'Model: Kimi K2.7 Code', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code (OpenRouter)' },
+    { t: 'Model: Laguna XS Code', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code (OpenRouter)' },
+    { t: 'Model: Nemotron Free', i: '🆓', id: 'openrouter-nemotron-free', name: 'Nemotron 3 Ultra Free (OpenRouter)' },
+    { t: 'Model: Gemma 4 Local', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
+    { t: 'Model: Gemma 2 Local', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
+    { t: 'Model: Mistral Local', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
+    { t: 'Model: Llama Sensitive Local', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
+    { t: 'Model: Phi 3 Local', i: 'φ', id: 'phi3', name: 'Phi 3' },
+    { t: 'Model: Moondream Vision Local', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
+];
+
 function paletteActions() {
     return [
         { t: 'New Chat', i: iconSvg('<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>'), a: () => window.startNewChat?.() },
@@ -19,20 +34,7 @@ function paletteActions() {
 }
 
 function paletteModels() {
-    return [
-        { t: 'Model: GLM 5.2 Agentic', i: '🧠', id: 'agentic-pro', name: 'GLM 5.2 Agentic (OpenRouter)' },
-        { t: 'Model: OpenRouter Auto', i: '🧭', id: 'openrouter-auto', name: 'OpenRouter Auto' },
-        { t: 'Model: Claude Sonnet 5', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 (OpenRouter)' },
-        { t: 'Model: Kimi K2.7 Code', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code (OpenRouter)' },
-        { t: 'Model: Laguna XS Code', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code (OpenRouter)' },
-        { t: 'Model: Nemotron Free', i: '🆓', id: 'openrouter-nemotron-free', name: 'Nemotron 3 Ultra Free (OpenRouter)' },
-        { t: 'Model: Gemma 4 Local', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
-        { t: 'Model: Gemma 2 Local', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
-        { t: 'Model: Mistral Local', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
-        { t: 'Model: Llama Sensitive Local', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
-        { t: 'Model: Phi 3 Local', i: 'φ', id: 'phi3', name: 'Phi 3' },
-        { t: 'Model: Moondream Vision Local', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
-    ].map(model => ({
+    return MODEL_OPTIONS.map(model => ({
         ...model,
         a: () => window.selModel?.(model.id, model.name),
     }));
@@ -48,6 +50,44 @@ function paletteChats(query) {
             i: iconSvg('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>'),
             a: () => window.loadChat?.(chat.id),
         }));
+}
+
+function installOpenRouterModelMenu() {
+    const menu = document.getElementById('model-menu');
+    if (!menu || menu.dataset.openrouterMenu === 'true') return;
+    menu.dataset.openrouterMenu = 'true';
+    menu.textContent = '';
+
+    const cloudHeader = document.createElement('div');
+    cloudHeader.className = 'dropdown-header';
+    cloudHeader.textContent = 'Cloud via OpenRouter';
+    menu.appendChild(cloudHeader);
+
+    MODEL_OPTIONS.slice(0, 6).forEach(model => {
+        const option = document.createElement('div');
+        option.className = 'model-opt';
+        option.dataset.modelId = model.id;
+        option.dataset.modelName = model.name;
+        option.textContent = model.t.replace('Model: ', '');
+        option.addEventListener('click', () => window.selModel?.(model.id, model.name));
+        menu.appendChild(option);
+    });
+
+    const localHeader = document.createElement('div');
+    localHeader.className = 'dropdown-header';
+    localHeader.style.borderTop = '1px solid var(--glass-border)';
+    localHeader.textContent = 'Local (Private)';
+    menu.appendChild(localHeader);
+
+    MODEL_OPTIONS.slice(6).forEach(model => {
+        const option = document.createElement('div');
+        option.className = 'model-opt';
+        option.dataset.modelId = model.id;
+        option.dataset.modelName = model.name;
+        option.textContent = model.t.replace('Model: ', '').replace(' Local', '');
+        option.addEventListener('click', () => window.selModel?.(model.id, model.name));
+        menu.appendChild(option);
+    });
 }
 
 window.addEventListener('keydown', event => {
@@ -123,6 +163,8 @@ function selectPal() {
     closePalette();
 }
 
+document.addEventListener('DOMContentLoaded', installOpenRouterModelMenu);
 window.openPalette = openPalette;
 window.closePalette = closePalette;
 window.updPal = updPal;
+window.installOpenRouterModelMenu = installOpenRouterModelMenu;
