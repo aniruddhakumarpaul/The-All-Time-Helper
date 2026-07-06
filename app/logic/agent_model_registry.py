@@ -1,62 +1,70 @@
 import os
-import threading
 
 
 CLOUD_MODEL_CONFIG = {
     "agentic-pro": {
-        "provider": "groq",
-        "model": "groq/llama-3.3-70b-versatile",
-        "classifier_model": "groq/llama-3.1-8b-instant",
-        "key_envs": ("GROQ_API_KEY",),
-    },
-    "gemma4-cloud": {
-        "provider": "groq",
-        "model": "groq/llama-3.1-8b-instant",
-        "classifier_model": "groq/llama-3.1-8b-instant",
-        "key_envs": ("GROQ_API_KEY",),
-    },
-    "gemma4-openrouter": {
         "provider": "openrouter",
-        "model": "openrouter/google/gemma-4-26b-a4b-it:free",
-        "classifier_model": "openrouter/google/gemma-4-26b-a4b-it:free",
+        "model": "openrouter/z-ai/glm-5.2",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": (
-            "openrouter/google/gemma-4-31b-it:free",
-            "openrouter/google/gemma-3-27b-it",
-            "openrouter/google/gemma-3-12b-it",
+            "openrouter/anthropic/claude-sonnet-5",
+            "openrouter/moonshotai/kimi-k2.7-code",
+            "openrouter/poolside/laguna-xs-2.1:free",
         ),
         "key_envs": ("OPENROUTER_API_KEY",),
     },
-    "gemini-1.5-flash-latest": {
-        "provider": "gemini",
-        "model": "gemini/gemini-1.5-flash-latest",
-        "classifier_model": "gemini/gemini-1.5-flash-latest",
-        "key_envs": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openrouter-auto": {
+        "provider": "openrouter",
+        "model": "openrouter/openrouter/auto",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "key_envs": ("OPENROUTER_API_KEY",),
     },
-    "gemini-1.5-pro-latest": {
-        "provider": "gemini",
-        "model": "gemini/gemini-1.5-pro-latest",
-        "classifier_model": "gemini/gemini-1.5-flash-latest",
-        "key_envs": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openrouter-claude-sonnet-5": {
+        "provider": "openrouter",
+        "model": "openrouter/anthropic/claude-sonnet-5",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "key_envs": ("OPENROUTER_API_KEY",),
+    },
+    "openrouter-kimi-code": {
+        "provider": "openrouter",
+        "model": "openrouter/moonshotai/kimi-k2.7-code",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "key_envs": ("OPENROUTER_API_KEY",),
+    },
+    "openrouter-laguna-code": {
+        "provider": "openrouter",
+        "model": "openrouter/poolside/laguna-xs-2.1:free",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/cohere/north-mini-code:free",),
+        "key_envs": ("OPENROUTER_API_KEY",),
+    },
+    "openrouter-nemotron-free": {
+        "provider": "openrouter",
+        "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/cohere/north-mini-code:free",),
+        "key_envs": ("OPENROUTER_API_KEY",),
+    },
+    "gemma4-openrouter": {
+        "provider": "openrouter",
+        "model": "openrouter/z-ai/glm-5.2",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": ("openrouter/poolside/laguna-xs-2.1:free",),
+        "key_envs": ("OPENROUTER_API_KEY",),
     },
 }
 
-_key_index = 0
-_key_lock = threading.Lock()
 
-
-def _groq_keys() -> list[str]:
-    return [key for key in (os.getenv("GROQ_API_KEY"), os.getenv("GROQ_API_KEY_BACKUP")) if key]
+def _looks_fake_key(value: str | None) -> bool:
+    cleaned = str(value or "").strip().lower()
+    return not cleaned or cleaned.startswith("your-") or "placeholder" in cleaned or "optional-" in cleaned
 
 
 def get_next_groq_key():
-    global _key_index
-    keys = _groq_keys()
-    if not keys:
-        return None
-    with _key_lock:
-        key = keys[_key_index % len(keys)]
-        _key_index += 1
-    return key
+    return None
 
 
 def is_cloud_model(model_id: str) -> bool:
@@ -71,15 +79,11 @@ def get_cloud_config(model_id: str) -> dict:
 
 def get_cloud_api_key(model_id: str, explicit_key: str = None) -> str:
     cfg = get_cloud_config(model_id)
-    if explicit_key:
+    if explicit_key and not _looks_fake_key(explicit_key):
         return explicit_key
-    if cfg["provider"] == "groq":
-        key = get_next_groq_key()
-        if key:
-            return key
     for env_name in cfg["key_envs"]:
         key = os.getenv(env_name)
-        if key:
+        if not _looks_fake_key(key):
             return key
     raise ValueError(f"{' or '.join(cfg['key_envs'])} missing - required for {model_id}.")
 
