@@ -42,6 +42,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('email_approval', '1', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
+        injectScript('context_drag_drop', '1', 'context-drag-drop');
     }
 
     if (document.readyState === 'loading') {
