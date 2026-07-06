@@ -22,7 +22,11 @@ from app.routes import auth, chat, email_delivery, health, proxy
 
 def get_allowed_origins() -> list[str]:
     configured = os.getenv("ALLOWED_ORIGINS", "http://localhost:9000")
-    return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    origins = [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    public_url = str(os.getenv("NGROK_PUBLIC_URL") or "").strip().rstrip("/")
+    if public_url and public_url not in origins:
+        origins.append(public_url)
+    return origins
 
 
 def append_cors_origin(app: FastAPI, public_url: str) -> list[str]:
