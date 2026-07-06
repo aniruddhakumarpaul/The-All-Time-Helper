@@ -2,6 +2,16 @@ if (localStorage.getItem('helper_user_v2')) {
     document.documentElement.classList.add('is-authenticated');
 }
 
+function removeLegacyPromptThemeButton() {
+    document.getElementById('theme-btn')?.remove();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', removeLegacyPromptThemeButton);
+} else {
+    removeLegacyPromptThemeButton();
+}
+
 window.__helperFrontendErrors = window.__helperFrontendErrors || [];
 window.addEventListener('error', function (event) {
     window.__helperFrontendErrors.push({
@@ -28,6 +38,7 @@ window.addEventListener('unhandledrejection', function (event) {
     }
 
     function inject() {
+        removeLegacyPromptThemeButton();
         injectScript('email_approval', '1', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
