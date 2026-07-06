@@ -12,14 +12,42 @@ OPENROUTER_KEY_ENVS = (
     "OPENROUTER_TOKEN",
 )
 
+FREE_AGENT_FALLBACKS = (
+    "openrouter/cohere/north-mini-code:free",
+    "openrouter/nvidia/nemotron-nano-9b-v2:free",
+)
+
 CLOUD_MODEL_CONFIG = {
     "agentic-pro": {
         "provider": "openrouter",
-        "model": "openrouter/z-ai/glm-5.2",
+        "model": "openrouter/poolside/laguna-xs-2.1:free",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": FREE_AGENT_FALLBACKS,
+        "key_envs": OPENROUTER_KEY_ENVS,
+    },
+    "openrouter-free-agent": {
+        "provider": "openrouter",
+        "model": "openrouter/poolside/laguna-xs-2.1:free",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": FREE_AGENT_FALLBACKS,
+        "key_envs": OPENROUTER_KEY_ENVS,
+    },
+    "openrouter-free-code": {
+        "provider": "openrouter",
+        "model": "openrouter/cohere/north-mini-code:free",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": (
-            "openrouter/anthropic/claude-sonnet-5",
-            "openrouter/moonshotai/kimi-k2.7-code",
+            "openrouter/poolside/laguna-xs-2.1:free",
+            "openrouter/nvidia/nemotron-nano-9b-v2:free",
+        ),
+        "key_envs": OPENROUTER_KEY_ENVS,
+    },
+    "openrouter-free-general": {
+        "provider": "openrouter",
+        "model": "openrouter/nvidia/nemotron-nano-9b-v2:free",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": (
+            "openrouter/cohere/north-mini-code:free",
             "openrouter/poolside/laguna-xs-2.1:free",
         ),
         "key_envs": OPENROUTER_KEY_ENVS,
@@ -28,21 +56,37 @@ CLOUD_MODEL_CONFIG = {
         "provider": "openrouter",
         "model": "openrouter/openrouter/auto",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
-        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "fallback_models": ("openrouter/poolside/laguna-xs-2.1:free",),
+        "key_envs": OPENROUTER_KEY_ENVS,
+    },
+    "openrouter-glm-agentic": {
+        "provider": "openrouter",
+        "model": "openrouter/z-ai/glm-5.2",
+        "classifier_model": "openrouter/cohere/north-mini-code:free",
+        "fallback_models": (
+            "openrouter/poolside/laguna-xs-2.1:free",
+            "openrouter/cohere/north-mini-code:free",
+        ),
         "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-claude-sonnet-5": {
         "provider": "openrouter",
         "model": "openrouter/anthropic/claude-sonnet-5",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
-        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "fallback_models": (
+            "openrouter/poolside/laguna-xs-2.1:free",
+            "openrouter/cohere/north-mini-code:free",
+        ),
         "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-kimi-code": {
         "provider": "openrouter",
         "model": "openrouter/moonshotai/kimi-k2.7-code",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
-        "fallback_models": ("openrouter/z-ai/glm-5.2",),
+        "fallback_models": (
+            "openrouter/cohere/north-mini-code:free",
+            "openrouter/poolside/laguna-xs-2.1:free",
+        ),
         "key_envs": OPENROUTER_KEY_ENVS,
     },
     "openrouter-laguna-code": {
@@ -54,16 +98,16 @@ CLOUD_MODEL_CONFIG = {
     },
     "openrouter-nemotron-free": {
         "provider": "openrouter",
-        "model": "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "model": "openrouter/nvidia/nemotron-nano-9b-v2:free",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
         "fallback_models": ("openrouter/cohere/north-mini-code:free",),
         "key_envs": OPENROUTER_KEY_ENVS,
     },
     "gemma4-openrouter": {
         "provider": "openrouter",
-        "model": "openrouter/z-ai/glm-5.2",
+        "model": "openrouter/poolside/laguna-xs-2.1:free",
         "classifier_model": "openrouter/cohere/north-mini-code:free",
-        "fallback_models": ("openrouter/poolside/laguna-xs-2.1:free",),
+        "fallback_models": FREE_AGENT_FALLBACKS,
         "key_envs": OPENROUTER_KEY_ENVS,
     },
 }
@@ -111,4 +155,15 @@ def cloud_candidate_models(cfg: dict) -> list[str]:
 
 def is_rate_limit_error(error: Exception) -> bool:
     message = str(error).lower()
-    return any(marker in message for marker in ("rate_limit", "rate limit", "429", "too many requests"))
+    markers = (
+        "rate_limit",
+        "rate limit",
+        "429",
+        "too many requests",
+        "402",
+        "more credits",
+        "fewer max_tokens",
+        "insufficient credits",
+        "can only afford",
+    )
+    return any(marker in message for marker in markers)
