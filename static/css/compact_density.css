@@ -1,0 +1,192 @@
+/* compact_density.css
+ * Desktop density pass for normal 100% browser zoom.
+ * Loaded after style_v3.css via bootstrap.js. Mobile breakpoints stay governed by style_v3.css.
+ */
+@media (min-width: 851px) {
+    #sidebar {
+        width: 288px;
+        padding: 16px;
+        margin: 12px 0 12px 12px;
+        border-radius: 22px;
+    }
+
+    .logo-box {
+        margin-bottom: 22px;
+        padding: 6px 0;
+    }
+
+    .logo-container {
+        width: 82px;
+        height: 82px;
+    }
+
+    .logo-img {
+        width: 66px;
+        height: 66px;
+    }
+
+    .logo-text {
+        font-size: 0.82rem;
+        letter-spacing: 1.5px;
+        margin-top: 10px;
+        gap: 6px;
+    }
+
+    .new-chat {
+        padding: 15px;
+        border-radius: 16px;
+        margin-bottom: 16px;
+        gap: 10px;
+    }
+
+    .user-profile {
+        padding: 12px !important;
+        margin-bottom: 14px !important;
+        border-radius: 14px !important;
+    }
+
+    .history-item {
+        padding: 10px 13px;
+        border-radius: 13px;
+        font-size: 0.86rem;
+    }
+
+    .bottom-nav {
+        padding-top: 14px;
+    }
+
+    .set-btn {
+        padding: 9px 10px;
+        border-radius: 10px;
+        font-size: 0.84rem;
+        gap: 10px;
+    }
+
+    #main-view {
+        max-width: 1020px;
+    }
+
+    #welcome {
+        max-width: 780px;
+        padding: 0 32px;
+    }
+
+    .greet-text {
+        font-size: 3.2rem;
+        letter-spacing: -1.4px;
+    }
+
+    .sub-text {
+        font-size: 1.35rem;
+    }
+
+    #chat-area {
+        padding: 28px 42px 28px 42px;
+    }
+
+    .msg {
+        margin-bottom: 24px;
+    }
+
+    .av-wrap {
+        gap: 10px;
+        margin-bottom: 6px;
+    }
+
+    .av,
+    .b-av {
+        width: 34px;
+        height: 34px;
+    }
+
+    .orb-svg {
+        width: 26px;
+        height: 26px;
+    }
+
+    .txt {
+        font-size: 0.98rem;
+        line-height: 1.58;
+        padding: 13px 17px;
+        max-width: 740px;
+    }
+
+    .txt>div pre {
+        padding: 12px 14px;
+        margin: 0.5em 0;
+    }
+
+    .chat-rendered-img {
+        max-height: 440px;
+        border-radius: 14px;
+        margin: 10px 0;
+    }
+
+    .ai-img-loading {
+        min-height: 220px;
+    }
+
+    #input-wrap {
+        padding: 10px 0 18px 0;
+    }
+
+    .pill-bar-container {
+        max-width: 760px;
+    }
+
+    .pill-bar {
+        padding: 8px 12px 8px 18px;
+        gap: 10px;
+        border-radius: 34px;
+    }
+
+    #prompt {
+        font-size: 0.86rem;
+        line-height: 1.55;
+        padding: 8px;
+        max-height: 160px;
+    }
+
+    #model-toggle {
+        transform: scale(0.94);
+        transform-origin: left center;
+    }
+
+    .action-btn,
+    .tool-btn,
+    .img-btn {
+        transform: scale(0.94);
+    }
+
+    .email-draft-card {
+        padding: 14px !important;
+        border-radius: 14px !important;
+    }
+
+    .email-draft-preview {
+        min-height: 135px !important;
+    }
+}
+
+@media (min-width: 851px) and (max-width: 1280px) {
+    #sidebar {
+        width: 270px;
+    }
+
+    #main-view {
+        max-width: calc(100vw - 300px);
+    }
+
+    #chat-area {
+        padding-left: 32px;
+        padding-right: 32px;
+    }
+
+    .txt {
+        max-width: 700px;
+    }
+
+    .chat-rendered-img {
+        max-height: 400px;
+    }
+}
