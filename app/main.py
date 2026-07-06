@@ -38,6 +38,7 @@ def run_local_server() -> None:
     port = int(os.getenv("PORT", "9000"))
     session = start_ngrok_if_enabled(port)
     if session.public_url:
+        os.environ["NGROK_PUBLIC_URL"] = session.public_url
         append_cors_origin(app, session.public_url)
         logger.info(f"[Main] Public Ngrok URL: {session.public_url}")
 
