@@ -8,6 +8,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         self.assertIn("composer_context_tray", bootstrap)
         self.assertIn("composer-context-tray", bootstrap)
+        self.assertIn("'2', 'composer-context-tray'", bootstrap)
         self.assertNotIn("context_drag_drop", bootstrap)
 
     def test_composer_context_stylesheet_is_loaded(self):
@@ -41,6 +42,16 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("st.attachedContexts", script)
         self.assertIn("state.attachedContexts.map(serializeAttachedContext)", app)
         self.assertIn("[Attached Context", app)
+
+    def test_context_tray_does_not_observe_its_own_rendering(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
+        self.assertIn("renderingTray", script)
+        self.assertIn("scheduleRender", script)
+        self.assertIn("installSourceObserver", script)
+        self.assertNotIn("observer.observe(document.body", script)
+        self.assertIn("#composer-context-tray", script)
+        self.assertIn("if (renderingTray) return", script)
 
 
 if __name__ == "__main__":
