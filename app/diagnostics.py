@@ -1,10 +1,16 @@
 import os
 import sqlite3
+from pathlib import Path
+
 import requests
 from dotenv import load_dotenv
+
 from app.logger import logger
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+OPENROUTER_KEY_ENVS = ("OPENROUTER_API_KEY", "OPENROUTER_KEY", "OPENROUTER_TOKEN")
 
 
 class TerminalColors:
@@ -24,9 +30,16 @@ warnings = 0
 
 
 def _has_real_value(name: str) -> bool:
-    value = str(os.getenv(name) or "").strip()
+    value = str(os.getenv(name) or "").strip().strip('"').strip("'")
     lowered = value.lower()
     return bool(value) and not lowered.startswith("your-") and "placeholder" not in lowered and "optional-" not in lowered
+
+
+def _first_real_env(names: tuple[str, ...]) -> tuple[str | None, str | None]:
+    for name in names:
+        if _has_real_value(name):
+            return name, str(os.getenv(name) or "").strip().strip('"').strip("'")
+    return None, None
 
 
 def print_status(component: str, status: str, message: str = ""):
@@ -59,10 +72,9 @@ def run_startup_diagnostics():
     print(" THE ALL TIME HELPER - PRE-FLIGHT DIAGNOSTICS")
     print(f"={'='*60}{TerminalColors.ENDC}\n")
 
-    openrouter_env = "OPENROUTER_" + "API_KEY"
-    if _has_real_value(openrouter_env):
-        key = os.getenv(openrouter_env, "")
-        print_status("Environment (OpenRouter)", "OK", f"Key loaded (...{key[-4:] if len(key)>4 else '***'})")
+    openrouter_name, openrouter_key = _first_real_env(OPENROUTER_KEY_ENVS)
+    if openrouter_key:
+        print_status("Environment (OpenRouter)", "OK", f"{openrouter_name} loaded (...{openrouter_key[-4:] if len(openrouter_key)>4 else '***'})")
     else:
         print_status("Environment (OpenRouter)", "WARN", "Missing OpenRouter key. Cloud models will be unavailable.")
 
@@ -76,9 +88,8 @@ def run_startup_diagnostics():
     else:
         print_status("Environment (Ngrok)", "WARN", "Missing NGROK_TOKEN. App will run locally.")
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     db_file = os.getenv("DB_FILE", "users.db")
-    db_path = db_file if os.path.isabs(db_file) else os.path.join(base_dir, db_file)
+    db_path = db_file if os.path.isabs(db_file) else os.path.join(str(BASE_DIR), db_file)
 
     if os.path.exists(db_path):
         try:
@@ -115,7 +126,7 @@ def run_startup_diagnostics():
     except requests.exceptions.RequestException:
         print_status("Ollama Connection", "WARN", "Cannot reach local Ollama daemon.")
 
-    if _has_real_value(openrouter_env):
+    if openrouter_key:
         print_status("Agentic Swarm (Cloud)", "OK", "OpenRouter infrastructure ready.")
     else:
         print_status("Agentic Swarm (Cloud)", "WARN", "OpenRouter key missing. Use local models until configured.")
@@ -133,12 +144,12 @@ def run_startup_diagnostics():
         print_status("Email (SMTP)", "WARN", "SMTP credentials missing. Email tool will return errors.")
 
     frontend_files = [
-        os.path.join(base_dir, "templates", "index.html"),
-        os.path.join(base_dir, "static", "js", "app.js"),
-        os.path.join(base_dir, "static", "js", "utils.js"),
-        os.path.join(base_dir, "static", "js", "ui.js"),
+        os.path.join(str(BASE_DIR), "templates", "index.html"),
+        os.path.join(str(BASE_DIR), "static", "js", "app.js"),
+        os.path.join(str(BASE_DIR), "static", "js", "utils.js"),
+        os.path.join(str(BASE_DIR), "static", "js", "ui.js"),
     ]
-    missing_files = [os.path.relpath(path, base_dir) for path in frontend_files if not os.path.exists(path)]
+    missing_files = [os.path.relpath(path, str(BASE_DIR)) for path in frontend_files if not os.path.exists(path)]
     if missing_files:
         print_status("Frontend Assets", "FAIL", f"Missing critical files: {', '.join(missing_files)}")
     else:
