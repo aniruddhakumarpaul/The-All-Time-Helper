@@ -7,6 +7,7 @@
     const MAX_ITEMS = 6;
     const MAX_ITEM_CHARS = 6000;
     const MAX_TOTAL_CHARS = 18000;
+    const MAX_VISIBLE_CHARS = 180;
 
     if (window[EXTENSION_MARKER]) return;
     window[EXTENSION_MARKER] = true;
@@ -14,9 +15,16 @@
     let renderQueued = false;
     let renderingTray = false;
     let clearAfterSendQueued = false;
+    let pendingSentContexts = [];
 
     function state() {
         return window.__helperState || null;
+    }
+
+    function activeChat() {
+        const st = state();
+        if (!st?.activeId || !Array.isArray(st.chats)) return null;
+        return st.chats.find(chat => String(chat.id) === String(st.activeId)) || null;
     }
 
     function escapeHtml(value) {
@@ -32,6 +40,20 @@
         return String(value || '').trim().slice(0, size);
     }
 
+    function compactText(value, size = MAX_VISIBLE_CHARS) {
+        return clip(String(value || '').replace(/\s+/g, ' '), size);
+    }
+
+    function cloneContextItems(items) {
+        return (Array.isArray(items) ? items : []).slice(0, MAX_ITEMS).map(item => ({
+            kind: item.kind || 'text',
+            title: clip(item.title || labelForKind(item.kind), 80),
+            subtitle: clip(item.subtitle || '', 140),
+            text: clip(item.text || '', MAX_ITEM_CHARS),
+            preview: item.preview || '',
+        })).filter(item => item.text);
+    }
+
     function totalChars(items) {
         return items.reduce((total, item) => total + String(item.text || '').length, 0);
     }
@@ -41,6 +63,29 @@
         if (kind === 'email') return 'Email Widget';
         if (kind === 'widget') return 'Widget Target';
         return 'Text Target';
+    }
+
+    function iconForKind(kind) {
+        if (kind === 'image') return '▧';
+        if (kind === 'email') return '✉';
+        if (kind === 'widget') return '◈';
+        return '¶';
+    }
+
+    function contextCardHtml(item, mode = 'composer') {
+        const kind = item.kind || 'text';
+        const title = item.title || labelForKind(kind);
+        const subtitle = item.subtitle || compactText(item.text, mode === 'chat' ? 140 : 90);
+        const thumb = kind === 'image' && item.preview
+            ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
+            : `<span class="composer-context-icon">${escapeHtml(iconForKind(kind))}</span>`;
+        return `
+            ${thumb}
+            <div class="composer-context-meta">
+                <strong>${escapeHtml(title)}</strong>
+                <span>${escapeHtml(subtitle)}</span>
+            </div>
+        `;
     }
 
     function ensureTray() {
@@ -77,20 +122,7 @@
                 const chip = document.createElement('div');
                 chip.className = `composer-context-chip composer-context-${kind}`;
                 chip.dataset.index = String(index);
-                const title = item.title || labelForKind(kind);
-                const subtitle = item.subtitle || clip(item.text, 90).replace(/\s+/g, ' ');
-                const icon = kind === 'image' ? '▧' : kind === 'email' ? '✉' : kind === 'widget' ? '◈' : '¶';
-                const thumb = kind === 'image' && item.preview
-                    ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
-                    : `<span class="composer-context-icon">${escapeHtml(icon)}</span>`;
-                chip.innerHTML = `
-                    ${thumb}
-                    <div class="composer-context-meta">
-                        <strong>${escapeHtml(title)}</strong>
-                        <span>${escapeHtml(subtitle)}</span>
-                    </div>
-                    <button type="button" class="composer-context-remove" aria-label="Remove context">×</button>
-                `;
+                chip.innerHTML = `${contextCardHtml(item)}<button type="button" class="composer-context-remove" aria-label="Remove context">×</button>`;
                 chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
                     contextItems().splice(index, 1);
                     scheduleRender();
@@ -122,29 +154,6 @@
         scheduleRender();
     }
 
-    function scheduleClearAfterSend() {
-        if (clearAfterSendQueued) return;
-        clearAfterSendQueued = true;
-        let attempts = 0;
-        const tick = () => {
-            const prompt = document.getElementById('prompt');
-            const stopBtn = document.getElementById('stop-btn');
-            const sendBtn = document.getElementById('main-send-btn');
-            const promptCleared = !prompt || !String(prompt.value || '').trim();
-            const requestStarted = Boolean(state()?.abortController)
-                || stopBtn?.style.display === 'flex'
-                || sendBtn?.style.display === 'none';
-            if ((promptCleared && requestStarted) || attempts >= 120) {
-                clearAfterSendQueued = false;
-                clearContexts();
-                return;
-            }
-            attempts += 1;
-            setTimeout(tick, 50);
-        };
-        setTimeout(tick, 0);
-    }
-
     function addContext(item) {
         const items = contextItems();
         if (!item || !item.text || items.length >= MAX_ITEMS) return false;
@@ -161,6 +170,49 @@
         });
         scheduleRender();
         return true;
+    }
+
+    function attachPendingContextsToLatestUserMessage() {
+        if (!pendingSentContexts.length) return false;
+        const chat = activeChat();
+        if (!chat || !Array.isArray(chat.ms) || !chat.ms.length) return false;
+        for (let idx = chat.ms.length - 1; idx >= 0; idx -= 1) {
+            const message = chat.ms[idx];
+            if (message?.r !== 'u') continue;
+            if (!Array.isArray(message.contexts) || !message.contexts.length) {
+                message.contexts = cloneContextItems(pendingSentContexts);
+            }
+            renderChatContextWidgets();
+            return true;
+        }
+        return false;
+    }
+
+    function scheduleClearAfterSend() {
+        if (clearAfterSendQueued) return;
+        pendingSentContexts = cloneContextItems(contextItems());
+        if (!pendingSentContexts.length) return;
+        clearAfterSendQueued = true;
+        let attempts = 0;
+        const tick = () => {
+            const prompt = document.getElementById('prompt');
+            const stopBtn = document.getElementById('stop-btn');
+            const sendBtn = document.getElementById('main-send-btn');
+            const promptCleared = !prompt || !String(prompt.value || '').trim();
+            const requestStarted = Boolean(state()?.abortController)
+                || stopBtn?.style.display === 'flex'
+                || sendBtn?.style.display === 'none';
+            const attached = attachPendingContextsToLatestUserMessage();
+            if ((attached && promptCleared && requestStarted) || attempts >= 120) {
+                clearAfterSendQueued = false;
+                clearContexts();
+                pendingSentContexts = [];
+                return;
+            }
+            attempts += 1;
+            setTimeout(tick, 50);
+        };
+        setTimeout(tick, 0);
     }
 
     function emailDraftContextFromCard(card) {
@@ -189,7 +241,7 @@
         return {
             kind: 'image',
             title: 'Image Target',
-            subtitle: clip(alt.replace(/\s+/g, ' '), 96),
+            subtitle: compactText(alt, 96),
             preview: src,
             text: `[Target Image]\nUse this image as explicit context for the next request.\nImage source: ${src}\nImage description/context: ${alt}`,
         };
@@ -206,7 +258,7 @@
         return {
             kind: 'text',
             title: role,
-            subtitle: clip(text.replace(/\s+/g, ' '), 120),
+            subtitle: compactText(text, 120),
             text: `[Target Text]\n${text}`,
         };
     }
@@ -221,7 +273,7 @@
         return {
             kind: 'widget',
             title: 'Widget Target',
-            subtitle: clip(text.replace(/\s+/g, ' '), 120),
+            subtitle: compactText(text, 120),
             text: `[Target Widget]\n${text}`,
         };
     }
@@ -273,7 +325,7 @@
         }
         const text = event.dataTransfer?.getData('text/plain') || '';
         if (!text.trim()) return null;
-        return { kind: 'text', title: 'Dropped Text', subtitle: clip(text.replace(/\s+/g, ' '), 120), text: `[Target Text]\n${text}` };
+        return { kind: 'text', title: 'Dropped Text', subtitle: compactText(text, 120), text: `[Target Text]\n${text}` };
     }
 
     function installDropTarget() {
@@ -306,8 +358,34 @@
         }, true);
     }
 
+    function renderChatContextWidgets() {
+        const chat = activeChat();
+        const chatArea = document.getElementById('chat-area');
+        if (!chat || !chatArea || !Array.isArray(chat.ms)) return;
+        const messages = Array.from(chatArea.querySelectorAll('.msg'));
+        messages.forEach((node, index) => {
+            const message = chat.ms[index];
+            const contexts = cloneContextItems(message?.contexts || []);
+            const txt = node.querySelector('.txt');
+            if (!txt || node.querySelector('.chat-context-strip')) return;
+            if (!contexts.length || message?.r !== 'u') return;
+            const strip = document.createElement('div');
+            strip.className = 'chat-context-strip';
+            strip.setAttribute('aria-label', 'Context used for this prompt');
+            strip.innerHTML = `<div class="chat-context-title">Targeted Context</div>`;
+            for (const item of contexts) {
+                const card = document.createElement('div');
+                card.className = `chat-context-card composer-context-${item.kind || 'text'}`;
+                card.innerHTML = contextCardHtml(item, 'chat');
+                strip.appendChild(card);
+            }
+            txt.insertBefore(strip, txt.firstChild);
+        });
+    }
+
     function installSourceObserver() {
         markDraggable(document);
+        renderChatContextWidgets();
         const observedRoots = [
             document.getElementById('chat-area'),
             document.getElementById('context-results'),
@@ -327,7 +405,10 @@
                     changed = true;
                 }
             }
-            if (changed) scheduleRender();
+            if (changed) {
+                scheduleRender();
+                setTimeout(renderChatContextWidgets, 0);
+            }
         });
         for (const root of observedRoots) {
             observer.observe(root, { childList: true, subtree: true });
@@ -336,6 +417,7 @@
         document.getElementById('prompt')?.addEventListener('keydown', event => {
             if (event.key === 'Enter' && !event.shiftKey) scheduleClearAfterSend();
         });
+        window.addEventListener('popstate', () => setTimeout(renderChatContextWidgets, 0));
     }
 
     function init() {
@@ -347,6 +429,7 @@
         window.addComposerContext = addContext;
         window.clearComposerContextTray = clearContexts;
         window.renderComposerContextTray = scheduleRender;
+        window.renderChatContextWidgets = renderChatContextWidgets;
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
