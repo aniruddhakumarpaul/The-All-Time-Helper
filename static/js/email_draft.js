@@ -1,7 +1,8 @@
 // email_draft.js
 // Restores the email-draft frontend surface that is produced by backend agent tools.
 // The backend emits EMAIL_DRAFT_PAYLOAD / EMAIL_DRAFT_CONTEXT markers; this module
-// turns them into safe UI cards and preserves drag/drop context for follow-up work.
+// turns them into safe UI cards, preserves drag/drop context, and lets the user
+// explicitly approve deterministic email delivery.
 (function () {
     const MARKERS = ['EMAIL_DRAFT_CONTEXT:', 'EMAIL_DRAFT_PAYLOAD:'];
     const DRAFT_MIME = 'application/x-helper-email-draft';
@@ -127,11 +128,17 @@
         return names.join(', ');
     }
 
+    function generateRequestId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+        return `email-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
     function buildEmailDraftCard(draft) {
         const card = document.createElement('div');
         card.className = 'email-draft-card';
         card.setAttribute('draggable', 'true');
         card.dataset.emailDraft = JSON.stringify(draft);
+        card.dataset.emailDraftRequestId = generateRequestId();
         card.style.cssText = 'margin:14px 0;padding:16px;border:1px solid var(--glass-border);border-radius:16px;background:rgba(255,255,255,0.045);box-shadow:0 12px 30px rgba(0,0,0,0.18);cursor:grab;max-width:100%;';
 
         const header = document.createElement('div');
@@ -181,7 +188,20 @@
         iframe.srcdoc = renderSafeBodyHtml(draft.body || '');
         iframe.style.cssText = 'width:100%;min-height:160px;border:0;border-radius:12px;background:#fff;';
 
-        card.append(header, grid, bodyLabel, body, previewLabel, iframe);
+        const actions = document.createElement('div');
+        actions.className = 'email-draft-actions';
+        actions.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;';
+        const approve = document.createElement('button');
+        approve.type = 'button';
+        approve.className = 'email-draft-approve-btn';
+        approve.textContent = 'Approve & Send';
+        approve.style.cssText = 'border:0;border-radius:999px;padding:9px 15px;background:var(--accent-blue);color:#fff;font-weight:800;cursor:pointer;';
+        const status = document.createElement('span');
+        status.className = 'email-draft-send-status';
+        status.style.cssText = 'font-size:.78rem;color:var(--text-sub);';
+        actions.append(approve, status);
+
+        card.append(header, grid, bodyLabel, body, previewLabel, iframe, actions);
         card.__emailDraft = draft;
         return card;
     }
@@ -212,6 +232,43 @@
         return stripInternalEmailDraftMarkers(raw);
     }
 
+    async function approveEmailDraft(card) {
+        const draft = collectEmailDraftForDrag(card);
+        const status = card?.querySelector('.email-draft-send-status');
+        const button = card?.querySelector('.email-draft-approve-btn');
+        if (!draft || !card) return;
+        const adminKey = window.prompt('Enter admin key to approve this email send:');
+        if (!adminKey) return;
+        const token = localStorage.getItem('helper_token_v2') || '';
+        const requestId = card.dataset.emailDraftRequestId || generateRequestId();
+        card.dataset.emailDraftRequestId = requestId;
+        if (button) { button.disabled = true; button.textContent = 'Sending...'; }
+        if (status) { status.textContent = 'Validating and sending...'; status.style.color = 'var(--text-sub)'; }
+        try {
+            const response = await fetch('/email/send-draft', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                    'ngrok-skip-browser-warning': '69420',
+                },
+                body: JSON.stringify({ draft, admin_key: adminKey, request_id: requestId }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                const message = data.detail || data.status || data.error || `Send failed with status ${response.status}`;
+                if (status) { status.textContent = message; status.style.color = '#ef4444'; }
+                if (button) { button.disabled = false; button.textContent = 'Approve & Send'; }
+                return;
+            }
+            if (status) { status.textContent = data.status || 'Email sent.'; status.style.color = '#22c55e'; }
+            if (button) { button.textContent = data.mode === 'simulated' ? 'Simulated' : 'Sent'; }
+        } catch (error) {
+            if (status) { status.textContent = `Send failed: ${error.message}`; status.style.color = '#ef4444'; }
+            if (button) { button.disabled = false; button.textContent = 'Approve & Send'; }
+        }
+    }
+
     function showDraftContextPanel(draft) {
         const card = document.getElementById('neural-context-card');
         const container = document.getElementById('context-results');
@@ -235,6 +292,7 @@
         rootEl.querySelectorAll('.email-draft-card').forEach(card => {
             if (card.dataset.emailDraftHydrated === 'true') return;
             card.dataset.emailDraftHydrated = 'true';
+            if (!card.dataset.emailDraftRequestId) card.dataset.emailDraftRequestId = generateRequestId();
             const draft = collectEmailDraftForDrag(card);
             if (!draft) return;
             card.__emailDraft = draft;
@@ -244,6 +302,11 @@
                 event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(emailDraft));
                 event.dataTransfer.setData("text/plain", `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`);
                 event.dataTransfer.effectAllowed = 'copy';
+            });
+            card.querySelector('.email-draft-approve-btn')?.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                approveEmailDraft(card);
             });
         });
     }
@@ -289,5 +352,6 @@
     window.collectEmailDraftForDrag = collectEmailDraftForDrag;
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
+    window.approveEmailDraft = approveEmailDraft;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
 })();
