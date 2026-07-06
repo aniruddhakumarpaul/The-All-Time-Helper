@@ -25,6 +25,26 @@ class EmailWidgetInterceptTests(unittest.TestCase):
         self.assertEqual(draft["attachment_content"], "base64-image")
         self.assertEqual(draft["attachment_filename"], "apple.png")
 
+    def test_intercept_uses_plain_ndjson_response_not_streaming_response(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "app" / "services" / "email_widget_intercept.py").read_text(encoding="utf-8")
+        self.assertIn("from fastapi.responses import Response", source)
+        self.assertIn("_email_widget_ndjson", source)
+        self.assertIn("Response(content=_email_widget_ndjson(message), media_type=\"application/x-ndjson\")", source)
+        self.assertNotIn("StreamingResponse", source)
+
+    def test_request_body_replay_is_one_shot(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "app" / "services" / "email_widget_intercept.py").read_text(encoding="utf-8")
+        self.assertIn("sent = False", source)
+        self.assertIn("if not sent:", source)
+        self.assertIn("sent = True", source)
+        self.assertIn("await anyio.sleep(86400)", source)
+
     def test_factory_installs_intercept_middleware(self):
         from pathlib import Path
 
