@@ -92,7 +92,11 @@
         hydrateApprovalButtons(rootEl);
     };
 
-    document.addEventListener('DOMContentLoaded', () => hydrateApprovalButtons(document));
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => hydrateApprovalButtons(document));
+    } else {
+        hydrateApprovalButtons(document);
+    }
     window.approveEmailDraft = approveEmailDraft;
     window.hydrateEmailDraftApprovalButtons = hydrateApprovalButtons;
 })();
