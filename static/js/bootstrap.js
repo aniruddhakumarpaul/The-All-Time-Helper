@@ -42,7 +42,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('email_approval', '1', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
-        injectScript('composer_context_tray', '2', 'composer-context-tray');
+        injectScript('composer_context_tray', '3', 'composer-context-tray');
     }
 
     if (document.readyState === 'loading') {
