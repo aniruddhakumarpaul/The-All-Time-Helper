@@ -17,14 +17,19 @@ window.addEventListener('unhandledrejection', function (event) {
     });
 });
 
-(function loadSupplementalFrontendExtension() {
-    function inject() {
-        if (document.querySelector('script[data-helper-extension="draft-send"]')) return;
+(function loadSupplementalFrontendExtensions() {
+    function injectScript(name, version, marker) {
+        if (document.querySelector(`script[data-helper-extension="${marker}"]`)) return;
         var script = document.createElement('script');
-        script.src = '/static/js/' + 'email_' + 'approval.js?v=1';
+        script.src = '/static/js/' + name + '.js?v=' + version;
         script.defer = true;
-        script.dataset.helperExtension = 'draft-send';
+        script.dataset.helperExtension = marker;
         document.body.appendChild(script);
+    }
+
+    function inject() {
+        injectScript('email_approval', '1', 'draft-send');
+        injectScript('admin_dashboard', '1', 'admin-dashboard');
     }
 
     if (document.readyState === 'loading') {
