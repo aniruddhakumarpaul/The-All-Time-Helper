@@ -30,6 +30,7 @@ window.addEventListener('unhandledrejection', function (event) {
     function inject() {
         injectScript('email_approval', '1', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
+        injectScript('job_center', '1', 'job-center');
     }
 
     if (document.readyState === 'loading') {
