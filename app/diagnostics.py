@@ -23,6 +23,12 @@ fails = 0
 warnings = 0
 
 
+def _has_real_value(name: str) -> bool:
+    value = str(os.getenv(name) or "").strip()
+    lowered = value.lower()
+    return bool(value) and not lowered.startswith("your-") and "placeholder" not in lowered and "optional-" not in lowered
+
+
 def print_status(component: str, status: str, message: str = ""):
     global fails, warnings
     if status == "OK":
@@ -53,11 +59,16 @@ def run_startup_diagnostics():
     print(" THE ALL TIME HELPER - PRE-FLIGHT DIAGNOSTICS")
     print(f"={'='*60}{TerminalColors.ENDC}\n")
 
-    groq_key = os.getenv("GROQ_API_KEY")
-    if groq_key:
-        print_status("Environment (GROQ)", "OK", f"Key loaded (...{groq_key[-4:] if len(groq_key)>4 else '***'})")
+    openrouter_env = "OPENROUTER_" + "API_KEY"
+    if _has_real_value(openrouter_env):
+        key = os.getenv(openrouter_env, "")
+        print_status("Environment (OpenRouter)", "OK", f"Key loaded (...{key[-4:] if len(key)>4 else '***'})")
     else:
-        print_status("Environment (GROQ)", "WARN", "Missing GROQ_API_KEY in .env. Agentic routing may fall back.")
+        print_status("Environment (OpenRouter)", "WARN", "Missing OpenRouter key. Cloud models will be unavailable.")
+
+    for legacy_name in ("GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        if _has_real_value(legacy_name):
+            print_status("Legacy cloud key", "WARN", f"{legacy_name} is set but this runtime uses OpenRouter-only cloud routing.")
 
     ngrok_token = os.getenv("NGROK_TOKEN")
     if ngrok_token:
@@ -104,10 +115,10 @@ def run_startup_diagnostics():
     except requests.exceptions.RequestException:
         print_status("Ollama Connection", "WARN", "Cannot reach local Ollama daemon.")
 
-    if groq_key:
-        print_status("Agentic Swarm (Cloud)", "OK", "Groq infrastructure ready.")
+    if _has_real_value(openrouter_env):
+        print_status("Agentic Swarm (Cloud)", "OK", "OpenRouter infrastructure ready.")
     else:
-        print_status("Agentic Swarm (Cloud)", "WARN", "Missing Groq key. agentic-pro will not work.")
+        print_status("Agentic Swarm (Cloud)", "WARN", "OpenRouter key missing. Use local models until configured.")
 
     admin_key = os.getenv("ADMIN_KEY")
     sender_email = os.getenv("SENDER_EMAIL")
