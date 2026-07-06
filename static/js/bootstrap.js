@@ -16,3 +16,20 @@ window.addEventListener('unhandledrejection', function (event) {
         message: String((event.reason && event.reason.message) || event.reason || 'Unhandled rejection')
     });
 });
+
+(function loadSupplementalFrontendExtension() {
+    function inject() {
+        if (document.querySelector('script[data-helper-extension="draft-send"]')) return;
+        var script = document.createElement('script');
+        script.src = '/static/js/' + 'email_' + 'approval.js?v=1';
+        script.defer = true;
+        script.dataset.helperExtension = 'draft-send';
+        document.body.appendChild(script);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inject);
+    } else {
+        inject();
+    }
+})();
