@@ -17,7 +17,7 @@ from app.logic.cloud_token_budget import apply_cloud_token_budget
 
 apply_cloud_token_budget()
 
-from app.routes import auth, chat, email_delivery, health, proxy
+from app.routes import admin, auth, chat, email_delivery, health, proxy
 
 
 def get_allowed_origins() -> list[str]:
@@ -79,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(email_delivery.router)
     app.include_router(proxy.router)
+    app.include_router(admin.router)
     app.include_router(health.router)
     init_db()
     return app
