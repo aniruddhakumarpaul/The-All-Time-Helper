@@ -14,6 +14,7 @@ load_dotenv(BASE_DIR / ".env")
 from app.database import init_db
 from app.logger import logger
 from app.logic.cloud_token_budget import apply_cloud_token_budget
+from app.services.email_widget_intercept import email_widget_chat_middleware
 
 apply_cloud_token_budget()
 
@@ -61,6 +62,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="The All Time Helper - Pro", lifespan=lifespan)
+    app.middleware("http")(email_widget_chat_middleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=get_allowed_origins(),
