@@ -1,11 +1,18 @@
 // composer_context_tray.js
 // Drag chat text, images, and widgets into the prompt area as targeted context chips.
 (function () {
+    const EXTENSION_MARKER = '__composerContextTrayInstalled';
     const CONTEXT_MIME = 'application/x-helper-composer-context';
     const EMAIL_DRAFT_MIME = 'application/x-helper-email-draft';
     const MAX_ITEMS = 6;
     const MAX_ITEM_CHARS = 6000;
     const MAX_TOTAL_CHARS = 18000;
+
+    if (window[EXTENSION_MARKER]) return;
+    window[EXTENSION_MARKER] = true;
+
+    let renderQueued = false;
+    let renderingTray = false;
 
     function state() {
         return window.__helperState || null;
@@ -57,37 +64,52 @@
     }
 
     function renderTray() {
+        if (renderingTray) return;
         const tray = ensureTray();
         if (!tray) return;
         const items = contextItems();
-        tray.innerHTML = '';
-        tray.classList.toggle('has-context', items.length > 0);
-        if (!items.length) return;
-        for (const [index, item] of items.entries()) {
-            const kind = item.kind || 'text';
-            const chip = document.createElement('div');
-            chip.className = `composer-context-chip composer-context-${kind}`;
-            chip.dataset.index = String(index);
-            const title = item.title || labelForKind(kind);
-            const subtitle = item.subtitle || clip(item.text, 90).replace(/\s+/g, ' ');
-            const icon = kind === 'image' ? '▧' : kind === 'email' ? '✉' : kind === 'widget' ? '◈' : '¶';
-            const thumb = kind === 'image' && item.preview
-                ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
-                : `<span class="composer-context-icon">${escapeHtml(icon)}</span>`;
-            chip.innerHTML = `
-                ${thumb}
-                <div class="composer-context-meta">
-                    <strong>${escapeHtml(title)}</strong>
-                    <span>${escapeHtml(subtitle)}</span>
-                </div>
-                <button type="button" class="composer-context-remove" aria-label="Remove context">×</button>
-            `;
-            chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
-                contextItems().splice(index, 1);
-                renderTray();
-            });
-            tray.appendChild(chip);
+        renderingTray = true;
+        try {
+            tray.innerHTML = '';
+            tray.classList.toggle('has-context', items.length > 0);
+            if (!items.length) return;
+            for (const [index, item] of items.entries()) {
+                const kind = item.kind || 'text';
+                const chip = document.createElement('div');
+                chip.className = `composer-context-chip composer-context-${kind}`;
+                chip.dataset.index = String(index);
+                const title = item.title || labelForKind(kind);
+                const subtitle = item.subtitle || clip(item.text, 90).replace(/\s+/g, ' ');
+                const icon = kind === 'image' ? '▧' : kind === 'email' ? '✉' : kind === 'widget' ? '◈' : '¶';
+                const thumb = kind === 'image' && item.preview
+                    ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
+                    : `<span class="composer-context-icon">${escapeHtml(icon)}</span>`;
+                chip.innerHTML = `
+                    ${thumb}
+                    <div class="composer-context-meta">
+                        <strong>${escapeHtml(title)}</strong>
+                        <span>${escapeHtml(subtitle)}</span>
+                    </div>
+                    <button type="button" class="composer-context-remove" aria-label="Remove context">×</button>
+                `;
+                chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
+                    contextItems().splice(index, 1);
+                    scheduleRender();
+                });
+                tray.appendChild(chip);
+            }
+        } finally {
+            renderingTray = false;
         }
+    }
+
+    function scheduleRender() {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+            renderQueued = false;
+            renderTray();
+        });
     }
 
     function addContext(item) {
@@ -104,7 +126,7 @@
             text,
             preview: item.preview || '',
         });
-        renderTray();
+        scheduleRender();
         return true;
     }
 
@@ -230,7 +252,7 @@
             const target = targetFromEvent(event);
             if (!target) return;
             event.preventDefault();
-            event.dataTransfer.dropEffect = 'copy';
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
             ensureTray()?.classList.add('composer-drop-active');
         }, true);
         document.addEventListener('dragleave', event => {
@@ -251,20 +273,35 @@
         }, true);
     }
 
-    function installAutoRefresh() {
+    function installSourceObserver() {
         markDraggable(document);
+        const observedRoots = [
+            document.getElementById('chat-area'),
+            document.getElementById('context-results'),
+            document.getElementById('settings-modal'),
+            document.getElementById('admin-ops-modal'),
+            document.getElementById('job-center-modal'),
+        ].filter(Boolean);
         const observer = new MutationObserver(records => {
+            if (renderingTray) return;
+            let changed = false;
             for (const record of records) {
+                if (record.target?.closest?.('#composer-context-tray')) continue;
                 for (const node of record.addedNodes) {
-                    if (node.nodeType === 1) markDraggable(node);
+                    if (node.nodeType !== 1) continue;
+                    if (node.closest?.('#composer-context-tray')) continue;
+                    markDraggable(node);
+                    changed = true;
                 }
             }
-            renderTray();
+            if (changed) scheduleRender();
         });
-        observer.observe(document.body, { childList: true, subtree: true });
-        document.getElementById('main-send-btn')?.addEventListener('click', () => setTimeout(renderTray, 300));
+        for (const root of observedRoots) {
+            observer.observe(root, { childList: true, subtree: true });
+        }
+        document.getElementById('main-send-btn')?.addEventListener('click', () => setTimeout(scheduleRender, 300));
         document.getElementById('prompt')?.addEventListener('keydown', event => {
-            if (event.key === 'Enter' && !event.shiftKey) setTimeout(renderTray, 300);
+            if (event.key === 'Enter' && !event.shiftKey) setTimeout(scheduleRender, 300);
         });
     }
 
@@ -273,9 +310,9 @@
         renderTray();
         installDragSource();
         installDropTarget();
-        installAutoRefresh();
+        installSourceObserver();
         window.addComposerContext = addContext;
-        window.renderComposerContextTray = renderTray;
+        window.renderComposerContextTray = scheduleRender;
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
