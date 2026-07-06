@@ -20,15 +20,18 @@ function paletteActions() {
 
 function paletteModels() {
     return [
-        { t: 'Model: Antigravity Flash', i: '⚡', id: 'gemini-1.5-flash-latest', name: 'Antigravity Flash (Cloud)' },
-        { t: 'Model: Antigravity Pro', i: '💎', id: 'gemini-1.5-pro-latest', name: 'Antigravity Pro (Cloud)' },
-        { t: 'Model: Agentic Swarm', i: '🧠', id: 'agentic-pro', name: 'Agentic Swarm (Supervisor)' },
-        { t: 'Model: Gemma 4', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
-        { t: 'Model: Gemma 2', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
-        { t: 'Model: Mistral', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
-        { t: 'Model: Llama Sensitive', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
-        { t: 'Model: Phi 3', i: 'φ', id: 'phi3', name: 'Phi 3' },
-        { t: 'Model: Moondream Vision', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
+        { t: 'Model: GLM 5.2 Agentic', i: '🧠', id: 'agentic-pro', name: 'GLM 5.2 Agentic (OpenRouter)' },
+        { t: 'Model: OpenRouter Auto', i: '🧭', id: 'openrouter-auto', name: 'OpenRouter Auto' },
+        { t: 'Model: Claude Sonnet 5', i: '💎', id: 'openrouter-claude-sonnet-5', name: 'Claude Sonnet 5 (OpenRouter)' },
+        { t: 'Model: Kimi K2.7 Code', i: '⌨️', id: 'openrouter-kimi-code', name: 'Kimi K2.7 Code (OpenRouter)' },
+        { t: 'Model: Laguna XS Code', i: '🏊', id: 'openrouter-laguna-code', name: 'Laguna XS Code (OpenRouter)' },
+        { t: 'Model: Nemotron Free', i: '🆓', id: 'openrouter-nemotron-free', name: 'Nemotron 3 Ultra Free (OpenRouter)' },
+        { t: 'Model: Gemma 4 Local', i: '🔷', id: 'gemma4:e2b', name: 'Gemma 4' },
+        { t: 'Model: Gemma 2 Local', i: '⚡', id: 'gemma2:2b', name: 'Gemma 2 (Fast&Fun)' },
+        { t: 'Model: Mistral Local', i: '🌊', id: 'dolphin-mistral', name: 'Mistral (Uncensored)' },
+        { t: 'Model: Llama Sensitive Local', i: '🦙', id: 'helper', name: 'Llama (Sensitive)' },
+        { t: 'Model: Phi 3 Local', i: 'φ', id: 'phi3', name: 'Phi 3' },
+        { t: 'Model: Moondream Vision Local', i: '👁️', id: 'moondream', name: 'Moondream (Vision)' },
     ].map(model => ({
         ...model,
         a: () => window.selModel?.(model.id, model.name),
