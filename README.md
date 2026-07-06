@@ -14,6 +14,7 @@ SENDER_EMAIL=your-email@gmail.com
 SENDER_PWD=your-app-password
 
 # Ngrok Configuration (optional local tunnel)
+ENABLE_NGROK=false
 NGROK_TOKEN=your-ngrok-auth-token
 
 # Security
@@ -45,6 +46,8 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m app.main
 ```
+
+Set `ENABLE_NGROK=true` to start an Ngrok tunnel with this local launcher. The public URL is logged at startup. Direct `uvicorn app.main:app ...` startup intentionally does not create or mutate Ngrok tunnels.
 
 Alternative:
 

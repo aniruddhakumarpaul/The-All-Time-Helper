@@ -25,20 +25,34 @@ if __package__ in {None, ""}:
     # at the repository when launched from an IDE run button.
     os.chdir(repo_root_str)
 
-from app.factory import BASE_DIR, create_app
+from app.factory import BASE_DIR, append_cors_origin, create_app
 from app.logger import logger
+from app.services.ngrok import start_ngrok_if_enabled, stop_ngrok
 
 app = create_app()
 
 
-if __name__ == "__main__":
+def run_local_server() -> None:
     import uvicorn
 
-    logger.info("[Main] BINDING TO: 0.0.0.0:9000")
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=9000,
-        reload=True,
-        reload_dirs=[str(BASE_DIR / path) for path in ("app", "static", "templates")],
-    )
+    port = int(os.getenv("PORT", "9000"))
+    session = start_ngrok_if_enabled(port)
+    if session.public_url:
+        append_cors_origin(app, session.public_url)
+        logger.info(f"[Main] Public Ngrok URL: {session.public_url}")
+
+    logger.info(f"[Main] Binding to http://0.0.0.0:{port}")
+    try:
+        uvicorn.run(
+            "app.main:app",
+            host="0.0.0.0",
+            port=port,
+            reload=True,
+            reload_dirs=[str(BASE_DIR / path) for path in ("app", "static", "templates")],
+        )
+    finally:
+        stop_ngrok(session)
+
+
+if __name__ == "__main__":
+    run_local_server()

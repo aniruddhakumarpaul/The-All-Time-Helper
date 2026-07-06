@@ -18,7 +18,6 @@ from app.logic.cloud_token_budget import apply_cloud_token_budget
 apply_cloud_token_budget()
 
 from app.routes import auth, chat, email_delivery, health, proxy
-from app.services.ngrok import NgrokSession, start_ngrok_if_enabled, stop_ngrok
 
 
 def get_allowed_origins() -> list[str]:
@@ -53,13 +52,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error(f"Diagnostics/pruning failed: {exc}")
 
-    session: NgrokSession = start_ngrok_if_enabled()
-    if session.public_url:
-        append_cors_origin(app, session.public_url)
-    try:
-        yield
-    finally:
-        stop_ngrok(session)
+    yield
 
 
 def create_app() -> FastAPI:

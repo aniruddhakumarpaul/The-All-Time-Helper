@@ -797,6 +797,37 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("https://example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
         self.assertNotIn("example.ngrok-free.dev", test_app.user_middleware[0].kwargs["allow_origins"])
 
+    def test_local_main_owns_ngrok_lifecycle(self):
+        from app import main
+        from app.services.ngrok import NgrokSession
+
+        session = NgrokSession(public_url="https://example.ngrok-free.dev", started_tunnel=True)
+        with patch.dict(os.environ, {"PORT": "9123"}, clear=False):
+            with patch.object(main, "start_ngrok_if_enabled", return_value=session) as start:
+                with patch.object(main, "stop_ngrok") as stop:
+                    with patch.object(main, "append_cors_origin") as append_origin:
+                        with patch("uvicorn.run") as run:
+                            main.run_local_server()
+
+        start.assert_called_once_with(9123)
+        append_origin.assert_called_once_with(main.app, session.public_url)
+        run.assert_called_once_with(
+            "app.main:app",
+            host="0.0.0.0",
+            port=9123,
+            reload=True,
+            reload_dirs=[str(main.BASE_DIR / path) for path in ("app", "static", "templates")],
+        )
+        stop.assert_called_once_with(session)
+
+    def test_factory_does_not_start_ngrok(self):
+        from pathlib import Path
+
+        factory_source = Path("app/factory.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("start_ngrok_if_enabled", factory_source)
+        self.assertNotIn("stop_ngrok", factory_source)
+
     def test_theme_runtime_updates_html_and_body_theme_attributes(self):
         from pathlib import Path
 

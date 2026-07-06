@@ -27,15 +27,29 @@ def _looks_fake_token(value: str | None) -> bool:
 def _pyngrok_config():
     ngrok_path = str(os.getenv("NGROK_PATH") or "").strip().strip('"').strip("'")
     if not ngrok_path:
-        return None
-    candidate = Path(ngrok_path)
-    if not candidate.is_file():
-        logger.warning(f"NGROK_PATH is set but file was not found: {candidate}")
-        return None
+        # Default to a project-local directory to avoid Windows AppData restrictions and pip script wrapper conflicts
+        project_root = Path(__file__).resolve().parent.parent.parent
+        bin_dir = project_root / "bin"
+        try:
+            bin_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        if os.name == "nt":
+            ngrok_path = str(bin_dir / "ngrok.exe")
+        else:
+            ngrok_path = str(bin_dir / "ngrok")
+    else:
+        candidate = Path(ngrok_path)
+        if not candidate.is_file():
+            logger.warning(f"NGROK_PATH is set but file was not found: {candidate}")
+            return None
+        ngrok_path = str(candidate)
+
     try:
         from pyngrok.conf import PyngrokConfig
 
-        return PyngrokConfig(ngrok_path=str(candidate))
+        return PyngrokConfig(ngrok_path=ngrok_path)
     except Exception as exc:
         logger.warning(f"Could not configure NGROK_PATH: {exc}")
         return None

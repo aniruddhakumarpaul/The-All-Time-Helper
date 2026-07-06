@@ -44,6 +44,7 @@
 - SQLite schema changes use explicit versioned migrations. Legacy `users.admin_authorized` values are cleared and ignored at runtime; authorization is request-scoped only.
 - LLM tools may build email drafts but cannot send SMTP messages. The deterministic delivery helper validates inputs and uses the inference job ID as its idempotency key.
 - Active frontend controls use module-bound listeners instead of inline event attributes. The CSP candidate remains documentation-only until browser smoke verification is complete.
+- Ngrok lifecycle is owned by the direct local launcher (`python -m app.main`), not the FastAPI factory or production ASGI lifespan.
 
 This file records the current high-level architectural decisions.
 

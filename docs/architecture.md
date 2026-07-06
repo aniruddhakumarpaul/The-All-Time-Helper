@@ -4,10 +4,10 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 
 ## Core Layers
 - `app/factory.py`: FastAPI construction, lifespan work, CORS, static files, and router wiring.
-- `app/main.py`: Thin ASGI import and local run entry point.
+- `app/main.py`: Thin ASGI import and local run entry point; owns the optional Ngrok session when executed directly.
 - `app/routes/health.py`: UI, health, and upscale-status routes.
 - `app/routes/proxy.py`: SSRF-resistant image proxy route.
-- `app/services/ngrok.py`: Optional local Ngrok lifecycle, enabled only with `ENABLE_NGROK`.
+- `app/services/ngrok.py`: Optional local Ngrok lifecycle, enabled only with `ENABLE_NGROK`; production ASGI imports never start tunnels.
 - `app/schema_migrations.py`: Ordered transactional SQLite schema migrations and version tracking.
 - `app/routes/chat.py`: streaming chat transport and final result yielding.
 - `app/logic/agents.py`: compatibility facade, direct-tool routing, and top-level agent orchestration.
