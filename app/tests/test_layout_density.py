@@ -6,7 +6,7 @@ class LayoutDensityTests(unittest.TestCase):
     def test_compact_density_stylesheet_is_loaded(self):
         root = Path(__file__).resolve().parents[2]
         animations = (root / "static" / "css" / "animations.css").read_text(encoding="utf-8")
-        self.assertIn("compact_density.css?v=3", animations)
+        self.assertIn("compact_density.css?v=4", animations)
 
     def test_compact_density_targets_desktop_layout_scale(self):
         root = Path(__file__).resolve().parents[2]
@@ -28,6 +28,18 @@ class LayoutDensityTests(unittest.TestCase):
         self.assertIn("width: 38px !important", compact)
         self.assertIn("#main-send-btn", compact)
         self.assertIn("#model-toggle", compact)
+
+    def test_new_chat_button_shape_is_fixed(self):
+        root = Path(__file__).resolve().parents[2]
+        compact = (root / "static" / "css" / "compact_density.css").read_text(encoding="utf-8")
+        self.assertIn(".new-chat {", compact)
+        self.assertIn("height: 42px", compact)
+        self.assertIn("min-height: 42px", compact)
+        self.assertIn("max-height: 42px", compact)
+        self.assertIn("flex: 0 0 42px", compact)
+        self.assertIn("padding: 0 14px !important", compact)
+        self.assertIn("box-sizing: border-box", compact)
+        self.assertIn("white-space: nowrap", compact)
 
     def test_image_preview_is_outside_prompt_row(self):
         root = Path(__file__).resolve().parents[2]
