@@ -9,6 +9,7 @@ from crewai import Crew, Task
 from app.logic.agent_intent import specialist_for_prompt
 from app.logic.exceptions import AgentFastExit
 from app.logic.memory import admin_auth_context
+from app.logic.profile_links import resolve_public_profile_link_request
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,14 @@ def execute_local(
     if abort_event:
         runtime.abort_context.set(abort_event)
 
-    prompt_scan = context_data.get("final_prompt", "").lower()
+    prompt_text = context_data.get("final_prompt", "")
+    profile_link = resolve_public_profile_link_request(prompt_text)
+    if profile_link:
+        if chunk_callback:
+            chunk_callback(profile_link)
+        return profile_link
+
+    prompt_scan = prompt_text.lower()
     if intent["requires_tools"] and any(keyword in prompt_scan for keyword in ("email", "mail", "send")):
         if not admin_auth_context.get():
             return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
