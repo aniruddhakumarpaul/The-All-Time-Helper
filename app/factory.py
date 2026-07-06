@@ -13,7 +13,7 @@ load_dotenv(BASE_DIR / ".env")
 
 from app.database import init_db
 from app.logger import logger
-from app.routes import auth, chat, health, proxy
+from app.routes import auth, chat, email_delivery, health, proxy
 from app.services.ngrok import NgrokSession, start_ngrok_if_enabled, stop_ngrok
 
 
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(chat.router)
+    app.include_router(email_delivery.router)
     app.include_router(proxy.router)
     app.include_router(health.router)
     init_db()
