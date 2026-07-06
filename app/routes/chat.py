@@ -60,6 +60,37 @@ def _normalize_chat_image_payload(req: ChatRequest):
     return req.img
 
 
+def _message_role(message: dict) -> str:
+    return str(message.get("role") or message.get("r") or "").lower()
+
+
+def _message_content(message: dict) -> str:
+    return str(message.get("content") or message.get("c") or "")
+
+
+def _looks_like_auth_error(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return "auth_required" in lowered or "admin key" in lowered or "incorrect admin key" in lowered
+
+
+def _find_pending_sensitive_request(history: list[dict]) -> str:
+    for message in reversed(history or []):
+        role = _message_role(message)
+        content = _message_content(message).strip()
+        if not content:
+            continue
+        if message.get("masked"):
+            continue
+        if role in {"assistant", "a", "bot", "b"}:
+            continue
+        if _looks_like_auth_error(content):
+            continue
+        if len(content) < 25 and (content.isalnum() or "admin" in content.lower()):
+            continue
+        return content
+    return ""
+
+
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     chats_array = ChatRepository.get_chats_for_user(db, current_user)
@@ -149,7 +180,11 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
         admin_key_value = candidate_key
         admin_auth_context.set(admin_key_value)
-        prompt = "ADMIN_KEY_PROVIDED: The system has securely received and validated the Admin Key. Execute the pending sensitive tool request from the prior turn without exposing the key."
+        pending_request = _find_pending_sensitive_request(history)
+        if pending_request:
+            prompt = "APPROVAL_CONFIRMED. Continue this pending sensitive request:\n\n" + pending_request
+        else:
+            prompt = "APPROVAL_CONFIRMED, but no pending sensitive request was found. Ask the user to repeat the action request."
     else:
         admin_auth_context.set(None)
 
