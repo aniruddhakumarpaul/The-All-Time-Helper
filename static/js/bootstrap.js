@@ -46,7 +46,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('job_center', '1', 'job-center');
         injectScript('chat_context_reuse', '1', 'chat-context-reuse');
         injectScript('motion_enhancements', '1', 'premium-motion');
-        injectScript('composer_context_tray', '5', 'composer-context-tray');
+        injectScript('composer_context_tray', '6', 'composer-context-tray');
     }
 
     if (document.readyState === 'loading') {
