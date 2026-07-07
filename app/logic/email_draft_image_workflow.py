@@ -60,7 +60,7 @@ def extract_email_draft_from_prompt(prompt: str) -> Optional[dict]:
     return None
 
 
-def latest_email_draft_from_history(history: list | None) -> Optional[dict]:
+def iter_email_drafts_from_history(history: list | None):
     for message in reversed(history or []):
         if isinstance(message, dict):
             content = str(message.get("content") or message.get("c") or "")
@@ -68,8 +68,11 @@ def latest_email_draft_from_history(history: list | None) -> Optional[dict]:
             content = str(message or "")
         draft = extract_email_draft_from_prompt(content)
         if draft:
-            return draft
-    return None
+            yield draft
+
+
+def latest_email_draft_from_history(history: list | None) -> Optional[dict]:
+    return next(iter_email_drafts_from_history(history), None)
 
 
 def clean_prompt_without_attached_context(prompt: str) -> str:
@@ -211,6 +214,70 @@ def _apply_prompt_details_to_draft(draft: dict, prompt: str) -> None:
         draft["subject"] = prompt_subject
 
 
+def _attachment_names(draft: dict) -> set[str]:
+    names = set()
+    if draft.get("attachment_filename"):
+        names.add(str(draft.get("attachment_filename")))
+    for item in draft.get("attachments") or []:
+        if isinstance(item, dict):
+            name = item.get("filename") or item.get("name")
+            if name:
+                names.add(str(name))
+    return names
+
+
+def _has_attachment_payload(draft: dict) -> bool:
+    if draft.get("attachment_content"):
+        return True
+    for item in draft.get("attachments") or []:
+        if isinstance(item, dict) and (item.get("content") or item.get("data") or item.get("id")):
+            return True
+    return False
+
+
+def _merge_attachment_payload(target: dict, source: dict) -> dict:
+    merged = deepcopy(target)
+    if merged.get("attachment_content") is None and source.get("attachment_content") is not None:
+        merged["attachment_content"] = source.get("attachment_content")
+    if not merged.get("attachment_filename") and source.get("attachment_filename"):
+        merged["attachment_filename"] = source.get("attachment_filename")
+    if not merged.get("attachment_type") and source.get("attachment_type"):
+        merged["attachment_type"] = source.get("attachment_type")
+    if not merged.get("attachments") and source.get("attachments"):
+        merged["attachments"] = deepcopy(source.get("attachments"))
+    elif merged.get("attachments") and source.get("attachments"):
+        source_by_name = {
+            str((item or {}).get("filename") or (item or {}).get("name") or ""): item
+            for item in source.get("attachments") or []
+            if isinstance(item, dict)
+        }
+        enriched = []
+        for item in merged.get("attachments") or []:
+            if not isinstance(item, dict):
+                enriched.append(item)
+                continue
+            name = str(item.get("filename") or item.get("name") or "")
+            if name and name in source_by_name and not (item.get("content") or item.get("data") or item.get("id")):
+                enriched.append(deepcopy(source_by_name[name]))
+            else:
+                enriched.append(item)
+        merged["attachments"] = enriched
+    return merged
+
+
+def _enrich_attachment_from_history(draft: dict, history: list | None) -> dict:
+    if _has_attachment_payload(draft):
+        return draft
+    target_names = _attachment_names(draft)
+    for candidate in iter_email_drafts_from_history(history):
+        if not _has_attachment_payload(candidate):
+            continue
+        candidate_names = _attachment_names(candidate)
+        if not target_names or not candidate_names or target_names.intersection(candidate_names):
+            return _merge_attachment_payload(draft, candidate)
+    return draft
+
+
 def _body_update_payload_from_draft(draft: dict, prompt: str, *, logger=None) -> str:
     updated = deepcopy(draft)
     updated.setdefault("recipient", updated.get("to") or "")
@@ -235,7 +302,11 @@ def build_email_draft_body_update_payload(prompt: str, *, logger=None) -> Option
 def build_email_draft_body_update_payload_from_history(prompt: str, history: list | None, *, logger=None) -> Optional[str]:
     if not _looks_like_body_fill_text(prompt):
         return None
-    draft = extract_email_draft_from_prompt(prompt) or latest_email_draft_from_history(history)
+    draft = extract_email_draft_from_prompt(prompt)
+    if draft:
+        draft = _enrich_attachment_from_history(draft, history)
+    else:
+        draft = latest_email_draft_from_history(history)
     if not draft:
         return None
     return _body_update_payload_from_draft(draft, prompt, logger=logger)
