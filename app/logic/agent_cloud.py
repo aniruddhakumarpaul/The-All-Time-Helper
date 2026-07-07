@@ -8,7 +8,10 @@ from crewai import Crew, Task
 
 from app.logic import tools
 from app.logic.agent_intent import specialist_for_prompt
-from app.logic.email_draft_image_workflow import build_generated_image_email_draft_payload
+from app.logic.email_draft_image_workflow import (
+    build_email_draft_body_update_payload_from_history,
+    build_generated_image_email_draft_payload,
+)
 from app.logic.exceptions import AgentFastExit
 from app.logic.profile_links import resolve_public_profile_link_request
 
@@ -94,6 +97,14 @@ def execute_cloud(
         if chunk_callback:
             chunk_callback(profile_link)
         return profile_link
+
+    email_body_update = build_email_draft_body_update_payload_from_history(prompt_text, history, logger=runtime.logger)
+    if email_body_update:
+        if status_callback:
+            status_callback("✍️ Updating email draft body...")
+        if chunk_callback:
+            chunk_callback(email_body_update)
+        return email_body_update
 
     email_draft_image = build_generated_image_email_draft_payload(
         prompt_text,
