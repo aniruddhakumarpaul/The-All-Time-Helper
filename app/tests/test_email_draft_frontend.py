@@ -7,7 +7,8 @@ class EmailDraftFrontendTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         script = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
         self.assertIn("function syncDraftFromCard", script)
-        self.assertIn("card.dataset.emailDraft = JSON.stringify(current)", script)
+        self.assertIn("storeDraftOnCard(card, current)", script)
+        self.assertIn("card.dataset.emailDraft = JSON.stringify(compactEmailDraftForPrompt(current))", script)
         self.assertIn(".email-draft-recipient, .email-draft-subject, .email-draft-tone, .email-draft-body-input", script)
         self.assertIn(".email-draft-use-context-btn", script)
         self.assertIn("window.attachEmailDraftToPrompt", script)
@@ -19,8 +20,21 @@ class EmailDraftFrontendTests(unittest.TestCase):
         script = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
         self.assertIn("const fromCard = syncDraftFromCard(card)", script)
         self.assertIn("return normalizeDraft(fromCard)", script)
-        self.assertIn("event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(emailDraft))", script)
-        self.assertIn("EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}", script)
+        self.assertIn("const transferDraft = compactEmailDraftForPrompt(emailDraft) || emailDraft", script)
+        self.assertIn("event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(transferDraft))", script)
+        self.assertIn("EMAIL_DRAFT_CONTEXT:${JSON.stringify(transferDraft)}", script)
+
+    def test_large_attachment_payloads_are_registry_backed_not_dom_attributes(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
+        self.assertIn("__helperEmailDraftRegistry", script)
+        self.assertIn("card.dataset.emailDraftRef", script)
+        self.assertIn("DRAFT_REGISTRY.set(ref, current)", script)
+        self.assertIn("delete next.content", script)
+        self.assertIn("delete next.data", script)
+        self.assertIn("delete next.attachment_content", script)
+        self.assertIn("has_attachment_content", script)
+        self.assertIn("window.compactEmailDraftForPrompt = compactEmailDraftForPrompt", script)
 
     def test_email_draft_script_is_idempotent_and_hydrates_immediately(self):
         root = Path(__file__).resolve().parents[2]
