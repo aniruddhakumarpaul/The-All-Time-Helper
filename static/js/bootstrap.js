@@ -40,6 +40,7 @@ window.addEventListener('unhandledrejection', function (event) {
     function inject() {
         removeLegacyPromptThemeButton();
         injectScript('busy_states', '1', 'busy-states');
+        injectScript('email_draft', '2', 'email-draft-core');
         injectScript('email_approval', '2', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
