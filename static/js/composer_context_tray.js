@@ -44,20 +44,45 @@
         return clip(String(value || '').replace(/\s+/g, ' '), size);
     }
 
+    function decodeAttachmentName(name) {
+        const value = String(name || '').trim();
+        if (!value) return '';
+        try { return decodeURIComponent(value); } catch (_) { return value; }
+    }
+
+    function attachmentDescriptionFromName(name) {
+        const decoded = decodeAttachmentName(name)
+            .replace(/\.(png|jpe?g|webp|gif|bmp|txt|md|pdf)$/i, '')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        return decoded && decoded.toLowerCase() !== 'attachment' ? decoded : '';
+    }
+
     function stripAttachmentPayload(item) {
         if (!item || typeof item !== 'object') return item;
         const next = { ...item };
+        if (next.filename && !next.name) next.name = next.filename;
+        if (next.name && !next.filename) next.filename = next.name;
         delete next.content;
         delete next.data;
         delete next.bytes;
+        delete next.attachment_content;
         return next;
     }
 
     function compactDraftForPrompt(draft) {
+        if (typeof window.compactEmailDraftForPrompt === 'function') {
+            const compact = window.compactEmailDraftForPrompt(draft);
+            if (compact) return compact;
+        }
         const raw = draft && typeof draft === 'object' ? draft : {};
+        const rawAttachments = Array.isArray(raw.attachments) ? raw.attachments : [];
         const attachmentFilename = raw.attachment_filename
-            || (Array.isArray(raw.attachments) && (raw.attachments[0]?.filename || raw.attachments[0]?.name))
+            || (rawAttachments.length && (rawAttachments[0]?.filename || rawAttachments[0]?.name))
             || '';
+        const hasAttachmentContent = Boolean(raw.attachment_content || raw.has_attachment_content)
+            || rawAttachments.some(item => item?.content || item?.data || item?.attachment_content);
         const compact = {
             recipient: String(raw.recipient || raw.to || '').trim(),
             subject: String(raw.subject || '').trim(),
@@ -67,8 +92,11 @@
         };
         if (raw.attachment_type) compact.attachment_type = raw.attachment_type;
         if (raw.attachment_id || raw.id) compact.attachment_id = raw.attachment_id || raw.id;
-        if (Array.isArray(raw.attachments)) {
-            compact.attachments = raw.attachments.map(stripAttachmentPayload).filter(Boolean);
+        if (raw.attachment_description) compact.attachment_description = String(raw.attachment_description).trim();
+        else if (attachmentFilename) compact.attachment_description = attachmentDescriptionFromName(attachmentFilename);
+        if (hasAttachmentContent) compact.has_attachment_content = true;
+        if (rawAttachments.length) {
+            compact.attachments = rawAttachments.map(stripAttachmentPayload).filter(Boolean);
         }
         return compact;
     }
@@ -307,7 +335,7 @@
         if (!draft || typeof draft !== 'object') return null;
         const compactDraft = compactDraftForPrompt(draft);
         const subject = String(compactDraft.subject || 'Email Draft').trim() || 'Email Draft';
-        const attachment = compactDraft.attachment_filename || (Array.isArray(compactDraft.attachments) && compactDraft.attachments[0]?.filename) || '';
+        const attachment = decodeAttachmentName(compactDraft.attachment_filename || (Array.isArray(compactDraft.attachments) && compactDraft.attachments[0]?.filename) || '');
         return {
             kind: 'email',
             title: 'Email Draft',
@@ -410,7 +438,7 @@
                 const draft = JSON.parse(rawDraft);
                 const compactDraft = compactDraftForPrompt(draft);
                 const subject = compactDraft.subject || 'Email Draft';
-                const attachment = compactDraft.attachment_filename || '';
+                const attachment = decodeAttachmentName(compactDraft.attachment_filename || '');
                 return { kind: 'email', title: 'Email Draft', subtitle: attachment ? `${subject} • ${attachment}` : subject, text: emailContextTextFromDraft(compactDraft) };
             } catch (_) { return null; }
         }
@@ -467,7 +495,11 @@
             strip.innerHTML = `<div class="chat-context-title">Targeted Context</div>`;
             for (const item of contexts) {
                 const card = document.createElement('div');
-                card.className = `chat-context-card composer-context-${item.kind || 'text'} is-ready`;
+                card.className = `chat-context-card composer-context-${item.kind || 'text'} is-ready composer-draggable-context chat-context-reusable`;
+                card.setAttribute('draggable', 'true');
+                card.dataset.contextIndex = String(index);
+                card.dataset.contextJson = JSON.stringify(item);
+                card.title = 'Drag to reuse this exact context';
                 card.innerHTML = contextCardHtml(item, 'chat');
                 strip.appendChild(card);
             }
