@@ -111,6 +111,29 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
         self.assertIn("horror", payload["body"].lower())
         self.assertEqual(payload["attachments"][0]["filename"], "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png")
 
+    def test_body_fill_uses_typed_email_and_subject_when_draft_is_blank(self):
+        blank_draft = {
+            "recipient": "",
+            "subject": "Image Attachment",
+            "body": "",
+            "tone": "formal",
+            "attachment_content": "https://image.pollinations.ai/prompt/an%20annable%20doll.png",
+            "attachment_filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png",
+            "attachments": [{"content": "https://image.pollinations.ai/prompt/an%20annable%20doll.png", "filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png"}],
+        }
+        prompt = (
+            f"EMAIL_DRAFT_CONTEXT:{json.dumps(blank_draft)}\n\n"
+            "aniruddha24680kumarpaul@gmail.com\n"
+            "image annable\n"
+            "do one thing u make relevent body i am lazy"
+        )
+        result = build_email_draft_body_update_payload_from_history(prompt, [])
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "aniruddha24680kumarpaul@gmail.com")
+        self.assertEqual(payload["subject"], "image annable")
+        self.assertIn("horror", payload["body"].lower())
+
     def test_preflight_hook_returns_body_update_before_llm(self):
         result = resolve_public_profile_link_request(self._body_prompt())
         self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
