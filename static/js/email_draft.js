@@ -10,6 +10,11 @@
 
     const MARKERS = ['EMAIL_DRAFT_CONTEXT:', 'EMAIL_DRAFT_PAYLOAD:'];
     const DRAFT_MIME = 'application/x-helper-email-draft';
+    const DRAFT_REGISTRY = window.__helperEmailDraftRegistry instanceof Map
+        ? window.__helperEmailDraftRegistry
+        : new Map();
+    window.__helperEmailDraftRegistry = DRAFT_REGISTRY;
+    let draftRefCounter = 0;
 
     function escapeHTML(value) {
         return String(value ?? '')
@@ -24,7 +29,7 @@
         if (document.querySelector('script[data-helper-extension="draft-context-prompt"]')) return;
         const script = document.createElement('script');
         script.type = 'module';
-        script.src = '/static/js/email_context_prompt.js?v=1';
+        script.src = '/static/js/email_context_prompt.js?v=2';
         script.dataset.helperExtension = 'draft-context-prompt';
         document.body.appendChild(script);
     }
@@ -64,7 +69,7 @@
     function normalizeDraft(raw) {
         if (!raw || typeof raw !== 'object') return null;
         const attachments = Array.isArray(raw.attachments) ? raw.attachments : [];
-        const hasPayloadAttachment = Boolean(raw.attachment_content) || attachments.length > 0;
+        const hasPayloadAttachment = Boolean(raw.attachment_content) || Boolean(raw.has_attachment_content) || attachments.length > 0;
         const filename = hasPayloadAttachment ? String(raw.attachment_filename || '').trim() : '';
         return {
             recipient: String(raw.recipient || raw.to || '').trim(),
@@ -73,8 +78,68 @@
             tone: String(raw.tone || 'modern').trim() || 'modern',
             attachment_content: raw.attachment_content ?? null,
             attachment_filename: filename && filename !== 'report.txt' ? filename : '',
+            attachment_type: raw.attachment_type || raw.content_type || raw.type || undefined,
             attachments,
+            has_attachment_content: Boolean(raw.attachment_content || raw.has_attachment_content),
+            attachment_description: raw.attachment_description || undefined,
         };
+    }
+
+    function stripAttachmentPayload(item) {
+        if (!item || typeof item !== 'object') return item;
+        const next = { ...item };
+        if (next.filename && !next.name) next.name = next.filename;
+        if (next.name && !next.filename) next.filename = next.name;
+        delete next.content;
+        delete next.data;
+        delete next.bytes;
+        delete next.attachment_content;
+        return next;
+    }
+
+    function compactEmailDraftForPrompt(rawDraft) {
+        const draft = normalizeDraft(rawDraft);
+        if (!draft) return null;
+        const hasAttachmentContent = Boolean(draft.attachment_content)
+            || Boolean(draft.has_attachment_content)
+            || (draft.attachments || []).some(item => item?.content || item?.data || item?.attachment_content);
+        const compact = {
+            recipient: draft.recipient,
+            subject: draft.subject,
+            body: draft.body,
+            tone: draft.tone,
+            attachment_filename: draft.attachment_filename,
+            attachments: (draft.attachments || []).map(stripAttachmentPayload).filter(Boolean),
+        };
+        if (draft.attachment_type) compact.attachment_type = draft.attachment_type;
+        if (draft.attachment_description) compact.attachment_description = draft.attachment_description;
+        if (hasAttachmentContent) compact.has_attachment_content = true;
+        return compact;
+    }
+
+    function nextDraftRef() {
+        draftRefCounter += 1;
+        return `email-draft-${Date.now()}-${draftRefCounter}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function storeDraftOnCard(card, draft) {
+        if (!card) return null;
+        const current = normalizeDraft(draft);
+        if (!current) return null;
+        const ref = card.dataset.emailDraftRef || nextDraftRef();
+        DRAFT_REGISTRY.set(ref, current);
+        card.dataset.emailDraftRef = ref;
+        card.__emailDraft = current;
+        card.dataset.emailDraft = JSON.stringify(compactEmailDraftForPrompt(current));
+        return current;
+    }
+
+    function draftFromCardStore(card) {
+        if (!card) return null;
+        if (card.__emailDraft) return normalizeDraft(card.__emailDraft);
+        const ref = card.dataset.emailDraftRef;
+        if (ref && DRAFT_REGISTRY.has(ref)) return normalizeDraft(DRAFT_REGISTRY.get(ref));
+        try { return normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { return null; }
     }
 
     function parseEmailDraftContext(text) {
@@ -132,7 +197,7 @@
             const name = item.filename || item.name;
             if (name && !names.includes(name)) names.push(name);
         }
-        if (!names.length && (draft.attachment_content || (draft.attachments || []).length)) return '1 attachment';
+        if (!names.length && (draft.attachment_content || draft.has_attachment_content || (draft.attachments || []).length)) return '1 attachment';
         return names.join(', ');
     }
 
@@ -149,9 +214,7 @@
 
     function syncDraftFromCard(card) {
         if (!card) return null;
-        let current = null;
-        try { current = normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { current = null; }
-        current = normalizeDraft(card.__emailDraft || current || {}) || {
+        let current = draftFromCardStore(card) || {
             recipient: '', subject: '', body: '', tone: 'modern', attachment_content: null, attachment_filename: '', attachments: []
         };
 
@@ -166,10 +229,9 @@
         if (subjectInput) current.subject = subjectInput.value.trim();
         if (toneSelect) current.tone = toneSelect.value || 'modern';
         if (bodyInput) current.body = bodyInput.value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        if (!current.attachment_content && !(current.attachments || []).length) current.attachment_filename = '';
+        if (!current.attachment_content && !current.has_attachment_content && !(current.attachments || []).length) current.attachment_filename = '';
 
-        card.__emailDraft = current;
-        card.dataset.emailDraft = JSON.stringify(current);
+        current = storeDraftOnCard(card, current) || current;
         if (attachmentValue) attachmentValue.textContent = attachmentLabel(current) || 'None';
         if (preview) preview.srcdoc = renderSafeBodyHtml(current.body || '');
         return current;
@@ -182,8 +244,7 @@
         card.style.cssText = 'margin:14px 0;padding:16px;border:1px solid var(--glass-border);border-radius:16px;background:rgba(255,255,255,0.045);box-shadow:0 12px 30px rgba(0,0,0,0.18);cursor:grab;max-width:100%;';
 
         const current = normalizeDraft(draft) || draft;
-        card.__emailDraft = current;
-        card.dataset.emailDraft = JSON.stringify(current);
+        storeDraftOnCard(card, current);
 
         const header = document.createElement('div');
         header.className = 'email-draft-header';
@@ -275,7 +336,7 @@
         if (!card) return null;
         const fromCard = syncDraftFromCard(card);
         if (fromCard) return normalizeDraft(fromCard);
-        try { return normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { return null; }
+        return draftFromCardStore(card);
     }
 
     function buildEmailDraftDragContext(message, widgetEl = null) {
@@ -332,8 +393,9 @@
                 if (isInteractiveDraftControl(event.target)) return;
                 const emailDraft = syncDraftFromCard(card);
                 if (!emailDraft || !event.dataTransfer) return;
-                event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(emailDraft));
-                event.dataTransfer.setData('text/plain', `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`);
+                const transferDraft = compactEmailDraftForPrompt(emailDraft) || emailDraft;
+                event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(transferDraft));
+                event.dataTransfer.setData('text/plain', `EMAIL_DRAFT_CONTEXT:${JSON.stringify(transferDraft)}`);
                 event.dataTransfer.effectAllowed = 'copy';
             });
         });
@@ -387,5 +449,6 @@
     window.hydrateEmailDraftCards = hydrateEmailDraftCards;
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
+    window.compactEmailDraftForPrompt = compactEmailDraftForPrompt;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
 })();
