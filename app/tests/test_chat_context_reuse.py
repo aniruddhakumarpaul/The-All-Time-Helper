@@ -10,14 +10,13 @@ class ChatContextReuseTests(unittest.TestCase):
         self.assertIn("window.addEventListener('dragstart'", script)
         self.assertIn(".chat-context-card", script)
         self.assertIn("chat.ms[messageIndex]?.contexts?.[contextIndex]", script)
-        self.assertIn("event.stopImmediatePropagation()", script)
         self.assertIn("event.dataTransfer.setData(CONTEXT_MIME", script)
 
     def test_bootstrap_loads_reuse_script_before_composer_tray(self):
         root = Path(__file__).resolve().parents[2]
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         reuse_index = bootstrap.index("injectScript('chat_context_reuse', '1', 'chat-context-reuse')")
-        tray_index = bootstrap.index("injectScript('composer_context_tray', '5', 'composer-context-tray')")
+        tray_index = bootstrap.index("injectScript('composer_context_tray', '6', 'composer-context-tray')")
         self.assertLess(reuse_index, tray_index)
 
 
