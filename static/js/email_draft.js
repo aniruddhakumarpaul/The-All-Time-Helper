@@ -267,6 +267,10 @@
         return buildEmailDraftCard(draft).outerHTML;
     }
 
+    function isInteractiveDraftControl(target) {
+        return Boolean(target?.closest?.('.email-draft-card button, .email-draft-card input, .email-draft-card textarea, .email-draft-card select, .email-draft-card option, .email-draft-card label, .email-draft-card a, .email-draft-card [contenteditable="true"]'));
+    }
+
     function collectEmailDraftForDrag(card) {
         if (!card) return null;
         const fromCard = syncDraftFromCard(card);
@@ -325,6 +329,7 @@
                 if (latest && typeof window.attachEmailDraftToPrompt === 'function') window.attachEmailDraftToPrompt(latest);
             });
             card.addEventListener('dragstart', event => {
+                if (isInteractiveDraftControl(event.target)) return;
                 const emailDraft = syncDraftFromCard(card);
                 if (!emailDraft || !event.dataTransfer) return;
                 event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(emailDraft));

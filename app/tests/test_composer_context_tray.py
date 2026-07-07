@@ -101,6 +101,17 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("#composer-context-tray", script)
         self.assertIn("if (renderingTray) return", script)
 
+    def test_email_draft_cards_exclude_interactive_controls_from_drag_capture(self):
+        root = Path(__file__).resolve().parents[2]
+        tray = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
+        draft = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
+        self.assertIn("function isInteractiveDraftControl(target)", tray)
+        self.assertIn("function isInteractiveDraftControl(target)", draft)
+        self.assertIn(".email-draft-card button, .email-draft-card input, .email-draft-card textarea", tray)
+        self.assertIn(".email-draft-card button, .email-draft-card input, .email-draft-card textarea", draft)
+        self.assertIn("if (isInteractiveDraftControl(target)) return null;", tray)
+        self.assertIn("if (isInteractiveDraftControl(event.target)) return;", draft)
+
 
 if __name__ == "__main__":
     unittest.main()

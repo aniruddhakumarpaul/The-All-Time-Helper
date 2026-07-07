@@ -361,7 +361,12 @@
         };
     }
 
+    function isInteractiveDraftControl(target) {
+        return Boolean(target?.closest?.('.email-draft-card button, .email-draft-card input, .email-draft-card textarea, .email-draft-card select, .email-draft-card option, .email-draft-card label, .email-draft-card a, .email-draft-card [contenteditable="true"]'));
+    }
+
     function contextFromDragTarget(target) {
+        if (isInteractiveDraftControl(target)) return null;
         const widget = widgetContextFromElement(target);
         if (widget) return widget;
         const img = target?.closest?.('img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img');

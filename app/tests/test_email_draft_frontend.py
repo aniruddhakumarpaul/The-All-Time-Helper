@@ -32,9 +32,18 @@ class EmailDraftFrontendTests(unittest.TestCase):
 
     def test_bootstrap_cache_busts_email_draft_before_approval(self):
         root = Path(__file__).resolve().parents[2]
+        template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
+        helper_js = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
+        self.assertIn('/static/js/email_draft.js?v=2', template)
+        self.assertIn('data-helper-extension="email-draft-core"', template)
+        self.assertNotIn('/static/js/email_draft.js?v=1', template)
+        self.assertNotIn('/static/js/email_draft.js?v=1', bootstrap)
         self.assertIn("injectScript('email_draft', '2', 'email-draft-core')", bootstrap)
         self.assertIn("injectScript('email_approval', '2', 'draft-send')", bootstrap)
+        self.assertIn('document.querySelector(`script[data-helper-extension="${marker}"]`)', bootstrap)
+        self.assertIn("function isInteractiveDraftControl(target)", helper_js)
+        self.assertIn("if (isInteractiveDraftControl(event.target)) return;", helper_js)
         self.assertLess(
             bootstrap.index("injectScript('email_draft', '2', 'email-draft-core')"),
             bootstrap.index("injectScript('email_approval', '2', 'draft-send')"),
