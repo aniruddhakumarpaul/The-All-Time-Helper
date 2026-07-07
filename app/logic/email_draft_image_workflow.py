@@ -2,6 +2,7 @@ import json
 import re
 from copy import deepcopy
 from typing import Callable, Optional
+from urllib.parse import unquote
 
 
 _DRAFT_MARKERS = ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:")
@@ -104,6 +105,74 @@ def extract_generated_image_url(tool_result: str) -> Optional[str]:
 def filename_from_description(description: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(description or "generated_image")).strip("_").lower()
     return f"{(slug or 'generated_image')[:42]}_image.png"
+
+
+def _draft_attachment_hint(draft: dict) -> str:
+    names = []
+    if draft.get("attachment_filename"):
+        names.append(str(draft.get("attachment_filename")))
+    for item in draft.get("attachments") or []:
+        if isinstance(item, dict):
+            name = item.get("filename") or item.get("name")
+            if name:
+                names.append(str(name))
+    for name in names:
+        stem = re.sub(r"\.[a-zA-Z0-9]{2,5}$", "", unquote(name))
+        stem = re.sub(r"[_\-]+", " ", stem).strip()
+        stem = re.sub(r"\bimage\b", "", stem, flags=re.I).strip()
+        if stem:
+            return stem
+    subject = str(draft.get("subject") or "").strip()
+    return subject or "the attached image"
+
+
+def is_email_body_fill_request(prompt: str) -> bool:
+    raw = str(prompt or "")
+    if not any(marker in raw for marker in _DRAFT_MARKERS):
+        return False
+    clean = clean_prompt_without_attached_context(raw).lower()
+    if not clean:
+        return False
+    has_body_target = any(term in clean for term in ("body", "content", "message", "email text", "email copy"))
+    has_write_action = any(term in clean for term in ("write", "compose", "draft", "fill", "generate", "make something", "i am lazy", "i'm lazy"))
+    return has_body_target and has_write_action
+
+
+def _fallback_body_for_draft(draft: dict, prompt: str) -> str:
+    subject = str(draft.get("subject") or "").strip()
+    hint = _draft_attachment_hint(draft)
+    recipient = str(draft.get("recipient") or draft.get("to") or "").strip()
+    greeting = "Hi," if not recipient else "Hi,"
+    subject_lower = subject.lower()
+    if "horror" in subject_lower or "doll" in subject_lower or "annable" in hint.lower() or "annabelle" in hint.lower():
+        return (
+            f"{greeting}\n\n"
+            f"I have attached the requested image featuring {hint}. It has been created with a dim, atmospheric style and a realistic horror-inspired look.\n\n"
+            "Please review the attachment and let me know if you would like any changes to the mood, lighting, or overall visual direction.\n\n"
+            "Best regards,"
+        )
+    return (
+        f"{greeting}\n\n"
+        f"I have attached the requested file related to {hint}. Please review it when you have a moment.\n\n"
+        "Let me know if you would like any changes or additional details included.\n\n"
+        "Best regards,"
+    )
+
+
+def build_email_draft_body_update_payload(prompt: str, *, logger=None) -> Optional[str]:
+    if not is_email_body_fill_request(prompt):
+        return None
+    draft = extract_email_draft_from_prompt(prompt)
+    if not draft:
+        return None
+    updated = deepcopy(draft)
+    updated.setdefault("recipient", updated.get("to") or "")
+    updated.setdefault("subject", "Requested Content")
+    updated.setdefault("tone", "modern")
+    updated["body"] = _fallback_body_for_draft(updated, prompt)
+    if logger:
+        logger.info("[EmailWidget] Filled email draft body from current dragged widget context.")
+    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
 
 
 def build_generated_image_email_draft_payload(
