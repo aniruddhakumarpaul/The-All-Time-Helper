@@ -12,6 +12,22 @@
         try { return JSON.parse(card.dataset.emailDraft || '{}'); } catch (_) { return null; }
     }
 
+    function setEmailSending(card, button, status, isSending, message) {
+        if (typeof window.setHelperBusyState === 'function') window.setHelperBusyState('email', isSending, { card });
+        card?.classList.toggle('email-send-busy', Boolean(isSending));
+        if (button) {
+            button.disabled = Boolean(isSending);
+            button.classList.toggle('is-sending-email', Boolean(isSending));
+            button.innerHTML = isSending
+                ? '<span class="email-send-spinner" aria-hidden="true"></span><span>Sending</span>'
+                : 'Approve & Send';
+        }
+        if (status && message) {
+            status.textContent = message;
+            status.style.color = 'var(--text-sub)';
+        }
+    }
+
     async function approveEmailDraft(card) {
         const draft = collectDraft(card);
         if (!draft) return;
@@ -22,8 +38,7 @@
         const token = localStorage.getItem('helper_token_v2') || '';
         const requestId = card.dataset.emailDraftRequestId || generateRequestId();
         card.dataset.emailDraftRequestId = requestId;
-        if (button) { button.disabled = true; button.textContent = 'Sending...'; }
-        if (status) { status.textContent = 'Validating and sending...'; status.style.color = 'var(--text-sub)'; }
+        setEmailSending(card, button, status, true, 'Validating and sending...');
         try {
             const response = await fetch('/email/send-draft', {
                 method: 'POST',
@@ -38,14 +53,16 @@
             if (!response.ok || !data.success) {
                 const message = data.detail || data.status || data.error || `Send failed with status ${response.status}`;
                 if (status) { status.textContent = message; status.style.color = '#ef4444'; }
-                if (button) { button.disabled = false; button.textContent = 'Approve & Send'; }
+                setEmailSending(card, button, null, false);
                 return;
             }
             if (status) { status.textContent = data.status || 'Email sent.'; status.style.color = '#22c55e'; }
-            if (button) { button.textContent = data.mode === 'simulated' ? 'Simulated' : 'Sent'; }
+            if (button) { button.disabled = true; button.classList.remove('is-sending-email'); button.textContent = data.mode === 'simulated' ? 'Simulated' : 'Sent'; }
+            if (typeof window.setHelperBusyState === 'function') window.setHelperBusyState('email', false, { card });
+            card?.classList.remove('email-send-busy');
         } catch (error) {
             if (status) { status.textContent = `Send failed: ${error.message}`; status.style.color = '#ef4444'; }
-            if (button) { button.disabled = false; button.textContent = 'Approve & Send'; }
+            setEmailSending(card, button, null, false);
         }
     }
 
