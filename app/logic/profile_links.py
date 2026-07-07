@@ -1,6 +1,8 @@
 import re
 from urllib.parse import quote
 
+from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload
+
 _USERNAME_RE = re.compile(r"(?<![\w.])@?([a-zA-Z0-9._]{1,30})(?![\w.])")
 _PLATFORM_URLS = {
     "instagram": "https://www.instagram.com/{username}/",
@@ -37,6 +39,10 @@ def _extract_username(text: str) -> str | None:
 
 
 def resolve_public_profile_link_request(prompt: str) -> str | None:
+    email_update = build_email_draft_body_update_payload(prompt)
+    if email_update:
+        return email_update
+
     text = str(prompt or "").strip()
     lowered = text.lower()
     if not any(term in lowered for term in ("profile", "username", "handle", "link", "url")):
@@ -51,4 +57,4 @@ def resolve_public_profile_link_request(prompt: str) -> str | None:
     safe_username = quote(username, safe="._")
     url = template.format(username=safe_username)
     canonical = "Instagram" if platform in {"instagram", "insta", "ig"} else "X/Twitter" if platform in {"x", "twitter"} else platform.title()
-    return f"{canonical} profile URL candidate for @{username}:\n\n{url}\n\nThis formats the known public URL pattern for the supplied username. If the account is private, renamed, suspended, or does not exist, the URL may still open to an unavailable page."
+    return f"{canonical} profile URL candidate for @{username}:\n\n{url}\n\nThis formats the known public URL pattern for the supplied username."
