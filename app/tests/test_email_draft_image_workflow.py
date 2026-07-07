@@ -134,6 +134,31 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
         self.assertEqual(payload["subject"], "image annable")
         self.assertIn("horror", payload["body"].lower())
 
+    def test_compact_prompt_draft_recovers_attachment_payload_from_history(self):
+        compact = {
+            "recipient": "",
+            "subject": "Image Attachment",
+            "body": "",
+            "tone": "formal",
+            "attachment_filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png",
+            "attachments": [{"filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png", "type": "image/png"}],
+        }
+        history = [{"role": "assistant", "content": f"EMAIL_DRAFT_PAYLOAD:{json.dumps(self._body_draft())}"}]
+        prompt = (
+            f"[Attached Context 1]\n\"\"\"\nEMAIL_DRAFT_CONTEXT:{json.dumps(compact)}\n\"\"\"\n\n"
+            "aniruddha24680kumarpaul@gmail.com\n"
+            "image annable\n"
+            "do one thing u make relevent body i am lazy"
+        )
+        result = build_email_draft_body_update_payload_from_history(prompt, history)
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "aniruddha24680kumarpaul@gmail.com")
+        self.assertEqual(payload["subject"], "image annable")
+        self.assertEqual(payload["attachment_content"], self._body_draft()["attachment_content"])
+        self.assertEqual(payload["attachments"][0]["content"], self._body_draft()["attachment_content"])
+        self.assertIn("horror", payload["body"].lower())
+
     def test_preflight_hook_returns_body_update_before_llm(self):
         result = resolve_public_profile_link_request(self._body_prompt())
         self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
