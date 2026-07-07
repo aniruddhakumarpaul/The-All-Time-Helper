@@ -5,11 +5,26 @@ from fastapi import Request
 
 
 _IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+_DRAFT_MARKERS = ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:", "[Attached Context")
+
+
+def _has_targeted_email_draft_context(prompt: str) -> bool:
+    raw = str(prompt or "")
+    return any(marker in raw for marker in _DRAFT_MARKERS)
+
+
+def _looks_like_email_body_edit(prompt: str) -> bool:
+    lowered = str(prompt or "").lower()
+    has_body_target = any(term in lowered for term in ("body", "message", "email text", "email copy"))
+    has_write_action = any(term in lowered for term in ("write", "compose", "draft", "fill", "make relevant", "i am lazy", "i'm lazy"))
+    return has_body_target and has_write_action
 
 
 def _is_email_widget_attachment_request(prompt: str) -> bool:
     lowered = str(prompt or "").lower()
     if not lowered:
+        return False
+    if _has_targeted_email_draft_context(prompt) or _looks_like_email_body_edit(prompt):
         return False
     has_attach_action = any(term in lowered for term in ("attach", "attachment", "include", "add", "put", "use"))
     has_email_surface = any(term in lowered for term in ("email", "mail", "draft", "template", "widget", "wedgit"))
