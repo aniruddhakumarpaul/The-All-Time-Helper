@@ -44,6 +44,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
         injectScript('chat_context_reuse', '1', 'chat-context-reuse');
+        injectScript('motion_enhancements', '1', 'premium-motion');
         injectScript('composer_context_tray', '5', 'composer-context-tray');
     }
 
