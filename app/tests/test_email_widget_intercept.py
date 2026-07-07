@@ -14,6 +14,18 @@ class EmailWidgetInterceptTests(unittest.TestCase):
         self.assertFalse(_is_email_widget_attachment_request("send the email now"))
         self.assertFalse(_is_email_widget_attachment_request("what is this image?"))
 
+    def test_does_not_intercept_targeted_email_draft_edits(self):
+        from app.services.email_widget_intercept import _is_email_widget_attachment_request
+
+        prompt = (
+            '[Attached Context 1]\n"""\n'
+            'EMAIL_DRAFT_CONTEXT:{"recipient":"a@example.com","subject":"annable","attachment_filename":"annable.png"}\n'
+            '"""\n\n'
+            'do one thing u make relevant body i am lazy'
+        )
+        self.assertFalse(_is_email_widget_attachment_request(prompt))
+        self.assertFalse(_is_email_widget_attachment_request("write something for the body i am lazy"))
+
     def test_builds_blank_recipient_draft_with_latest_image(self):
         from app.services.email_widget_intercept import _latest_image_email_draft
 
