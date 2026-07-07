@@ -178,11 +178,45 @@ def _fallback_body_for_draft(draft: dict, prompt: str) -> str:
     )
 
 
+def _is_blankish(value: object) -> bool:
+    return not str(value or "").strip()
+
+
+def _extract_prompt_email(prompt: str) -> str | None:
+    match = re.search(r"[\w.+-]+@[\w.-]+\.\w+", clean_prompt_without_attached_context(prompt))
+    return match.group(0) if match else None
+
+
+def _extract_prompt_subject(prompt: str) -> str | None:
+    clean = clean_prompt_without_attached_context(prompt)
+    for raw_line in clean.splitlines():
+        line = raw_line.strip(" -:\t")
+        if not line or re.search(r"[\w.+-]+@[\w.-]+\.\w+", line):
+            continue
+        lowered = line.lower()
+        if any(term in lowered for term in ("body", "lazy", "write", "compose", "draft", "make relevant", "make relevent")):
+            continue
+        if len(line) <= 80:
+            return line
+    return None
+
+
+def _apply_prompt_details_to_draft(draft: dict, prompt: str) -> None:
+    prompt_email = _extract_prompt_email(prompt)
+    if prompt_email and _is_blankish(draft.get("recipient") or draft.get("to")):
+        draft["recipient"] = prompt_email
+    prompt_subject = _extract_prompt_subject(prompt)
+    current_subject = str(draft.get("subject") or "").strip().lower()
+    if prompt_subject and (not current_subject or current_subject in {"image attachment", "generated image", "requested content", "email draft"}):
+        draft["subject"] = prompt_subject
+
+
 def _body_update_payload_from_draft(draft: dict, prompt: str, *, logger=None) -> str:
     updated = deepcopy(draft)
     updated.setdefault("recipient", updated.get("to") or "")
     updated.setdefault("subject", "Requested Content")
     updated.setdefault("tone", "modern")
+    _apply_prompt_details_to_draft(updated, prompt)
     updated["body"] = _fallback_body_for_draft(updated, prompt)
     if logger:
         logger.info("[EmailWidget] Filled email draft body from targeted draft context.")
@@ -212,7 +246,7 @@ def build_generated_image_email_draft_payload(
     image_generate: Callable[[str], str],
     *,
     status_callback=None,
-    logger=None,
+    logger=None
 ) -> Optional[str]:
     if not is_generated_image_email_draft_request(prompt):
         return None
