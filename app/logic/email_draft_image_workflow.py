@@ -60,6 +60,19 @@ def extract_email_draft_from_prompt(prompt: str) -> Optional[dict]:
     return None
 
 
+def latest_email_draft_from_history(history: list | None) -> Optional[dict]:
+    for message in reversed(history or []):
+        content = ""
+        if isinstance(message, dict):
+            content = str(message.get("content") or message.get("c") or "")
+        else:
+            content = str(message or "")
+        draft = extract_email_draft_from_prompt(content)
+        if draft:
+            return draft
+    return None
+
+
 def clean_prompt_without_attached_context(prompt: str) -> str:
     cleaned = _CONTEXT_BLOCK_RE.sub("", str(prompt or ""))
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -126,16 +139,24 @@ def _draft_attachment_hint(draft: dict) -> str:
     return subject or "the attached image"
 
 
+def _looks_like_body_fill_text(prompt: str) -> bool:
+    clean = clean_prompt_without_attached_context(prompt).lower()
+    if not clean:
+        return False
+    has_body_target = any(term in clean for term in (
+        "body", "content", "message", "email text", "email copy", "make relevant", "make relevent", "relevant body", "relevent body"
+    ))
+    has_write_action = any(term in clean for term in (
+        "write", "compose", "draft", "fill", "generate", "make something", "make relevant", "make relevent", "i am lazy", "i'm lazy", "lazy"
+    ))
+    return has_body_target and has_write_action
+
+
 def is_email_body_fill_request(prompt: str) -> bool:
     raw = str(prompt or "")
     if not any(marker in raw for marker in _DRAFT_MARKERS):
         return False
-    clean = clean_prompt_without_attached_context(raw).lower()
-    if not clean:
-        return False
-    has_body_target = any(term in clean for term in ("body", "content", "message", "email text", "email copy"))
-    has_write_action = any(term in clean for term in ("write", "compose", "draft", "fill", "generate", "make something", "i am lazy", "i'm lazy"))
-    return has_body_target and has_write_action
+    return _looks_like_body_fill_text(raw)
 
 
 def _fallback_body_for_draft(draft: dict, prompt: str) -> str:
@@ -159,20 +180,33 @@ def _fallback_body_for_draft(draft: dict, prompt: str) -> str:
     )
 
 
-def build_email_draft_body_update_payload(prompt: str, *, logger=None) -> Optional[str]:
-    if not is_email_body_fill_request(prompt):
-        return None
-    draft = extract_email_draft_from_prompt(prompt)
-    if not draft:
-        return None
+def _body_update_payload_from_draft(draft: dict, prompt: str, *, logger=None) -> str:
     updated = deepcopy(draft)
     updated.setdefault("recipient", updated.get("to") or "")
     updated.setdefault("subject", "Requested Content")
     updated.setdefault("tone", "modern")
     updated["body"] = _fallback_body_for_draft(updated, prompt)
     if logger:
-        logger.info("[EmailWidget] Filled email draft body from current dragged widget context.")
+        logger.info("[EmailWidget] Filled email draft body from targeted draft context.")
     return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
+
+
+def build_email_draft_body_update_payload(prompt: str, *, logger=None) -> Optional[str]:
+    if not is_email_body_fill_request(prompt):
+        return None
+    draft = extract_email_draft_from_prompt(prompt)
+    if not draft:
+        return None
+    return _body_update_payload_from_draft(draft, prompt, logger=logger)
+
+
+def build_email_draft_body_update_payload_from_history(prompt: str, history: list | None, *, logger=None) -> Optional[str]:
+    if not _looks_like_body_fill_text(prompt):
+        return None
+    draft = extract_email_draft_from_prompt(prompt) or latest_email_draft_from_history(history)
+    if not draft:
+        return None
+    return _body_update_payload_from_draft(draft, prompt, logger=logger)
 
 
 def build_generated_image_email_draft_payload(
@@ -216,3 +250,4 @@ def build_generated_image_email_draft_payload(
         "content_type": "image/png",
     }]
     return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
+}
