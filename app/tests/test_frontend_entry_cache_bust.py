@@ -7,7 +7,9 @@ class FrontendEntryCacheBustTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('/static/css/animations.css?v=206', template)
-        self.assertIn('/static/js/bootstrap.js?v=206', template)
+        self.assertIn('/static/js/bootstrap.js?v=207', template)
+        self.assertIn('/static/js/composer_context_tray.js?v=6', template)
+        self.assertIn('/static/js/email_draft.js?v=2', template)
         self.assertNotIn('href="/static/css/animations.css"', template)
         self.assertNotIn('src="/static/js/bootstrap.js"', template)
 
