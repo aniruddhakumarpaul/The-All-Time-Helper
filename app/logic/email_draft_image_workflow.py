@@ -62,7 +62,6 @@ def extract_email_draft_from_prompt(prompt: str) -> Optional[dict]:
 
 def latest_email_draft_from_history(history: list | None) -> Optional[dict]:
     for message in reversed(history or []):
-        content = ""
         if isinstance(message, dict):
             content = str(message.get("content") or message.get("c") or "")
         else:
@@ -87,12 +86,11 @@ def is_generated_image_email_draft_request(prompt: str) -> bool:
         return False
     if any(term in clean for term in ("search image", "search photo", "find image", "find photo", "real image", "real photo")):
         return False
-    has_generation = bool(
+    return bool(
         re.search(r"\bcontent\s+will\s+be\s+an?\s+image\b", clean)
         or re.search(r"\b(generate|create|make|draw|paint|sketch|render)\s+(?:[a-z0-9]+\s+){0,8}(image|picture|pic|photo|artwork|portrait|wallpaper|scene|illustration)\b", clean)
         or re.search(r"\bimage\s+of\s+", clean)
     )
-    return has_generation
 
 
 def image_description_from_prompt(prompt: str) -> str:
@@ -250,4 +248,3 @@ def build_generated_image_email_draft_payload(
         "content_type": "image/png",
     }]
     return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
-}
