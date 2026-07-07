@@ -7,7 +7,7 @@ let lastSavedSnapshot = '';
 function normalizeDraft(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const attachments = Array.isArray(raw.attachments) ? raw.attachments : [];
-    const hasAttachmentPayload = Boolean(raw.attachment_content) || attachments.length > 0;
+    const hasAttachmentPayload = Boolean(raw.attachment_content) || Boolean(raw.has_attachment_content) || attachments.length > 0;
     return {
         recipient: String(raw.recipient || raw.to || '').trim(),
         subject: String(raw.subject || '').trim(),
@@ -15,8 +15,47 @@ function normalizeDraft(raw) {
         tone: String(raw.tone || 'modern').trim() || 'modern',
         attachment_content: raw.attachment_content || null,
         attachment_filename: hasAttachmentPayload ? String(raw.attachment_filename || '').trim() : '',
+        attachment_type: raw.attachment_type || raw.content_type || raw.type || undefined,
+        attachment_description: raw.attachment_description || undefined,
         attachments,
+        has_attachment_content: Boolean(raw.attachment_content || raw.has_attachment_content),
     };
+}
+
+function stripAttachmentPayload(item) {
+    if (!item || typeof item !== 'object') return item;
+    const next = { ...item };
+    if (next.filename && !next.name) next.name = next.filename;
+    if (next.name && !next.filename) next.filename = next.name;
+    delete next.content;
+    delete next.data;
+    delete next.bytes;
+    delete next.attachment_content;
+    return next;
+}
+
+function compactDraft(rawDraft) {
+    if (typeof window.compactEmailDraftForPrompt === 'function') {
+        const compact = window.compactEmailDraftForPrompt(rawDraft);
+        if (compact) return compact;
+    }
+    const draft = normalizeDraft(rawDraft);
+    if (!draft) return null;
+    const hasAttachmentContent = Boolean(draft.attachment_content)
+        || Boolean(draft.has_attachment_content)
+        || (draft.attachments || []).some(item => item?.content || item?.data || item?.attachment_content);
+    const compact = {
+        recipient: draft.recipient,
+        subject: draft.subject,
+        body: draft.body,
+        tone: draft.tone,
+        attachment_filename: draft.attachment_filename,
+        attachments: (draft.attachments || []).map(stripAttachmentPayload).filter(Boolean),
+    };
+    if (draft.attachment_type) compact.attachment_type = draft.attachment_type;
+    if (draft.attachment_description) compact.attachment_description = draft.attachment_description;
+    if (hasAttachmentContent) compact.has_attachment_content = true;
+    return compact;
 }
 
 function draftFromTransfer(event) {
@@ -49,7 +88,8 @@ function ensureTray() {
 }
 
 function makeContextText(draft) {
-    return CONTEXT_MARKER + JSON.stringify(draft);
+    const compact = compactDraft(draft);
+    return CONTEXT_MARKER + JSON.stringify(compact || normalizeDraft(draft) || {});
 }
 
 function renderTray() {
@@ -85,7 +125,7 @@ function renderTray() {
 }
 
 function attachEmailDraftToPrompt(rawDraft) {
-    const draft = normalizeDraft(rawDraft);
+    const draft = compactDraft(rawDraft);
     if (!draft) return false;
     if (!Array.isArray(state.attachedContexts)) state.attachedContexts = [];
     const text = makeContextText(draft);
