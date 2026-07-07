@@ -8,6 +8,7 @@ from crewai import Crew, Task
 
 from app.logic import tools
 from app.logic.agent_intent import specialist_for_prompt
+from app.logic.email_draft_image_workflow import build_generated_image_email_draft_payload
 from app.logic.exceptions import AgentFastExit
 from app.logic.profile_links import resolve_public_profile_link_request
 
@@ -93,6 +94,17 @@ def execute_cloud(
         if chunk_callback:
             chunk_callback(profile_link)
         return profile_link
+
+    email_draft_image = build_generated_image_email_draft_payload(
+        prompt_text,
+        tools.image_generate_tool.func,
+        status_callback=status_callback,
+        logger=runtime.logger,
+    )
+    if email_draft_image:
+        if chunk_callback:
+            chunk_callback(email_draft_image)
+        return email_draft_image
 
     if intent.get("requires_tools") and _is_direct_image_generation(prompt_text):
         if abort_event and abort_event.is_set():
