@@ -30,7 +30,7 @@ class FrontendBusyStateTests(unittest.TestCase):
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         self.assertIn("injectScript('busy_states', '1', 'busy-states')", bootstrap)
         self.assertIn("injectScript('email_approval', '2', 'draft-send')", bootstrap)
-        self.assertIn("injectScript('composer_context_tray', '5', 'composer-context-tray')", bootstrap)
+        self.assertIn("injectScript('composer_context_tray', '6', 'composer-context-tray')", bootstrap)
 
     def test_email_approval_has_real_spinner_state(self):
         root = Path(__file__).resolve().parents[2]
