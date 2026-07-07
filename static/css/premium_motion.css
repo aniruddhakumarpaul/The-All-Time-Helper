@@ -1,0 +1,231 @@
+/* premium_motion.css
+ * Additive motion polish for The All Time Helper.
+ * This file must stay CSS-only and must not alter core layout semantics.
+ */
+:root {
+    --premium-motion-fast: 140ms;
+    --premium-motion-medium: 220ms;
+    --premium-motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --premium-motion-spring: cubic-bezier(0.2, 0.85, 0.24, 1.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+body.motion-ready .msg {
+    animation: premium-message-enter var(--premium-motion-medium) var(--premium-motion-ease) both;
+    animation-delay: calc(min(var(--motion-index, 0), 6) * 18ms);
+}
+
+body.motion-ready .msg .txt {
+    transition: box-shadow var(--premium-motion-medium) ease, transform var(--premium-motion-fast) ease, background var(--premium-motion-medium) ease;
+}
+
+body.motion-ready .msg:hover .txt {
+    transform: translateY(-1px);
+}
+
+.b-msg.thinking-state .txt {
+    position: relative;
+    overflow: hidden;
+}
+
+.b-msg.thinking-state .txt::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.10) 45%, transparent 72%);
+    transform: translateX(-120%);
+    animation: premium-thinking-shimmer 1.45s ease-in-out infinite;
+}
+
+#input-wrap .pill-bar,
+.pill-bar {
+    transition: box-shadow var(--premium-motion-medium) var(--premium-motion-ease), transform var(--premium-motion-fast) ease, border-color var(--premium-motion-medium) ease;
+}
+
+#input-wrap:focus-within .pill-bar {
+    box-shadow: 0 0 0 1px rgba(125, 156, 255, 0.34), 0 18px 50px rgba(63, 102, 255, 0.16), inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+#prompt {
+    transition: height var(--premium-motion-fast) ease, min-height var(--premium-motion-fast) ease;
+}
+
+#main-send-btn,
+.send-btn {
+    transition: transform var(--premium-motion-fast) var(--premium-motion-spring), box-shadow var(--premium-motion-medium) ease, opacity var(--premium-motion-fast) ease;
+}
+
+#main-send-btn:active,
+.send-btn:active {
+    transform: scale(0.94) rotate(-2deg);
+}
+
+body.prompt-has-text #main-send-btn {
+    animation: premium-send-ready 420ms var(--premium-motion-spring) both;
+}
+
+#history-list > *,
+.history-item,
+.chat-history-item {
+    transition: transform var(--premium-motion-fast) ease, background var(--premium-motion-medium) ease, border-color var(--premium-motion-medium) ease, box-shadow var(--premium-motion-medium) ease;
+}
+
+#history-list > *:hover,
+.history-item:hover,
+.chat-history-item:hover {
+    transform: translateX(4px);
+    box-shadow: inset 2px 0 0 rgba(125, 156, 255, 0.58);
+}
+
+#sidebar {
+    transition-timing-function: cubic-bezier(0.18, 0.82, 0.22, 1);
+}
+
+#sidebar-scrim {
+    transition: opacity var(--premium-motion-medium) ease, backdrop-filter var(--premium-motion-medium) ease;
+}
+
+#model-menu,
+.dropdown-menu,
+.model-dropdown {
+    transform-origin: top center;
+    transition: opacity var(--premium-motion-fast) ease, transform var(--premium-motion-fast) var(--premium-motion-ease), clip-path var(--premium-motion-medium) var(--premium-motion-ease);
+}
+
+.model-opt,
+.menu-item {
+    transition: background var(--premium-motion-fast) ease, transform var(--premium-motion-fast) ease, color var(--premium-motion-fast) ease;
+}
+
+.model-opt:hover,
+.menu-item:hover {
+    transform: translateX(3px);
+}
+
+#cmd-palette .palette-card,
+.palette-card {
+    animation: premium-palette-enter 260ms var(--premium-motion-spring) both;
+}
+
+#pal-results > *,
+#context-results > * {
+    animation: premium-result-enter 190ms var(--premium-motion-ease) both;
+    animation-delay: calc(min(var(--motion-index, 0), 8) * 28ms);
+}
+
+#neural-context-card {
+    position: relative;
+    overflow: hidden;
+}
+
+#neural-context-card::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -25%;
+    height: 24%;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, rgba(125, 156, 255, 0.16), transparent);
+    opacity: 0;
+}
+
+#neural-context-card.context-busy::after,
+#neural-context-card.motion-scan::after {
+    opacity: 1;
+    animation: premium-context-scan 1.2s ease-in-out both;
+}
+
+.modal-overlay,
+#settings-modal,
+#theme-modal,
+#delete-confirm-modal {
+    transition: opacity var(--premium-motion-medium) ease, backdrop-filter var(--premium-motion-medium) ease;
+}
+
+.modal-card,
+.modal-content,
+.theme-selection {
+    animation: premium-modal-enter 210ms var(--premium-motion-spring) both;
+}
+
+.auth-card {
+    transition: opacity var(--premium-motion-medium) ease, transform var(--premium-motion-medium) var(--premium-motion-ease), filter var(--premium-motion-medium) ease;
+}
+
+.auth-card[style*="display: none"] {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+}
+
+.auth-card input,
+#settings-modal input,
+#cmd-palette input {
+    transition: border-color var(--premium-motion-fast) ease, box-shadow var(--premium-motion-fast) ease, background var(--premium-motion-fast) ease;
+}
+
+.auth-card input:focus,
+#settings-modal input:focus,
+#cmd-palette input:focus {
+    box-shadow: 0 0 0 1px rgba(125, 156, 255, 0.28), 0 0 24px rgba(125, 156, 255, 0.12);
+}
+
+body.motion-ready .composer-context-chip,
+body.motion-ready .chat-context-card,
+body.motion-ready .email-draft-card {
+    transition: transform var(--premium-motion-fast) ease, box-shadow var(--premium-motion-medium) ease, border-color var(--premium-motion-medium) ease;
+}
+
+body.motion-ready .composer-context-chip:hover,
+body.motion-ready .chat-context-card:hover,
+body.motion-ready .email-draft-card:hover {
+    transform: translateY(-1px);
+}
+
+@keyframes premium-message-enter {
+    from { opacity: 0; transform: translateY(10px) scale(0.992); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes premium-thinking-shimmer {
+    0% { transform: translateX(-120%); }
+    55%, 100% { transform: translateX(120%); }
+}
+
+@keyframes premium-send-ready {
+    0% { transform: scale(0.96) rotate(-4deg); }
+    65% { transform: scale(1.04) rotate(2deg); }
+    100% { transform: scale(1) rotate(0); }
+}
+
+@keyframes premium-palette-enter {
+    from { opacity: 0; transform: translateY(-16px) scale(0.985); }
+    70% { opacity: 1; transform: translateY(2px) scale(1.002); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes premium-result-enter {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes premium-context-scan {
+    from { transform: translateY(0); }
+    to { transform: translateY(520%); }
+}
+
+@keyframes premium-modal-enter {
+    from { opacity: 0; transform: translateY(10px) scale(0.982); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
