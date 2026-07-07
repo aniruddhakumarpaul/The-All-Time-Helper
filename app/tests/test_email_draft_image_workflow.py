@@ -3,6 +3,7 @@ import unittest
 
 from app.logic.email_draft_image_workflow import (
     build_email_draft_body_update_payload,
+    build_email_draft_body_update_payload_from_history,
     build_generated_image_email_draft_payload,
     clean_prompt_without_attached_context,
     extract_email_draft_from_prompt,
@@ -28,8 +29,8 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
             "content will be an image of an annable doll with dim asthetic and realistic horror effect"
         )
 
-    def _body_prompt(self):
-        draft = {
+    def _body_draft(self):
+        return {
             "recipient": "friend@example.com",
             "subject": "annable",
             "body": "",
@@ -42,9 +43,11 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
                 "type": "image/png",
             }],
         }
+
+    def _body_prompt(self):
         return (
             "[Attached Context 1]\n\"\"\"\n"
-            f"EMAIL_DRAFT_CONTEXT:{json.dumps(draft)}\n"
+            f"EMAIL_DRAFT_CONTEXT:{json.dumps(self._body_draft())}\n"
             "\"\"\"\n\n"
             "write something for the body i am lazy"
         )
@@ -93,6 +96,19 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
         self.assertIn("attached", payload["body"].lower())
         self.assertIn("horror", payload["body"].lower())
         self.assertEqual(payload["attachment_content"], "https://image.pollinations.ai/prompt/an%20annable%20doll.png")
+        self.assertEqual(payload["attachments"][0]["filename"], "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png")
+
+    def test_fills_body_from_latest_history_draft_when_current_prompt_has_no_marker(self):
+        history = [{"role": "user", "content": f"EMAIL_DRAFT_CONTEXT:{json.dumps(self._body_draft())}"}]
+        result = build_email_draft_body_update_payload_from_history(
+            "do one thing u make relevent body i am lazy",
+            history,
+        )
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "friend@example.com")
+        self.assertEqual(payload["subject"], "annable")
+        self.assertIn("horror", payload["body"].lower())
         self.assertEqual(payload["attachments"][0]["filename"], "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png")
 
     def test_preflight_hook_returns_body_update_before_llm(self):
