@@ -90,7 +90,7 @@
                 start: found.index,
                 end: jsonEnd,
                 before: source.slice(0, found.index).trim(),
-                after: source.slice(jsonEnd).trim(),
+                after: source.slice(jsonEnd).trim()
             };
         } catch (error) {
             console.warn('[EmailDraft] Invalid draft payload:', error);
@@ -138,6 +138,34 @@
         label.textContent = labelText;
         label.style.cssText = 'font-size:0.68rem;color:var(--text-sub);font-weight:800;letter-spacing:.08em;align-self:center;';
         return [label, control];
+    }
+
+    function syncDraftFromCard(card) {
+        if (!card) return null;
+        let current = null;
+        try { current = normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { current = null; }
+        current = normalizeDraft(card.__emailDraft || current || {}) || {
+            recipient: '', subject: '', body: '', tone: 'modern', attachment_content: null, attachment_filename: '', attachments: []
+        };
+
+        const toInput = card.querySelector('.email-draft-recipient');
+        const subjectInput = card.querySelector('.email-draft-subject');
+        const toneSelect = card.querySelector('.email-draft-tone');
+        const bodyInput = card.querySelector('.email-draft-body-input');
+        const attachmentValue = card.querySelector('.email-draft-attachment-label');
+        const preview = card.querySelector('.email-draft-preview');
+
+        if (toInput) current.recipient = toInput.value.trim();
+        if (subjectInput) current.subject = subjectInput.value.trim();
+        if (toneSelect) current.tone = toneSelect.value || 'modern';
+        if (bodyInput) current.body = bodyInput.value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        if (!current.attachment_content && !(current.attachments || []).length) current.attachment_filename = '';
+
+        card.__emailDraft = current;
+        card.dataset.emailDraft = JSON.stringify(current);
+        if (attachmentValue) attachmentValue.textContent = attachmentLabel(current) || 'None';
+        if (preview) preview.srcdoc = renderSafeBodyHtml(current.body || '');
+        return current;
     }
 
     function buildEmailDraftCard(draft) {
@@ -223,26 +251,8 @@
         useBtn.style.cssText = 'border:1px solid var(--glass-border);border-radius:999px;padding:9px 15px;background:rgba(255,255,255,.08);color:var(--text-main);font-weight:800;cursor:pointer;';
         actions.appendChild(useBtn);
 
-        function syncDraftFromFields() {
-            current.recipient = toInput.value.trim();
-            current.subject = subjectInput.value.trim();
-            current.tone = toneSelect.value || 'modern';
-            current.body = body.value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-            if (!current.attachment_content && !(current.attachments || []).length) current.attachment_filename = '';
-            card.__emailDraft = current;
-            card.dataset.emailDraft = JSON.stringify(current);
-            attachmentValue.textContent = attachmentLabel(current) || 'None';
-            iframe.srcdoc = renderSafeBodyHtml(current.body || '');
-        }
-
-        [toInput, subjectInput, toneSelect, body].forEach(el => el.addEventListener('input', syncDraftFromFields));
-        useBtn.addEventListener('click', event => {
-            event.preventDefault();
-            syncDraftFromFields();
-            if (typeof window.attachEmailDraftToPrompt === 'function') window.attachEmailDraftToPrompt(current);
-        });
-
         card.append(header, grid, bodyLabel, body, previewLabel, iframe, actions);
+        hydrateEmailDraftCards(card);
         return card;
     }
 
@@ -252,8 +262,8 @@
 
     function collectEmailDraftForDrag(card) {
         if (!card) return null;
-        const fromFields = card.__emailDraft;
-        if (fromFields) return normalizeDraft(fromFields);
+        const fromCard = syncDraftFromCard(card);
+        if (fromCard) return normalizeDraft(fromCard);
         try { return normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { return null; }
     }
 
@@ -290,15 +300,25 @@
 
     function hydrateEmailDraftCards(rootEl) {
         if (!rootEl || typeof rootEl.querySelectorAll !== 'function') return;
-        rootEl.querySelectorAll('.email-draft-card').forEach(card => {
+        const cards = rootEl.matches?.('.email-draft-card') ? [rootEl] : Array.from(rootEl.querySelectorAll('.email-draft-card'));
+        cards.forEach(card => {
+            const draft = syncDraftFromCard(card);
+            if (!draft) return;
             if (card.dataset.emailDraftHydrated === 'true') return;
             card.dataset.emailDraftHydrated = 'true';
-            const draft = collectEmailDraftForDrag(card);
-            if (!draft) return;
-            card.__emailDraft = draft;
-            card.dataset.emailDraft = JSON.stringify(draft);
+            const sync = () => syncDraftFromCard(card);
+            card.querySelectorAll('.email-draft-recipient, .email-draft-subject, .email-draft-tone, .email-draft-body-input').forEach(el => {
+                el.addEventListener('input', sync);
+                el.addEventListener('change', sync);
+            });
+            card.querySelector('.email-draft-use-context-btn')?.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                const latest = syncDraftFromCard(card);
+                if (latest && typeof window.attachEmailDraftToPrompt === 'function') window.attachEmailDraftToPrompt(latest);
+            });
             card.addEventListener('dragstart', event => {
-                const emailDraft = collectEmailDraftForDrag(card);
+                const emailDraft = syncDraftFromCard(card);
                 if (!emailDraft || !event.dataTransfer) return;
                 event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(emailDraft));
                 event.dataTransfer.setData('text/plain', `EMAIL_DRAFT_CONTEXT:${JSON.stringify(emailDraft)}`);
@@ -348,6 +368,7 @@
     window.stripInternalEmailDraftMarkers = stripInternalEmailDraftMarkers;
     window.buildEmailDraftDragContext = buildEmailDraftDragContext;
     window.collectEmailDraftForDrag = collectEmailDraftForDrag;
+    window.syncEmailDraftFromCard = syncDraftFromCard;
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
