@@ -50,6 +50,46 @@ def resolve_recent_email(history: list) -> str | None:
     return None
 
 
+def _is_image_creation_prompt(prompt: str) -> bool:
+    text = str(prompt or "").lower()
+    if not text:
+        return False
+    if any(term in text for term in ("search image", "search photo", "find image", "find photo", "real image", "real photo")):
+        return False
+    return bool(
+        re.search(
+            r"\b(generate|create|make|draw|paint|sketch|render)\s+(?:[a-z0-9]+\s+){0,8}(image|picture|pic|photo|artwork|portrait|wallpaper|scene|illustration)\b",
+            text,
+        )
+        or re.search(r"\bcontent\s+will\s+be\s+an?\s+image\b", text)
+        or re.search(r"\bimage\s+of\b", text)
+    )
+
+
+def _explicitly_references_existing_image(prompt: str) -> bool:
+    text = str(prompt or "").lower().strip()
+    if not text:
+        return False
+    explicit_phrases = (
+        "this image", "that image", "the image", "above image", "previous image", "last image",
+        "this picture", "that picture", "the picture", "above picture", "previous picture", "last picture",
+        "this photo", "that photo", "the photo", "above photo", "previous photo", "last photo",
+        "in the image", "in this image", "in that image", "in the picture", "in this picture",
+        "look at this", "look at the image", "describe this", "describe the image", "what is this",
+        "what's this", "what is in this", "what is shown", "based on this", "based on the image",
+        "use this image", "use the image", "attach this image", "attach the image",
+    )
+    if any(phrase in text for phrase in explicit_phrases):
+        return True
+    return bool(re.fullmatch(r"(this|that|it|above|describe it|analyze it|what is it)", text))
+
+
+def _should_analyze_history_image(clean_prompt: str) -> bool:
+    if _is_image_creation_prompt(clean_prompt) and not _explicitly_references_existing_image(clean_prompt):
+        return False
+    return _explicitly_references_existing_image(clean_prompt)
+
+
 def assemble_context(
     user_prompt,
     img_data,
@@ -63,13 +103,13 @@ def assemble_context(
     clean_prompt = runtime.clean_prompt(user_prompt)
 
     def task_vision():
-        if status_callback:
-            status_callback("Analyzing Visual Context...")
-        image_keywords = (
+        prompt_lower = clean_prompt.lower()
+        direct_image_keywords = (
             "this", "that", "image", "picture", "photo", "look", "see", "describe", "analyze", "what is",
             "tell me about", "color", "colour", "who", "where", "context",
         )
-        refers_to_image = any(keyword in clean_prompt.lower() for keyword in image_keywords)
+        refers_to_current_upload = any(keyword in prompt_lower for keyword in direct_image_keywords)
+        refers_to_history_image = _should_analyze_history_image(clean_prompt)
         image_description = "No image context available."
         prompt_with_image = user_prompt
 
@@ -84,7 +124,9 @@ def assemble_context(
             if local_urls:
                 markdown = "\n".join(f"![Uploaded Image]({url})" for url in local_urls)
                 prompt_with_image = f"{markdown}\n{user_prompt}"
-            if refers_to_image:
+            if refers_to_current_upload:
+                if status_callback:
+                    status_callback("Analyzing Visual Context...")
                 descriptions = []
                 for item in images:
                     image_base64 = runtime.image_base64(item)
@@ -105,7 +147,7 @@ def assemble_context(
                     f"--- YOUR VISUAL PERCEPTION ---\n{image_description}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}",
                     image_description,
                 )
-        elif refers_to_image and history:
+        elif refers_to_history_image and history:
             image_urls = []
             for message in reversed(history):
                 content = message.get("content", message.get("c", ""))
@@ -115,8 +157,10 @@ def assemble_context(
                     if len(image_urls) >= 3:
                         break
             if image_urls:
+                if status_callback:
+                    status_callback("Analyzing Visual Context...")
                 generic = ("how does the image look", "describe it", "what is this", "this", "in the picture")
-                targets = [image_urls[0]] if any(item in clean_prompt.lower() for item in generic) else image_urls
+                targets = [image_urls[0]] if any(item in prompt_lower for item in generic) else image_urls
                 result = runtime.vision_system.analyze_chat_images(targets, clean_prompt)
                 if result:
                     image_description = result["description"]
