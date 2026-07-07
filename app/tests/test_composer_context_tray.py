@@ -6,14 +6,14 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=4", template)
+        self.assertIn("composer_context_tray.js?v=5", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 
     def test_composer_context_stylesheet_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.css?v=3", template)
+        self.assertIn("composer_context_tray.css?v=4", template)
 
     def test_drag_sources_include_text_images_and_widgets(self):
         root = Path(__file__).resolve().parents[2]
@@ -35,7 +35,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("order: -2", css)
         self.assertNotIn("bottom: calc(100% + 10px)", css)
         self.assertIn("composer-context-chip", css)
-        self.assertIn("Drop to target next message", css)
+        self.assertIn("Drop to attach context", css)
 
     def test_context_items_feed_existing_send_path(self):
         root = Path(__file__).resolve().parents[2]
@@ -65,6 +65,21 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("chat-context-strip", css)
         self.assertIn("chat-context-card", css)
         self.assertIn("Targeted Context", script)
+
+    def test_context_widget_visual_structure_and_loading_states(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
+        css = (root / "static" / "css" / "composer_context_tray.css").read_text(encoding="utf-8")
+        self.assertIn("composer-context-media", script)
+        self.assertIn("composer-context-dot", script)
+        self.assertIn("composer-context-progress", script)
+        self.assertIn("sourceLabelForKind", script)
+        self.assertIn("is-attaching", script)
+        self.assertIn("is-sending", script)
+        self.assertIn("is-rendering", script)
+        self.assertIn("context-widget-sweep", css)
+        self.assertIn("context-widget-progress", css)
+        self.assertIn("context-widget-enter", css)
 
     def test_context_tray_does_not_observe_its_own_rendering(self):
         root = Path(__file__).resolve().parents[2]
