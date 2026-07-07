@@ -2,12 +2,15 @@ import json
 import unittest
 
 from app.logic.email_draft_image_workflow import (
+    build_email_draft_body_update_payload,
     build_generated_image_email_draft_payload,
     clean_prompt_without_attached_context,
     extract_email_draft_from_prompt,
     image_description_from_prompt,
+    is_email_body_fill_request,
     is_generated_image_email_draft_request,
 )
+from app.logic.profile_links import resolve_public_profile_link_request
 
 
 class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
@@ -23,6 +26,27 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
             f"EMAIL_DRAFT_CONTEXT:{json.dumps(draft)}\n"
             "\"\"\"\n\n"
             "content will be an image of an annable doll with dim asthetic and realistic horror effect"
+        )
+
+    def _body_prompt(self):
+        draft = {
+            "recipient": "friend@example.com",
+            "subject": "annable",
+            "body": "",
+            "tone": "modern",
+            "attachment_content": "https://image.pollinations.ai/prompt/an%20annable%20doll.png",
+            "attachment_filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png",
+            "attachments": [{
+                "content": "https://image.pollinations.ai/prompt/an%20annable%20doll.png",
+                "filename": "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png",
+                "type": "image/png",
+            }],
+        }
+        return (
+            "[Attached Context 1]\n\"\"\"\n"
+            f"EMAIL_DRAFT_CONTEXT:{json.dumps(draft)}\n"
+            "\"\"\"\n\n"
+            "write something for the body i am lazy"
         )
 
     def test_extracts_attached_email_draft_context(self):
@@ -58,6 +82,24 @@ class GeneratedImageEmailDraftWorkflowTests(unittest.TestCase):
         self.assertEqual(payload["attachments"][0]["content"], payload["attachment_content"])
         self.assertTrue(payload["attachment_filename"].endswith("_image.png"))
         self.assertEqual(payload["subject"], "Image Attachment")
+
+    def test_fills_dragged_email_widget_body_without_losing_details(self):
+        self.assertTrue(is_email_body_fill_request(self._body_prompt()))
+        result = build_email_draft_body_update_payload(self._body_prompt())
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "friend@example.com")
+        self.assertEqual(payload["subject"], "annable")
+        self.assertIn("attached", payload["body"].lower())
+        self.assertIn("horror", payload["body"].lower())
+        self.assertEqual(payload["attachment_content"], "https://image.pollinations.ai/prompt/an%20annable%20doll.png")
+        self.assertEqual(payload["attachments"][0]["filename"], "an%20annable%20doll%20with%20dim%20asthetic%20and%20realistic%20horror%20effect.png")
+
+    def test_preflight_hook_returns_body_update_before_llm(self):
+        result = resolve_public_profile_link_request(self._body_prompt())
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertTrue(payload["body"].strip())
 
 
 if __name__ == "__main__":
