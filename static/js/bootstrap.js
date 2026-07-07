@@ -39,10 +39,11 @@ window.addEventListener('unhandledrejection', function (event) {
 
     function inject() {
         removeLegacyPromptThemeButton();
-        injectScript('email_approval', '1', 'draft-send');
+        injectScript('busy_states', '1', 'busy-states');
+        injectScript('email_approval', '2', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
-        injectScript('composer_context_tray', '3', 'composer-context-tray');
+        injectScript('composer_context_tray', '5', 'composer-context-tray');
     }
 
     if (document.readyState === 'loading') {
