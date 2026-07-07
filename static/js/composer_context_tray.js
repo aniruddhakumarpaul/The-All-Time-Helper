@@ -44,15 +44,53 @@
         return clip(String(value || '').replace(/\s+/g, ' '), size);
     }
 
-    function cloneContextItems(items) {
-        return (Array.isArray(items) ? items : []).slice(0, MAX_ITEMS).map(item => ({
+    function stripAttachmentPayload(item) {
+        if (!item || typeof item !== 'object') return item;
+        const next = { ...item };
+        delete next.content;
+        delete next.data;
+        delete next.bytes;
+        return next;
+    }
+
+    function compactDraftForPrompt(draft) {
+        const raw = draft && typeof draft === 'object' ? draft : {};
+        const attachmentFilename = raw.attachment_filename
+            || (Array.isArray(raw.attachments) && (raw.attachments[0]?.filename || raw.attachments[0]?.name))
+            || '';
+        const compact = {
+            recipient: String(raw.recipient || raw.to || '').trim(),
+            subject: String(raw.subject || '').trim(),
+            body: String(raw.body || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+            tone: String(raw.tone || 'modern').trim() || 'modern',
+            attachment_filename: String(attachmentFilename || '').trim(),
+        };
+        if (raw.attachment_type) compact.attachment_type = raw.attachment_type;
+        if (raw.attachment_id || raw.id) compact.attachment_id = raw.attachment_id || raw.id;
+        if (Array.isArray(raw.attachments)) {
+            compact.attachments = raw.attachments.map(stripAttachmentPayload).filter(Boolean);
+        }
+        return compact;
+    }
+
+    function emailContextTextFromDraft(draft) {
+        return `EMAIL_DRAFT_CONTEXT:${JSON.stringify(compactDraftForPrompt(draft))}`;
+    }
+
+    function normalizeContext(item) {
+        if (!item || !item.text) return null;
+        return {
             kind: item.kind || 'text',
             title: clip(item.title || labelForKind(item.kind), 80),
             subtitle: clip(item.subtitle || '', 140),
             text: clip(item.text || '', MAX_ITEM_CHARS),
             preview: item.preview || '',
             status: item.status || 'ready',
-        })).filter(item => item.text);
+        };
+    }
+
+    function cloneContextItems(items) {
+        return (Array.isArray(items) ? items : []).slice(0, MAX_ITEMS).map(normalizeContext).filter(Boolean);
     }
 
     function totalChars(items) {
@@ -193,18 +231,21 @@
 
     function addContext(item) {
         const items = contextItems();
-        if (!item || !item.text || items.length >= MAX_ITEMS) return false;
+        const normalized = normalizeContext(item);
+        if (!normalized || items.length >= MAX_ITEMS) return false;
         const remaining = Math.max(0, MAX_TOTAL_CHARS - totalChars(items));
         if (!remaining) return false;
-        const text = clip(item.text, Math.min(MAX_ITEM_CHARS, remaining));
+        const text = normalized.kind === 'email'
+            ? normalized.text
+            : clip(normalized.text, Math.min(MAX_ITEM_CHARS, remaining));
         if (!text) return false;
         pulseTrayLoading('is-attaching', 700);
         items.push({
-            kind: item.kind || 'text',
-            title: clip(item.title || labelForKind(item.kind), 80),
-            subtitle: clip(item.subtitle || '', 140),
+            kind: normalized.kind,
+            title: normalized.title,
+            subtitle: normalized.subtitle,
             text,
-            preview: item.preview || '',
+            preview: normalized.preview || '',
             status: 'attaching',
         });
         scheduleRender();
@@ -264,13 +305,14 @@
             try { draft = JSON.parse(card.dataset.emailDraft || '{}'); } catch (_) { draft = null; }
         }
         if (!draft || typeof draft !== 'object') return null;
-        const subject = String(draft.subject || 'Email Draft').trim() || 'Email Draft';
-        const attachment = draft.attachment_filename || (Array.isArray(draft.attachments) && draft.attachments[0]?.filename) || '';
+        const compactDraft = compactDraftForPrompt(draft);
+        const subject = String(compactDraft.subject || 'Email Draft').trim() || 'Email Draft';
+        const attachment = compactDraft.attachment_filename || (Array.isArray(compactDraft.attachments) && compactDraft.attachments[0]?.filename) || '';
         return {
             kind: 'email',
             title: 'Email Draft',
             subtitle: attachment ? `${subject} • ${attachment}` : subject,
-            text: `EMAIL_DRAFT_CONTEXT:${JSON.stringify(draft)}`,
+            text: emailContextTextFromDraft(compactDraft),
         };
     }
 
@@ -355,13 +397,16 @@
     function parseDrop(event) {
         const rawContext = event.dataTransfer?.getData(CONTEXT_MIME) || '';
         if (rawContext) {
-            try { return JSON.parse(rawContext); } catch (_) { return null; }
+            try { return normalizeContext(JSON.parse(rawContext)); } catch (_) { return null; }
         }
         const rawDraft = event.dataTransfer?.getData(EMAIL_DRAFT_MIME) || '';
         if (rawDraft) {
             try {
                 const draft = JSON.parse(rawDraft);
-                return { kind: 'email', title: 'Email Draft', subtitle: draft.subject || 'Email Draft', text: `EMAIL_DRAFT_CONTEXT:${JSON.stringify(draft)}` };
+                const compactDraft = compactDraftForPrompt(draft);
+                const subject = compactDraft.subject || 'Email Draft';
+                const attachment = compactDraft.attachment_filename || '';
+                return { kind: 'email', title: 'Email Draft', subtitle: attachment ? `${subject} • ${attachment}` : subject, text: emailContextTextFromDraft(compactDraft) };
             } catch (_) { return null; }
         }
         const text = event.dataTransfer?.getData('text/plain') || '';
