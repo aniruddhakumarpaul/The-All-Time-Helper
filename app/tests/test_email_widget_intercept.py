@@ -48,14 +48,21 @@ class EmailWidgetInterceptTests(unittest.TestCase):
         self.assertNotIn("StreamingResponse", source)
         self.assertNotIn("anyio.sleep", source)
 
-    def test_email_widget_shortcut_lives_inside_chat_route(self):
+    def test_email_widget_shortcut_lives_inside_chat_route_after_body_preflight(self):
         from pathlib import Path
 
         root = Path(__file__).resolve().parents[2]
         chat = (root / "app" / "routes" / "chat.py").read_text(encoding="utf-8")
+        self.assertIn("build_email_draft_body_update_payload_from_history", chat)
+        self.assertIn("body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)", chat)
         self.assertIn("_is_email_widget_attachment_request(prompt)", chat)
         self.assertIn("_latest_image_email_draft(history)", chat)
+        self.assertIn("Response(content=_email_widget_ndjson(body_update), media_type=\"application/x-ndjson\")", chat)
         self.assertIn("Response(content=_email_widget_ndjson(message), media_type=\"application/x-ndjson\")", chat)
+        self.assertLess(
+            chat.index("body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)"),
+            chat.index("if not req.isMasked and _is_email_widget_attachment_request(prompt):"),
+        )
         self.assertIn("except ValueError", chat)
         self.assertIn("User context reset skipped", chat)
 
