@@ -7,6 +7,7 @@ import requests
 from crewai import Crew, Task
 
 from app.logic.agent_intent import specialist_for_prompt
+from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.exceptions import AgentFastExit
 from app.logic.memory import admin_auth_context
 from app.logic.profile_links import resolve_public_profile_link_request
@@ -70,6 +71,14 @@ def execute_local(
         if chunk_callback:
             chunk_callback(profile_link)
         return profile_link
+
+    email_body_update = build_email_draft_body_update_payload_from_history(prompt_text, history, logger=runtime.logger)
+    if email_body_update:
+        if status_callback:
+            status_callback("✍️ Updating email draft body...")
+        if chunk_callback:
+            chunk_callback(email_body_update)
+        return email_body_update
 
     prompt_scan = prompt_text.lower()
     if intent["requires_tools"] and any(keyword in prompt_scan for keyword in ("email", "mail", "send")):
