@@ -43,6 +43,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('email_approval', '2', 'draft-send');
         injectScript('admin_dashboard', '1', 'admin-dashboard');
         injectScript('job_center', '1', 'job-center');
+        injectScript('chat_context_reuse', '1', 'chat-context-reuse');
         injectScript('composer_context_tray', '5', 'composer-context-tray');
     }
 
