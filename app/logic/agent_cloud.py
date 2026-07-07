@@ -58,12 +58,17 @@ def _is_direct_image_generation(prompt: str) -> bool:
         return False
     if any(term in text for term in ("draw", "paint", "sketch", "artwork", "painting", "drawing", "portrait", "wallpaper")):
         return True
-    return bool(re.search(r"\b(generate|create|make|render)\s+(?:[a-z0-9]+\s+){0,5}(image|picture|pic|photo|artwork|scene|illustration|apple|car|dog|cat)\b", text))
+    if re.search(r"\bcontent\s+will\s+be\s+an?\s+image\s+(of|about|depicting)?\b", text):
+        return True
+    if re.search(r"\bimage\s+of\s+", text) and any(term in text for term in ("aesthetic", "effect", "realistic", "cinematic", "style", "doll", "car", "scene")):
+        return True
+    return bool(re.search(r"\b(generate|create|make|render)\s+(?:[a-z0-9]+\s+){0,8}(image|picture|pic|photo|artwork|scene|illustration|apple|car|dog|cat|doll)\b", text))
 
 
 def _image_description(prompt: str) -> str:
     clean = str(prompt or "").strip()
     clean = re.sub(r"(?i)^\s*(please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+)?", "", clean)
+    clean = re.sub(r"(?i)^\s*content\s+will\s+be\s+an?\s+image\s+(of|about|depicting)?\s*", "", clean)
     clean = re.sub(r"(?i)^\s*(generate|create|make|draw|paint|sketch|render)\s+(me\s+)?(an?\s+)?(image|picture|pic|photo|artwork|illustration)\s*(of\s+)?", "", clean)
     clean = re.sub(r"(?i)^\s*(generate|create|make|draw|paint|sketch|render)\s+(me\s+)?", "", clean)
     clean = re.sub(r"[?.!]+$", "", clean).strip()
