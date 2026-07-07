@@ -51,6 +51,7 @@
             subtitle: clip(item.subtitle || '', 140),
             text: clip(item.text || '', MAX_ITEM_CHARS),
             preview: item.preview || '',
+            status: item.status || 'ready',
         })).filter(item => item.text);
     }
 
@@ -65,6 +66,13 @@
         return 'Text Target';
     }
 
+    function sourceLabelForKind(kind) {
+        if (kind === 'image') return 'Image';
+        if (kind === 'email') return 'Email draft';
+        if (kind === 'widget') return 'Widget';
+        return 'Chat text';
+    }
+
     function iconForKind(kind) {
         if (kind === 'image') return '▧';
         if (kind === 'email') return '✉';
@@ -76,12 +84,17 @@
         const kind = item.kind || 'text';
         const title = item.title || labelForKind(kind);
         const subtitle = item.subtitle || compactText(item.text, mode === 'chat' ? 140 : 90);
+        const source = sourceLabelForKind(kind);
         const thumb = kind === 'image' && item.preview
             ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
             : `<span class="composer-context-icon">${escapeHtml(iconForKind(kind))}</span>`;
         return `
-            ${thumb}
+            <div class="composer-context-media">
+                ${thumb}
+                <span class="composer-context-dot" aria-hidden="true"></span>
+            </div>
             <div class="composer-context-meta">
+                <em>${escapeHtml(source)}</em>
                 <strong>${escapeHtml(title)}</strong>
                 <span>${escapeHtml(subtitle)}</span>
             </div>
@@ -107,6 +120,20 @@
         return st.attachedContexts;
     }
 
+    function setTrayBusy(isBusy, className = 'is-loading') {
+        const tray = ensureTray();
+        if (!tray) return;
+        tray.classList.toggle(className, Boolean(isBusy));
+    }
+
+    function pulseTrayLoading(className = 'is-loading', duration = 520) {
+        setTrayBusy(true, className);
+        window.clearTimeout(ensureTray()?._contextBusyTimer);
+        const tray = ensureTray();
+        if (!tray) return;
+        tray._contextBusyTimer = window.setTimeout(() => setTrayBusy(false, className), duration);
+    }
+
     function renderTray() {
         if (renderingTray) return;
         const tray = ensureTray();
@@ -119,10 +146,11 @@
             if (!items.length) return;
             for (const [index, item] of items.entries()) {
                 const kind = item.kind || 'text';
+                const status = item.status || 'ready';
                 const chip = document.createElement('div');
-                chip.className = `composer-context-chip composer-context-${kind}`;
+                chip.className = `composer-context-chip composer-context-${kind} is-${status}`;
                 chip.dataset.index = String(index);
-                chip.innerHTML = `${contextCardHtml(item)}<button type="button" class="composer-context-remove" aria-label="Remove context">×</button>`;
+                chip.innerHTML = `${contextCardHtml(item)}<button type="button" class="composer-context-remove" aria-label="Remove context">×</button><span class="composer-context-progress" aria-hidden="true"></span>`;
                 chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
                     contextItems().splice(index, 1);
                     scheduleRender();
@@ -148,10 +176,19 @@
         if (st && Array.isArray(st.attachedContexts)) st.attachedContexts = [];
         const tray = ensureTray();
         if (tray) {
-            tray.classList.remove('has-context', 'composer-drop-active');
+            tray.classList.remove('has-context', 'composer-drop-active', 'is-loading', 'is-attaching', 'is-sending');
             tray.innerHTML = '';
         }
         scheduleRender();
+    }
+
+    function markLastContextReady() {
+        const items = contextItems();
+        const last = items[items.length - 1];
+        if (last && last.status === 'attaching') {
+            last.status = 'ready';
+            scheduleRender();
+        }
     }
 
     function addContext(item) {
@@ -161,14 +198,17 @@
         if (!remaining) return false;
         const text = clip(item.text, Math.min(MAX_ITEM_CHARS, remaining));
         if (!text) return false;
+        pulseTrayLoading('is-attaching', 700);
         items.push({
             kind: item.kind || 'text',
             title: clip(item.title || labelForKind(item.kind), 80),
             subtitle: clip(item.subtitle || '', 140),
             text,
             preview: item.preview || '',
+            status: 'attaching',
         });
         scheduleRender();
+        window.setTimeout(markLastContextReady, 420);
         return true;
     }
 
@@ -180,7 +220,7 @@
             const message = chat.ms[idx];
             if (message?.r !== 'u') continue;
             if (!Array.isArray(message.contexts) || !message.contexts.length) {
-                message.contexts = cloneContextItems(pendingSentContexts);
+                message.contexts = cloneContextItems(pendingSentContexts).map(item => ({ ...item, status: 'ready' }));
             }
             renderChatContextWidgets();
             return true;
@@ -192,6 +232,7 @@
         if (clearAfterSendQueued) return;
         pendingSentContexts = cloneContextItems(contextItems());
         if (!pendingSentContexts.length) return;
+        setTrayBusy(true, 'is-sending');
         clearAfterSendQueued = true;
         let attempts = 0;
         const tick = () => {
@@ -338,11 +379,11 @@
             if (!target) return;
             event.preventDefault();
             if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-            ensureTray()?.classList.add('composer-drop-active');
+            ensureTray()?.classList.add('composer-drop-active', 'is-loading');
         }, true);
         document.addEventListener('dragleave', event => {
             if (!event.relatedTarget || !document.querySelector('#input-wrap')?.contains(event.relatedTarget)) {
-                ensureTray()?.classList.remove('composer-drop-active');
+                ensureTray()?.classList.remove('composer-drop-active', 'is-loading');
             }
         }, true);
         document.addEventListener('drop', event => {
@@ -354,6 +395,7 @@
             event.stopImmediatePropagation();
             addContext(context);
             ensureTray()?.classList.remove('composer-drop-active');
+            window.setTimeout(() => ensureTray()?.classList.remove('is-loading'), 260);
             document.getElementById('prompt')?.focus();
         }, true);
     }
@@ -370,16 +412,17 @@
             if (!txt || node.querySelector('.chat-context-strip')) return;
             if (!contexts.length || message?.r !== 'u') return;
             const strip = document.createElement('div');
-            strip.className = 'chat-context-strip';
+            strip.className = 'chat-context-strip is-rendering';
             strip.setAttribute('aria-label', 'Context used for this prompt');
             strip.innerHTML = `<div class="chat-context-title">Targeted Context</div>`;
             for (const item of contexts) {
                 const card = document.createElement('div');
-                card.className = `chat-context-card composer-context-${item.kind || 'text'}`;
+                card.className = `chat-context-card composer-context-${item.kind || 'text'} is-ready`;
                 card.innerHTML = contextCardHtml(item, 'chat');
                 strip.appendChild(card);
             }
             txt.insertBefore(strip, txt.firstChild);
+            window.setTimeout(() => strip.classList.remove('is-rendering'), 450);
         });
     }
 
