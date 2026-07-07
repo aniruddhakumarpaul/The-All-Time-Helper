@@ -1,6 +1,13 @@
 // email_draft.js
 // Restores and upgrades the email-draft frontend surface produced by backend agent tools.
 (function () {
+    const EXTENSION_MARKER = '__helperEmailDraftInstalled';
+    if (window[EXTENSION_MARKER]) {
+        if (document.readyState !== 'loading') window.hydrateEmailDraftCards?.(document);
+        return;
+    }
+    window[EXTENSION_MARKER] = true;
+
     const MARKERS = ['EMAIL_DRAFT_CONTEXT:', 'EMAIL_DRAFT_PAYLOAD:'];
     const DRAFT_MIME = 'application/x-helper-email-draft';
 
@@ -358,17 +365,21 @@
         hydrateEmailDraftCards(rootEl);
     };
 
-    document.addEventListener('DOMContentLoaded', () => {
+    function initEmailDraftFrontend() {
         loadPromptContextModule();
         hydrateEmailDraftCards(document);
         installMascotDraftDrop();
-    });
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initEmailDraftFrontend);
+    else initEmailDraftFrontend();
 
     window.parseEmailDraftContext = parseEmailDraftContext;
     window.stripInternalEmailDraftMarkers = stripInternalEmailDraftMarkers;
     window.buildEmailDraftDragContext = buildEmailDraftDragContext;
     window.collectEmailDraftForDrag = collectEmailDraftForDrag;
     window.syncEmailDraftFromCard = syncDraftFromCard;
+    window.hydrateEmailDraftCards = hydrateEmailDraftCards;
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
