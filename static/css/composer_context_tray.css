@@ -22,11 +22,12 @@
     box-sizing: border-box;
     order: -2;
     padding: 9px;
-    border: 1px solid rgba(125, 156, 255, 0.22);
+    border: 1px solid rgba(125, 156, 255, 0.24);
     border-radius: 22px;
-    background: rgba(255, 255, 255, 0.045);
+    background: rgba(255, 255, 255, 0.052);
     backdrop-filter: var(--glass-blur);
-    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    overflow: hidden;
 }
 
 #composer-context-tray.has-context,
@@ -42,8 +43,8 @@
     padding: 0 12px;
     border-radius: 999px;
     color: var(--text-main);
-    background: rgba(255, 255, 255, 0.055);
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     font-size: 0.7rem;
     font-weight: 900;
     letter-spacing: 0.04em;
@@ -52,14 +53,14 @@
 }
 
 #composer-context-tray.composer-drop-active::before {
-    content: 'Drop to target next message';
+    content: 'Drop to attach context';
     width: 100%;
     box-sizing: border-box;
     padding: 9px 12px;
-    border: 1px dashed rgba(125, 156, 255, 0.65);
+    border: 1px dashed rgba(125, 156, 255, 0.68);
     border-radius: 16px;
     color: var(--text-main);
-    background: rgba(66, 133, 244, 0.13);
+    background: rgba(66, 133, 244, 0.14);
     backdrop-filter: var(--glass-blur);
     font-size: 0.78rem;
     font-weight: 800;
@@ -68,28 +69,138 @@
     text-transform: none;
 }
 
+#composer-context-tray.is-loading,
+#composer-context-tray.is-attaching,
+#composer-context-tray.is-sending {
+    border-color: rgba(125, 156, 255, 0.48);
+}
+
+#composer-context-tray.is-loading::after,
+#composer-context-tray.is-attaching::after,
+#composer-context-tray.is-sending::after,
+.chat-context-strip.is-rendering::after {
+    content: '';
+    position: absolute;
+    left: -35%;
+    right: auto;
+    top: 0;
+    width: 34%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+    animation: context-widget-sweep 1.05s ease-in-out infinite;
+    pointer-events: none;
+}
+
 .composer-context-chip,
 .chat-context-card {
+    position: relative;
     display: inline-grid;
-    grid-template-columns: 36px minmax(0, 1fr) 24px;
+    grid-template-columns: 42px minmax(0, 1fr) 26px;
     align-items: center;
-    gap: 10px;
-    max-width: min(360px, 100%);
-    min-height: 50px;
-    padding: 7px 8px;
+    gap: 11px;
+    max-width: min(388px, 100%);
+    min-height: 58px;
+    padding: 8px 9px;
     box-sizing: border-box;
-    border: 1px solid rgba(255, 255, 255, 0.075);
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(255, 255, 255, 0.085);
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.062);
     backdrop-filter: var(--glass-blur);
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.20);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    overflow: hidden;
+    animation: context-widget-enter 180ms ease-out both;
 }
 
 .chat-context-card {
-    grid-template-columns: 36px minmax(0, 1fr);
-    max-width: min(320px, 100%);
-    min-height: 46px;
+    grid-template-columns: 42px minmax(0, 1fr);
+    max-width: min(340px, 100%);
+    min-height: 52px;
     box-shadow: none;
+}
+
+.composer-context-chip.is-attaching::after,
+.composer-context-chip.is-sending::after {
+    content: '';
+    position: absolute;
+    left: -40%;
+    top: 0;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+    animation: context-widget-sweep 0.95s ease-in-out infinite;
+    pointer-events: none;
+}
+
+.composer-context-progress {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 5px;
+    height: 2px;
+    border-radius: 999px;
+    background: rgba(125, 156, 255, 0.26);
+    transform: scaleX(0);
+    transform-origin: left;
+    opacity: 0;
+}
+
+.composer-context-chip.is-attaching .composer-context-progress,
+.composer-context-chip.is-sending .composer-context-progress {
+    opacity: 1;
+    animation: context-widget-progress 0.9s ease-in-out infinite;
+}
+
+.composer-context-media {
+    position: relative;
+    width: 42px;
+    height: 42px;
+}
+
+.composer-context-icon,
+.composer-context-thumb {
+    width: 42px;
+    height: 42px;
+    border-radius: 15px;
+    border: 1px solid var(--glass-border);
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text-main);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1rem;
+    font-weight: 900;
+    object-fit: cover;
+}
+
+.composer-context-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    background: rgb(61, 220, 151);
+    border: 2px solid rgba(15, 18, 25, 0.96);
+    box-shadow: 0 0 10px rgba(61, 220, 151, 0.6);
+}
+
+.composer-context-meta {
+    min-width: 0;
+}
+
+.composer-context-chip em,
+.chat-context-card em {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--text-sub);
+    font-size: 0.58rem;
+    font-style: normal;
+    font-weight: 900;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .composer-context-chip strong,
@@ -106,7 +217,7 @@
 .composer-context-chip strong,
 .chat-context-card strong {
     color: var(--text-main);
-    font-size: 0.77rem;
+    font-size: 0.78rem;
     font-weight: 900;
     letter-spacing: 0.01em;
 }
@@ -118,44 +229,28 @@
     margin-top: 3px;
 }
 
-.composer-context-icon,
-.composer-context-thumb {
-    width: 36px;
-    height: 36px;
-    border-radius: 13px;
-    border: 1px solid var(--glass-border);
-    background: rgba(255, 255, 255, 0.065);
-    color: var(--text-main);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.98rem;
-    font-weight: 900;
-    object-fit: cover;
-}
-
 .composer-context-image .composer-context-thumb {
-    border-color: rgba(125, 156, 255, 0.50);
+    border-color: rgba(125, 156, 255, 0.54);
 }
 
 .composer-context-email .composer-context-icon {
-    border-color: rgba(255, 202, 75, 0.50);
-    background: rgba(255, 202, 75, 0.11);
+    border-color: rgba(255, 202, 75, 0.54);
+    background: rgba(255, 202, 75, 0.12);
 }
 
 .composer-context-text .composer-context-icon {
-    border-color: rgba(61, 220, 151, 0.44);
-    background: rgba(61, 220, 151, 0.10);
+    border-color: rgba(61, 220, 151, 0.48);
+    background: rgba(61, 220, 151, 0.11);
 }
 
 .composer-context-widget .composer-context-icon {
-    border-color: rgba(168, 85, 247, 0.50);
-    background: rgba(168, 85, 247, 0.11);
+    border-color: rgba(168, 85, 247, 0.54);
+    background: rgba(168, 85, 247, 0.12);
 }
 
 .composer-context-remove {
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     border: 0;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.08);
@@ -164,24 +259,28 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 17px;
     line-height: 1;
+    transition: background 140ms ease, color 140ms ease, transform 140ms ease;
 }
 
 .composer-context-remove:hover {
     color: var(--text-main);
     background: rgba(255, 255, 255, 0.14);
+    transform: scale(1.05);
 }
 
 .chat-context-strip {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     margin: 0 0 10px 0;
     padding: 9px;
     border-radius: 20px;
-    border: 1px solid rgba(125, 156, 255, 0.18);
-    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(125, 156, 255, 0.2);
+    background: rgba(255, 255, 255, 0.04);
+    overflow: hidden;
 }
 
 .chat-context-title {
@@ -206,6 +305,22 @@ body.composer-context-dragging .pill-bar {
     outline-offset: 4px;
 }
 
+@keyframes context-widget-enter {
+    from { opacity: 0; transform: translateY(4px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes context-widget-sweep {
+    from { transform: translateX(0); }
+    to { transform: translateX(420%); }
+}
+
+@keyframes context-widget-progress {
+    0% { transform: scaleX(0); opacity: 0.35; }
+    50% { transform: scaleX(0.72); opacity: 1; }
+    100% { transform: scaleX(1); opacity: 0.25; }
+}
+
 @media (max-width: 850px) {
     #composer-context-tray {
         width: 100%;
@@ -214,10 +329,17 @@ body.composer-context-dragging .pill-bar {
     .composer-context-chip,
     .chat-context-card {
         max-width: 100%;
-        grid-template-columns: 34px minmax(0, 1fr) 24px;
+        grid-template-columns: 40px minmax(0, 1fr) 26px;
     }
 
     .chat-context-card {
-        grid-template-columns: 34px minmax(0, 1fr);
+        grid-template-columns: 40px minmax(0, 1fr);
+    }
+
+    .composer-context-media,
+    .composer-context-icon,
+    .composer-context-thumb {
+        width: 40px;
+        height: 40px;
     }
 }
