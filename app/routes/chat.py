@@ -17,6 +17,7 @@ from app.inference_queue import inference_queue
 from app.logger import logger
 from app.logic.agents import ask_the_helper
 from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
+from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.memory import admin_auth_context, query_memory, user_context
 from app.logic.neural_explainer import explain_neural_context
 from app.repository import ChatRepository
@@ -173,6 +174,12 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     has_visual_input = bool(img)
     history = req.history
     sys_config = req.sys
+
+    if not req.isMasked:
+        body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)
+        if body_update:
+            logger.info("[EmailWidget] Routed targeted body update inside chat endpoint before image shortcut.")
+            return Response(content=_email_widget_ndjson(body_update), media_type="application/x-ndjson")
 
     if not req.isMasked and _is_email_widget_attachment_request(prompt):
         try:
