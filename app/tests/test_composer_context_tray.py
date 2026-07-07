@@ -6,7 +6,7 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=5", template)
+        self.assertIn("composer_context_tray.js?v=6", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 
@@ -23,6 +23,16 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("img.chat-img-preview", script)
         self.assertIn(".email-draft-card", script)
         self.assertIn("EMAIL_DRAFT_CONTEXT", script)
+
+    def test_email_context_is_compact_and_parseable_not_base64_blob(self):
+        root = Path(__file__).resolve().parents[2]
+        script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
+        self.assertIn("compactDraftForPrompt", script)
+        self.assertIn("emailContextTextFromDraft", script)
+        self.assertIn("delete next.content", script)
+        self.assertIn("delete next.data", script)
+        self.assertIn("delete next.bytes", script)
+        self.assertNotIn("text: `EMAIL_DRAFT_CONTEXT:${JSON.stringify(draft)}`", script)
 
     def test_context_tray_renders_above_prompt_bar_in_flow(self):
         root = Path(__file__).resolve().parents[2]
