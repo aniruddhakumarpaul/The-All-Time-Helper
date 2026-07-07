@@ -1,0 +1,122 @@
+/* busy_states.css
+ * Non-blocking busy states for restore, context lookup, attachments, and email send.
+ */
+.helper-floating-busy,
+.helper-inline-busy {
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.helper-floating-busy.is-visible,
+.helper-inline-busy.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.helper-floating-busy {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    z-index: 12000;
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 13px;
+    border-radius: 999px;
+    border: 1px solid rgba(125, 156, 255, 0.25);
+    background: rgba(20, 24, 35, 0.78);
+    color: var(--text-main);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.helper-inline-busy {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    width: fit-content;
+    margin: 8px 0;
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(125, 156, 255, 0.2);
+    background: rgba(255, 255, 255, 0.055);
+    color: var(--text-sub);
+    font-size: 0.74rem;
+    font-weight: 800;
+}
+
+.helper-inline-busy.is-visible {
+    display: inline-flex;
+}
+
+.busy-spinner,
+.email-send-spinner {
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.22);
+    border-top-color: var(--accent-blue);
+    animation: helper-busy-spin 0.72s linear infinite;
+    flex: 0 0 auto;
+}
+
+.context-busy #context-results {
+    opacity: 0.62;
+}
+
+.img-btn.is-uploading {
+    position: relative;
+    opacity: 0.72;
+    pointer-events: none;
+}
+
+.img-btn.is-uploading::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 999px;
+    border: 1px solid rgba(125, 156, 255, 0.52);
+    animation: helper-busy-pulse 1s ease-in-out infinite;
+}
+
+.email-send-busy {
+    position: relative;
+}
+
+.email-send-busy::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+    animation: helper-busy-sweep 1.1s ease-in-out infinite;
+}
+
+.email-draft-approve-btn.is-sending-email {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    opacity: 0.82;
+    cursor: wait !important;
+}
+
+@keyframes helper-busy-spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes helper-busy-pulse {
+    0%, 100% { opacity: 0.25; transform: scale(0.96); }
+    50% { opacity: 1; transform: scale(1.04); }
+}
+
+@keyframes helper-busy-sweep {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
+}
