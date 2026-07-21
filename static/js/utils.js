@@ -105,26 +105,61 @@
                 const setFailure = (message) => {
                     const currentWrappers = getCurrentUpscaleWrappers(jobId);
                     const targets = currentWrappers.length ? currentWrappers : [wrapper];
-                    targets.forEach(currentWrapper => {
-                        const img = currentWrapper ? currentWrapper.querySelector('.chat-rendered-img') : null;
-                        const loadingEl = currentWrapper ? currentWrapper.querySelector('.ai-img-loading') : null;
-                        const errorEl = currentWrapper ? currentWrapper.querySelector('.ai-img-error') : null;
+
+                    const presentFailure = (currentWrapper, img, loadingEl, errorEl, originalUrl) => {
                         if (loadingEl) loadingEl.style.display = 'none';
                         if (errorEl) {
-                            errorEl.textContent = message;
+                            errorEl.textContent = '';
+                            const text = document.createElement('span');
+                            text.textContent = message;
+                            errorEl.appendChild(text);
+                            if (originalUrl) {
+                                const link = document.createElement('a');
+                                link.href = originalUrl;
+                                link.target = '_blank';
+                                link.rel = 'noopener noreferrer';
+                                link.textContent = ' View original';
+                                link.style.color = 'var(--accent-blue)';
+                                errorEl.appendChild(link);
+                            }
                             errorEl.style.display = 'block';
-                        } else if (loadingEl) {
-                            loadingEl.innerHTML = `<div style="padding:16px;color:var(--text-sub)">${message}</div>`;
-                            loadingEl.style.display = 'block';
                         }
                         if (img) {
                             img.dataset.loaded = 'true';
                             updateLastMessageImageState(img);
                         }
+                    };
+
+                    targets.forEach(currentWrapper => {
+                        const img = currentWrapper ? currentWrapper.querySelector('.chat-rendered-img') : null;
+                        const loadingEl = currentWrapper ? currentWrapper.querySelector('.ai-img-loading') : null;
+                        const errorEl = currentWrapper ? currentWrapper.querySelector('.ai-img-error') : null;
+                        const originalUrl = currentWrapper ? currentWrapper.getAttribute('data-original-url') || '' : '';
+
+                        if (img && originalUrl && img.dataset.originalFallbackAttempted !== 'true') {
+                            img.dataset.originalFallbackAttempted = 'true';
+                            img.dataset.retryUrl = '';
+                            img.dataset.modalUrl = originalUrl;
+                            img.removeAttribute('crossorigin');
+                            if (errorEl) errorEl.style.display = 'none';
+                            if (loadingEl) {
+                                loadingEl.style.display = 'flex';
+                                const status = loadingEl.querySelector('span');
+                                if (status) status.textContent = 'Loading original image...';
+                            }
+                            img.addEventListener(
+                                'error',
+                                () => presentFailure(currentWrapper, img, loadingEl, errorEl, originalUrl),
+                                { once: true }
+                            );
+                            img.src = originalUrl;
+                            return;
+                        }
+
+                        presentFailure(currentWrapper, img, loadingEl, errorEl, originalUrl);
                     });
                     clearUpscalePoller(jobId);
                 };
-
                 const markReady = (localUrl) => {
                     if (!localUrl) {
                         setFailure('Image preview is unavailable.');
@@ -172,7 +207,8 @@
                     const entry = activeUpscalePollers.get(jobId);
                     if (!entry) return;
                     try {
-                        const res = await fetch(`/api/upscale/status/${encodeURIComponent(jobId)}`);
+                        const path = `/api/upscale/status/${encodeURIComponent(jobId)}`;
+                        const res = await fetch(window.helperApiUrl ? window.helperApiUrl(path) : path);
                         const data = await res.json();
                         entry.errors = 0;
                         if (data && data.success && data.status === 'ready' && data.url) {
@@ -371,7 +407,8 @@
 
         async function probeImageProxyStatus(url) {
             try {
-                const res = await fetch(`/api/image_proxy?url=${encodeURIComponent(url)}`, { cache: 'no-store' });
+                const path = `/api/image_proxy?url=${encodeURIComponent(url)}`;
+                const res = await fetch(window.helperApiUrl ? window.helperApiUrl(path) : path, { cache: 'no-store' });
                 const message = res && !res.ok ? (await res.text()).trim() : '';
                 return { status: res ? res.status : 0, message };
             } catch (err) {
@@ -665,11 +702,11 @@
                     return `
                         <div class="code-wrapper">
                             <div class="code-actions">
-                                <button class="code-btn copy-btn" data-code="${safeCode}">
+                                <button type="button" class="code-btn copy-btn" data-code="${safeCode}">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                                     <span>Copy</span>
                                 </button>
-                                <button class="code-btn download-btn" data-code="${safeCode}" data-lang="${safeLang}">
+                                <button type="button" class="code-btn download-btn" data-code="${safeCode}" data-lang="${safeLang}">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                                     <span>Save</span>
                                 </button>

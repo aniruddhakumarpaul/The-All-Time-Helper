@@ -2,11 +2,110 @@
  * ui.js — UI Controller Module
  * All DOM manipulation logic extracted from main_v3.js.
  */
-import { state } from './state.js';
+import { state } from './state.js?v=210';
 import { sortChatsNewestFirst } from './chat_sync.js?v=203';
 
-const LOGO_DATA = "/static/img/logo.png";
+const LOGO_DARK_DATA = "/static/img/logo.png";
 const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";
+
+const PREFERENCES_KEY = 'helper_preferences_v1';
+const RESPONSE_STYLES = new Set(['adaptive', 'concise', 'deep', 'creative']);
+const DEFAULT_PREFERENCES = Object.freeze({
+    personalization: true,
+    oneWord: false,
+    english: true,
+    persona: false,
+    responseStyle: 'adaptive'
+});
+let toastTimer = null;
+
+function readPreferences() {
+    let stored = {};
+    try {
+        stored = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || '{}') || {};
+    } catch (_) {
+        stored = {};
+    }
+    const legacyStyle = localStorage.getItem('helper_response_style_v1');
+    const candidateStyle = stored.responseStyle || legacyStyle || DEFAULT_PREFERENCES.responseStyle;
+    return {
+        personalization: typeof stored.personalization === 'boolean' ? stored.personalization : DEFAULT_PREFERENCES.personalization,
+        oneWord: typeof stored.oneWord === 'boolean' ? stored.oneWord : DEFAULT_PREFERENCES.oneWord,
+        english: typeof stored.english === 'boolean' ? stored.english : DEFAULT_PREFERENCES.english,
+        persona: typeof stored.persona === 'boolean' ? stored.persona : DEFAULT_PREFERENCES.persona,
+        responseStyle: RESPONSE_STYLES.has(candidateStyle) ? candidateStyle : DEFAULT_PREFERENCES.responseStyle
+    };
+}
+
+function preferencesFromControls() {
+    return {
+        personalization: Boolean(document.getElementById('t-pers')?.classList.contains('on')),
+        oneWord: Boolean(document.getElementById('t-word')?.classList.contains('on')),
+        english: Boolean(document.getElementById('t-eng')?.classList.contains('on')),
+        persona: Boolean(document.getElementById('persona-toggle')?.checked),
+        responseStyle: RESPONSE_STYLES.has(state.responseStyle) ? state.responseStyle : DEFAULT_PREFERENCES.responseStyle
+    };
+}
+
+function persistPreferences() {
+    const preferences = preferencesFromControls();
+    state.set('responseStyle', preferences.responseStyle);
+    try {
+        localStorage.setItem(PREFERENCES_KEY, JSON.stringify(preferences));
+        localStorage.setItem('helper_response_style_v1', preferences.responseStyle);
+    } catch (error) {
+        console.warn('Preferences could not be persisted:', error);
+    }
+    return preferences;
+}
+
+function applySwitchState(id, active) {
+    const control = document.getElementById(id);
+    if (!control) return;
+    control.classList.toggle('on', Boolean(active));
+    control.setAttribute('aria-checked', String(Boolean(active)));
+}
+
+function loadPreferences() {
+    const preferences = readPreferences();
+    applySwitchState('t-pers', preferences.personalization);
+    applySwitchState('t-word', preferences.oneWord);
+    applySwitchState('t-eng', preferences.english);
+    const persona = document.getElementById('persona-toggle');
+    if (persona) persona.checked = preferences.persona;
+    const style = document.getElementById('response-style-setting');
+    if (style) style.value = preferences.responseStyle;
+    state.set('responseStyle', preferences.responseStyle);
+    return preferences;
+}
+
+function setResponseStyle(value) {
+    const normalized = RESPONSE_STYLES.has(value) ? value : DEFAULT_PREFERENCES.responseStyle;
+    state.set('responseStyle', normalized);
+    const control = document.getElementById('response-style-setting');
+    if (control && control.value !== normalized) control.value = normalized;
+    persistPreferences();
+    notify('Response style set to ' + normalized + '.', 'success', 1800);
+}
+
+function setPersonaEnabled(enabled) {
+    const control = document.getElementById('persona-toggle');
+    const item = document.querySelector('.persona-switch-item');
+    if (control) control.checked = Boolean(enabled);
+    if (item) item.classList.toggle('persona-active', Boolean(enabled));
+    persistPreferences();
+}
+
+function notify(message, tone = 'info', duration = 3200) {
+    const region = document.getElementById('app-toast-region');
+    if (!region || !message) return;
+    window.clearTimeout(toastTimer);
+    region.textContent = String(message);
+    region.dataset.tone = tone;
+    region.classList.remove('is-visible');
+    window.requestAnimationFrame(() => region.classList.add('is-visible'));
+    toastTimer = window.setTimeout(() => region.classList.remove('is-visible'), duration);
+}
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -38,7 +137,13 @@ function smartFocus(id) {
 }
 
 function switchAuth(t) {
-    ['login', 'signup', 'otp'].forEach(f => { document.getElementById(f + '-form').style.display = (f === t ? 'block' : 'none'); });
+    ['login', 'signup', 'otp'].forEach(f => {
+        const form = document.getElementById(f + '-form');
+        if (!form) return;
+        const active = f === t;
+        form.hidden = !active;
+        form.style.display = active ? 'block' : 'none';
+    });
     if (t === 'login') document.getElementById('l-email').focus();
     if (t === 'signup') document.getElementById('s-name').focus();
     if (t === 'otp') document.getElementById('v-otp').focus();
@@ -63,6 +168,8 @@ function updUI() {
         }
         const uInfo = document.getElementById('user-info');
         if (uInfo) uInfo.innerText = state.user.email;
+        const settingsInfo = document.getElementById('settings-user-info');
+        if (settingsInfo) settingsInfo.innerText = nameStr + ' / ' + state.user.email;
         const avCont = document.getElementById('sidebar-av-container');
         if (avCont) avCont.innerHTML = `<div class="av u-av" style="width: 32px; height: 32px; font-size: 0.8rem;"><span class="initial-letter">${escapeHtml(initial)}</span><span class="full-name">${escapeHtml(nameStr)}</span></div>`;
     }
@@ -78,43 +185,81 @@ function signOut() {
 
 function toggleDropdown() {
     const menu = document.getElementById('model-menu');
-    if (menu) menu.classList.toggle('active');
+    const control = document.getElementById('model-toggle');
+    if (!menu) return;
+    const restoreFocus = menu.contains(document.activeElement);
+    const expanded = menu.classList.toggle('active');
+    control?.setAttribute('aria-expanded', String(expanded));
+    if (!expanded && restoreFocus) control?.focus();
 }
 
 function selModel(id, name) {
     state.selectedModel = id;
-    document.getElementById('active-model-name').innerText = name;
+    localStorage.setItem('helper_model_v3', id);
     const menu = document.getElementById('model-menu');
+    const restoreFocus = menu?.contains(document.activeElement);
+    const option = document.querySelector(`[data-model-id="${CSS.escape(id)}"]`);
+    document.querySelectorAll('#model-menu [data-model-id]').forEach(candidate => {
+        candidate.setAttribute('aria-selected', String(candidate.dataset.modelId === id));
+    });
+    const displayName = name || option?.dataset.modelName || id;
+    document.getElementById('active-model-name').innerText = displayName;
+    const privacy = document.getElementById('model-privacy-label');
+    if (privacy && option?.dataset.modelMode) privacy.textContent = option.dataset.modelMode;
+    window.HelperExperience?.presentModel(id, displayName, option?.dataset.modelMode);
     if (menu) menu.classList.remove('active');
+    const control = document.getElementById('model-toggle');
+    control?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) control?.focus();
 }
 
 function toggleSidebar() {
     const sb = document.getElementById('sidebar');
     const scrim = document.getElementById('sidebar-scrim');
+    const control = document.getElementById('mobile-menu-btn');
+    if (!sb) return;
     const isOpen = sb.classList.toggle('open');
     document.body.classList.toggle('sidebar-open', isOpen);
-    if (sb) sb.style.transform = '';
+    if (control) {
+        control.setAttribute('aria-expanded', String(isOpen));
+        control.setAttribute('aria-label', isOpen ? 'Close navigation' : 'Open navigation');
+    }
+    sb.style.transform = '';
     if (scrim) { scrim.style.opacity = ''; scrim.style.display = ''; }
     if (isOpen) history.pushState({ view: 'sidebar' }, "");
 }
 
 function openSettings() {
-    document.getElementById('settings-modal').style.display = 'flex';
+    const modal = document.getElementById('settings-modal');
+    if (!modal) return;
+    modal.style.display = 'flex';
     localStorage.setItem('helper_active_modal_v2', 'settings');
     history.pushState({ view: 'settings' }, "");
+    window.HelperDialogs?.sync();
 }
 
 function closeSettings() {
-    document.getElementById('settings-modal').style.display = 'none';
+    const modal = document.getElementById('settings-modal');
+    if (modal) modal.style.display = 'none';
     localStorage.removeItem('helper_active_modal_v2');
-    document.getElementById('prompt').focus();
+    window.HelperDialogs?.sync();
+    if (!window.HelperDialogs) document.getElementById('prompt')?.focus();
 }
 
-function toggleSet(id) { document.getElementById(id).classList.toggle('on'); }
+function toggleSet(id) {
+    const control = document.getElementById(id);
+    if (!control) return;
+    const active = control.classList.toggle('on');
+    control.setAttribute('aria-checked', String(active));
+    persistPreferences();
+    notify((control.getAttribute('aria-label') || 'Setting') + (active ? ' enabled.' : ' disabled.'), 'success', 1800);
+}
 
 function addMsg(r, c, i, idx, mName, isMasked = false) {
     const div = document.createElement('div');
     div.className = `msg ${r}-msg entering`;
+    div.setAttribute('role', 'article');
+    div.setAttribute('aria-label', r === 'u' ? 'Your message' : 'The All Time Helper response');
     setTimeout(() => div.classList.remove('entering'), 600);
     const name = state.user ? state.user.name : 'Human';
     const initial = name.charAt(0).toUpperCase();
@@ -143,14 +288,20 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
            </div>`;
 
     let content = r === 'b' ? window.renderMarkdown(c) : escapeHtml(c);
-    if (r === 'u' && isMasked) content = '•'.repeat(Math.max(8, String(c || '').length));
+    if (r === 'u' && isMasked) content = '\u2022'.repeat(Math.max(8, String(c || '').length));
 
     let tools = '';
-    if (r === 'u' && idx !== undefined && !isMasked) {
-        tools = `<div class="msg-tools">
-                    <div class="tool-icon" data-edit-index="${Number(idx)}" title="Edit Prompt">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                    </div>
+    if (!isMasked) {
+        const editTool = r === 'u' && idx !== undefined
+            ? `<button class="tool-icon" type="button" data-edit-index="${Number(idx)}" title="Edit prompt" aria-label="Edit prompt">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+               </button>`
+            : '';
+        tools = `<div class="msg-tools" aria-label="Message actions">
+                    <button class="tool-icon context-drag-handle" type="button" draggable="true" data-context-drag-handle title="Drag this message into the composer as context" aria-label="Drag message into composer as context">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="8" cy="7" r="1.5"></circle><circle cx="16" cy="7" r="1.5"></circle><circle cx="8" cy="12" r="1.5"></circle><circle cx="16" cy="12" r="1.5"></circle><circle cx="8" cy="17" r="1.5"></circle><circle cx="16" cy="17" r="1.5"></circle></svg>
+                    </button>
+                    ${editTool}
                  </div>`;
     }
 
@@ -181,11 +332,13 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
     document.getElementById('chat-area').appendChild(div);
     const textContainer = div.querySelector('.txt');
     textContainer?.addEventListener('dragstart', event => {
+        if (event.target?.closest?.('[data-context-drag-handle]')) return;
         if (!window.isGDown) { event.preventDefault(); return; }
         handleDragStart(event);
     });
     textContainer?.addEventListener('dragend', handleDragEnd);
     div.querySelector('[data-edit-index]')?.addEventListener('click', event => startEditPrompt(Number(idx), event.currentTarget));
+
     div.querySelector('[data-preview-src]')?.addEventListener('click', event => openImageModal(event.currentTarget.dataset.previewSrc));
     if (r === 'b') window.hydrateRenderedMarkdown?.(div);
     div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
@@ -210,26 +363,40 @@ function renderHist() {
         titleSpan.className = 'chat-title-text';
         titleSpan.id = `t-${safeDomId(c.id)}`;
         titleSpan.textContent = c.title || 'New Chat';
+        titleSpan.setAttribute('role', 'button');
+        titleSpan.setAttribute('aria-label', 'Open conversation ' + (c.title || 'New Chat'));
+        titleSpan.tabIndex = 0;
+        titleSpan.addEventListener('keydown', event => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            window.loadChat(c.id);
+        });
         div.appendChild(titleSpan);
 
         const actions = document.createElement('div');
         actions.className = 'history-actions';
 
         const pinBtn = document.createElement('button');
+        pinBtn.type = 'button';
         pinBtn.className = `del-chat-btn pin-btn ${c.pinned ? 'active' : ''}`;
         pinBtn.title = c.pinned ? 'Unpin Chat' : 'Pin Chat';
+        pinBtn.setAttribute('aria-label', pinBtn.title);
         pinBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v2a2 2 0 0 0 1.27 1.87L11 15.3V21l2-2 2 2v-5.7l6.73-3.43A2 2 0 0 0 21 10z"></path></svg>';
         pinBtn.addEventListener('click', event => { event.stopPropagation(); window.togglePin(c.id); });
 
         const renameBtn = document.createElement('button');
+        renameBtn.type = 'button';
         renameBtn.className = 'del-chat-btn';
         renameBtn.title = 'Rename Chat';
+        renameBtn.setAttribute('aria-label', renameBtn.title);
         renameBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>';
         renameBtn.addEventListener('click', event => startRename(c.id, event));
 
         const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
         deleteBtn.className = 'del-chat-btn';
         deleteBtn.title = 'Delete Chat';
+        deleteBtn.setAttribute('aria-label', deleteBtn.title);
         deleteBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
         deleteBtn.addEventListener('click', event => { event.stopPropagation(); showDeleteConfirm(c.id, event); });
 
@@ -252,6 +419,7 @@ function startRename(id, e) {
     input.className = 'rename-in';
     input.value = old;
     input.id = `edit-${safeDomId(id)}`;
+    input.setAttribute('aria-label', 'Rename conversation');
     input.addEventListener('click', event => event.stopPropagation());
     span.appendChild(input);
     input.focus();
@@ -295,14 +463,14 @@ function checkAuthMode() {
     if (needsAuth) {
         applyAuthUI(promptIn);
     } else {
-        promptIn.placeholder = "Message The All Time Helper...";
+        promptIn.placeholder = "Ask me anything...";
         promptIn.classList.remove('auth-waiting');
     }
 }
 
 function applyAuthUI(promptIn) {
     console.log("DEBUG: Auth required detected! Applying UI...");
-    promptIn.placeholder = "🔒 ENTER ADMIN KEY TO AUTHORIZE ACTION...";
+    promptIn.placeholder = "ENTER ADMIN KEY TO AUTHORIZE THIS ACTION...";
     promptIn.classList.add('auth-waiting');
     if (window.jiggleLogo) window.jiggleLogo();
     smartFocus('prompt');
@@ -317,14 +485,17 @@ function startEditPrompt(idx, btn) {
     txtDiv.textContent = '';
     const textarea = document.createElement('textarea');
     textarea.className = 'edit-area';
+    textarea.setAttribute('aria-label', 'Edit message');
     textarea.value = msg.c;
     const controls = document.createElement('div');
     controls.className = 'edit-controls';
     const submit = document.createElement('button');
+    submit.type = 'button';
     submit.className = 'auth-btn edit-btn';
     submit.textContent = 'Save & Submit';
     submit.addEventListener('click', () => window.submitEdit?.(Number(idx), txtDiv));
     const cancel = document.createElement('button');
+    cancel.type = 'button';
     cancel.className = 'auth-btn edit-btn edit-btn-cancel';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', () => cancelEdit(Number(idx)));
@@ -364,7 +535,9 @@ function previewImg(i) {
             image.src = state.currentBlobUrl;
             image.className = 'img-thumb';
             const remove = document.createElement('button');
+            remove.type = 'button';
             remove.className = 'img-remove-btn';
+            remove.setAttribute('aria-label', 'Remove attached image');
             remove.textContent = 'x';
             remove.addEventListener('click', clearImgPreview);
             wrapper.append(image, remove);
@@ -388,21 +561,39 @@ function clearImgPreview() {
 function showDeleteConfirm(id, e) {
     if (e) e.stopPropagation(); state.chatToDelete = id;
     document.getElementById('delete-confirm-modal').style.display = 'flex';
+    window.HelperDialogs?.sync();
 }
 
 function closeDeleteConfirm() {
     document.getElementById('delete-confirm-modal').style.display = 'none';
+    window.HelperDialogs?.sync();
     state.chatToDelete = null;
 }
 
 function openImageModal(src) {
-    const m = document.getElementById('image-modal'); const img = document.getElementById('modal-img');
-    if (m && img) { img.src = src; img.classList.remove('is-zoomed'); m.style.display = 'flex'; setTimeout(() => m.classList.add('active'), 10); history.pushState({ view: 'image' }, ""); }
+    const modal = document.getElementById('image-modal');
+    const image = document.getElementById('modal-img');
+    if (!modal || !image) return;
+    image.src = src;
+    image.classList.remove('is-zoomed');
+    modal.style.display = 'flex';
+    setTimeout(() => {
+        modal.classList.add('active');
+        window.HelperDialogs?.sync();
+    }, 10);
+    history.pushState({ view: 'image' }, "");
 }
 
 function closeImageModal() {
-    const m = document.getElementById('image-modal'); const img = document.getElementById('modal-img');
-    if (m) { m.classList.remove('active'); img?.classList.remove('is-zoomed'); setTimeout(() => m.style.display = 'none', 300); }
+    const modal = document.getElementById('image-modal');
+    const image = document.getElementById('modal-img');
+    if (!modal) return;
+    modal.classList.remove('active');
+    image?.classList.remove('is-zoomed');
+    setTimeout(() => {
+        modal.style.display = 'none';
+        window.HelperDialogs?.sync();
+    }, 300);
 }
 
 function showNeuralContext(results, explanation) {
@@ -439,6 +630,7 @@ function showNeuralContext(results, explanation) {
         cont.appendChild(div);
     });
     card.classList.add('active'); scrim.classList.add('active');
+    window.HelperDialogs?.sync();
 }
 
 function closeNeuralContext() {
@@ -446,13 +638,20 @@ function closeNeuralContext() {
     const scrim = document.getElementById('neural-scrim');
     if (card) card.classList.remove('active');
     if (scrim) scrim.classList.remove('active');
+    window.HelperDialogs?.sync();
 }
 
 function setThemeUI(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     document.body.setAttribute('data-theme', theme);
+    const logo = document.getElementById('main-logo-img');
     const isDark = theme === 'dark';
-    document.getElementById('main-logo-img').src = isDark ? LOGO_DATA : LOGO_LIGHT_DATA;
+    if (logo) logo.src = isDark ? LOGO_DARK_DATA : LOGO_LIGHT_DATA;
+    const favicon = document.getElementById('app-favicon');
+    if (favicon) {
+        favicon.href = isDark ? LOGO_DARK_DATA : LOGO_LIGHT_DATA;
+        favicon.type = isDark ? 'image/png' : 'image/jpeg';
+    }
 }
 
 function handleDragStart(e) {
@@ -469,6 +668,7 @@ function handleDragEnd(e) {
 const ui = {
     smartFocus, switchAuth, updUI, signOut, toggleDropdown, selModel,
     toggleSidebar, openSettings, closeSettings, toggleSet,
+    loadPreferences, persistPreferences, setResponseStyle, setPersonaEnabled, notify,
     addMsg, renderHist, startRename, saveRename, filterHist,
     checkAuthMode, startEditPrompt, cancelEdit,
     previewImg, clearImgPreview,

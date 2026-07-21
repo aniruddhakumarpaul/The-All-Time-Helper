@@ -3,7 +3,8 @@ inference_queue.py — Dedicated Inference Queue
 Replaces raw asyncio.to_thread with backpressure-aware worker pool.
 
 Features:
-- Configurable concurrency (default: 1 worker for weak GPU)
+- Serialized model inference (default: 1 worker for weak GPU)
+- Separate bounded workers for proven deterministic tools
 - Backpressure (max queue depth before rejecting)
 - Per-job timeout and cancellation
 - Graceful abort propagation
@@ -28,40 +29,67 @@ class InferenceJob:
     result_future: asyncio.Future = field(default=None)
     created_at: float = field(default_factory=time.time)
     timeout: float = DEFAULT_INFERENCE_TIMEOUT
+    lane: str = "inference"
 
 
 class InferenceQueue:
     """
-    Async-native inference queue with:
-    - Configurable concurrency (1 worker = sequential GPU jobs)
-    - Backpressure (max_queue_depth before rejecting new requests)
+    Async-native execution queue with:
+    - Serialized model inference (1 worker = sequential GPU jobs)
+    - A separate lane for model-free deterministic tools
+    - Backpressure before rejecting new requests
     - Per-job timeout and cancellation via abort_event
     """
-    def __init__(self, max_workers: int = 1, max_queue_depth: int = 8):
+    def __init__(
+        self,
+        max_workers: int = 1,
+        max_queue_depth: int = 8,
+        fast_workers: int = 2,
+        fast_queue_depth: int = 8,
+    ):
         self._queue: Optional[asyncio.Queue] = None  # Initialized lazily in async context
+        self._fast_queue: Optional[asyncio.Queue] = None
         self._max_workers = max_workers
         self._max_queue_depth = max_queue_depth
+        self._max_fast_workers = fast_workers
+        self._max_fast_queue_depth = fast_queue_depth
         self._workers: list = []
+        self._fast_workers: list = []
         self._started = False
+        self._start_lock: Optional[asyncio.Lock] = None
         self._active_jobs: dict[str, InferenceJob] = {}
 
     async def _ensure_started(self):
-        """Lazily initialize the queue and workers on first use (must be called from async context)."""
+        """Lazily initialize both execution lanes on first use."""
         if self._started:
             return
-        self._queue = asyncio.Queue(maxsize=self._max_queue_depth)
-        for i in range(self._max_workers):
-            task = asyncio.create_task(self._worker(f"inference-worker-{i}"))
-            self._workers.append(task)
-        self._started = True
-        logger.info(f"[InferenceQueue] Started {self._max_workers} worker(s) (max depth: {self._max_queue_depth})")
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            if self._started:
+                return
+            self._queue = asyncio.Queue(maxsize=self._max_queue_depth)
+            self._fast_queue = asyncio.Queue(maxsize=self._max_fast_queue_depth)
+            for i in range(self._max_workers):
+                task = asyncio.create_task(self._worker(f"inference-worker-{i}", self._queue))
+                self._workers.append(task)
+            for i in range(self._max_fast_workers):
+                task = asyncio.create_task(self._worker(f"tool-worker-{i}", self._fast_queue))
+                self._fast_workers.append(task)
+            self._started = True
+            logger.info(
+                "[InferenceQueue] Started %d inference worker(s) and %d tool worker(s)",
+                self._max_workers,
+                self._max_fast_workers,
+            )
 
-    async def _worker(self, name: str):
+    async def _worker(self, name: str, work_queue: asyncio.Queue):
         """Worker loop — pulls jobs from queue and executes in a thread with timeout."""
         from app.logic.bus import job_id_context
         while True:
-            job = await self._queue.get()
+            job = await work_queue.get()
             if job is None:
+                work_queue.task_done()
                 break
             try:
                 # Skip if already cancelled before we even start
@@ -114,7 +142,7 @@ class InferenceQueue:
             finally:
                 if self._active_jobs.get(job.id) is job:
                     self._active_jobs.pop(job.id, None)
-                self._queue.task_done()
+                work_queue.task_done()
 
     async def submit(
         self,
@@ -123,6 +151,7 @@ class InferenceQueue:
         abort_event: threading.Event,
         timeout: float = DEFAULT_INFERENCE_TIMEOUT,
         owner: str = "",
+        lane: str = "inference",
     ) -> Any:
         """
         Submit an inference job and await its result.
@@ -133,7 +162,8 @@ class InferenceQueue:
                 NOTE: The callable MUST check the abort_event manually to cancel early!
             abort_event: threading.Event that signals cancellation
             timeout: Maximum seconds before the job is killed
-            
+            lane: "inference" for serialized model work or "tool" for deterministic actions
+
         Returns:
             The result of fn()
             
@@ -141,8 +171,13 @@ class InferenceQueue:
             RuntimeError: If the queue is full (backpressure)
         """
         await self._ensure_started()
-        
-        if self._queue.full():
+
+        if lane not in {"inference", "tool"}:
+            raise ValueError(f"Unknown execution lane: {lane}")
+        work_queue = self._fast_queue if lane == "tool" else self._queue
+        max_depth = self._max_fast_queue_depth if lane == "tool" else self._max_queue_depth
+
+        if work_queue.full():
             raise RuntimeError(
                 "⚠️ **Server Busy.** The inference queue is full. "
                 "Please wait a moment and try again."
@@ -162,12 +197,19 @@ class InferenceQueue:
             fn=context_wrapper,
             abort_event=abort_event,
             result_future=future,
-            timeout=timeout
+            timeout=timeout,
+            lane=lane,
         )
         self._active_jobs[job_id] = job
-        await self._queue.put(job)
-        
-        logger.info(f"[InferenceQueue] Job {job_id} queued (depth: {self._queue.qsize()}/{self._max_queue_depth})")
+        await work_queue.put(job)
+
+        logger.info(
+            "[InferenceQueue] Job %s queued on %s lane (depth: %d/%d)",
+            job_id,
+            lane,
+            work_queue.qsize(),
+            max_depth,
+        )
         return await future
 
     def cancel(self, job_id: str, owner: str) -> bool:
@@ -182,8 +224,16 @@ class InferenceQueue:
 
     @property
     def queue_depth(self) -> int:
-        """Current number of jobs waiting in the queue."""
+        """Current number of jobs waiting across both lanes."""
+        return self.inference_queue_depth + self.tool_queue_depth
+
+    @property
+    def inference_queue_depth(self) -> int:
         return self._queue.qsize() if self._queue else 0
+
+    @property
+    def tool_queue_depth(self) -> int:
+        return self._fast_queue.qsize() if self._fast_queue else 0
 
     async def shutdown(self):
         """Gracefully shut down all workers."""
@@ -191,11 +241,17 @@ class InferenceQueue:
             return
         for _ in self._workers:
             await self._queue.put(None)
-        await asyncio.gather(*self._workers, return_exceptions=True)
+        for _ in self._fast_workers:
+            await self._fast_queue.put(None)
+        await asyncio.gather(*self._workers, *self._fast_workers, return_exceptions=True)
         self._workers.clear()
+        self._fast_workers.clear()
         self._active_jobs.clear()
+        self._queue = None
+        self._fast_queue = None
+        self._start_lock = None
         self._started = False
 
 
-# Singleton — 1 worker for weak GPU, max 8 queued requests
-inference_queue = InferenceQueue(max_workers=1, max_queue_depth=8)
+# Serialize GPU work; deterministic tools have two bounded non-model workers.
+inference_queue = InferenceQueue(max_workers=1, max_queue_depth=8, fast_workers=2, fast_queue_depth=8)

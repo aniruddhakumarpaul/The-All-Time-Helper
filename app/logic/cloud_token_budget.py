@@ -1,5 +1,19 @@
 import os
 from functools import wraps
+from pathlib import Path
+
+import certifi
+
+# Configure package-level defaults before LiteLLM or CrewAI can import.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("CREWAI_STORAGE_DIR", str(Path(__file__).resolve().parents[2] / ".runtime" / "crewai"))
+_BUNDLED_CA_FILE = certifi.where()
+for _ca_env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+    os.environ.setdefault(_ca_env_name, _BUNDLED_CA_FILE)
 
 DEFAULT_CLOUD_MAX_TOKENS = 4096
 DEFAULT_FREE_CLOUD_MAX_TOKENS = 2048

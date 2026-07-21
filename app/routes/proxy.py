@@ -72,8 +72,12 @@ async def image_proxy(url: str):
 
     parsed = urlparse(normalized_url)
     if (parsed.hostname or "").lower() == "image.pollinations.ai" and response.status_code in {401, 402, 403, 429}:
+        message = {
+            402: "Pollinations rejected this model or account/budget.",
+            429: "Pollinations rate-limited this image request.",
+        }.get(response.status_code, "Pollinations rejected this image request.")
         return Response(
-            content="Pollinations rejected or rate-limited this image request.",
+            content=message,
             media_type="text/plain",
             status_code=response.status_code,
         )

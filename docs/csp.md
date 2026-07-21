@@ -5,7 +5,7 @@ Inline event handlers have been removed from the active template and rendered ch
 Candidate header:
 
 ```text
-Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data: https://fonts.gstatic.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 ```
 
 Before enabling it:
@@ -13,3 +13,4 @@ Before enabling it:
 1. Smoke-test authentication, chat streaming, code highlighting, image generation/upscale polling, uploads, settings, and command palette behavior.
 2. Confirm CDN availability and decide whether to self-host `marked`, DOMPurify, and Highlight.js.
 3. Move inline style attributes into stylesheets before removing `'unsafe-inline'` from `style-src`.
+4. Decide whether to self-host the Syne, Outfit, and DM Mono font files before restricting external font hosts.

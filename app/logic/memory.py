@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 import chromadb
 import logging
@@ -25,6 +26,43 @@ client = chromadb.PersistentClient(path=MEMORY_PATH)
 # The 'neural_memory' collection stores project code, logic, and decisions
 collection = client.get_or_create_collection(name="neural_memory")
 _memory_unhealthy_reason: Optional[str] = None
+_memory_retry_at = 0.0
+_memory_lock = threading.RLock()
+MEMORY_RETRY_SECONDS = max(1, int(os.getenv("MEMORY_RETRY_SECONDS", "15")))
+
+
+def _record_memory_failure(exc: Exception) -> None:
+    global _memory_unhealthy_reason, _memory_retry_at
+    _memory_unhealthy_reason = type(exc).__name__
+    _memory_retry_at = time.monotonic() + MEMORY_RETRY_SECONDS
+
+
+def _clear_memory_failure() -> None:
+    global _memory_unhealthy_reason, _memory_retry_at
+    _memory_unhealthy_reason = None
+    _memory_retry_at = 0.0
+
+
+def memory_runtime_status() -> Dict:
+    now = time.monotonic()
+    with _memory_lock:
+        if _memory_unhealthy_reason and now < _memory_retry_at:
+            return {
+                "healthy": False,
+                "degraded": True,
+                "retry_after_seconds": max(1, int(_memory_retry_at - now + 0.999)),
+            }
+        try:
+            collection.count()
+        except Exception as exc:
+            _record_memory_failure(exc)
+            return {
+                "healthy": False,
+                "degraded": True,
+                "retry_after_seconds": MEMORY_RETRY_SECONDS,
+            }
+        _clear_memory_failure()
+        return {"healthy": True, "degraded": False, "retry_after_seconds": 0}
 
 def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: str = None):
     """Adds or updates a document in the semantic memory with forced user isolation."""
@@ -40,21 +78,19 @@ def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: st
         "user_id": uid
     })
     
-    collection.upsert(
-        ids=[doc_id],
-        documents=[content],
-        metadatas=[metadata]
-    )
+    with _memory_lock:
+        collection.upsert(
+            ids=[doc_id],
+            documents=[content],
+            metadatas=[metadata]
+        )
 
 def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, threshold: float = 0.65, user_id: str = None) -> List[Dict]:
     """
     Retrieves relevant snippets with STRICT user-level isolation and semantic thresholding.
     """
-    global _memory_unhealthy_reason
-    if _memory_unhealthy_reason:
-        return []
-
     uid = user_id or user_context.get()
+
     if not uid:
         logger.warning("Attempted to query memory without a User ID. Returning empty.")
         return []
@@ -78,16 +114,24 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
         "where": where_filter
     }
 
-    try:
-        results = collection.query(**query_args)
+    with _memory_lock:
+        if _memory_unhealthy_reason and time.monotonic() < _memory_retry_at:
+            return []
+        try:
+            results = collection.query(**query_args)
 
-        # Tool rules use a wider threshold so behavioral constraints stay grounded.
-        rule_filter = {"$and": [{"user_id": uid}, {"type": "tool_rule"}]}
-        rule_results = collection.query(query_texts=[query_text], n_results=3, where=rule_filter)
-    except Exception as exc:
-        _memory_unhealthy_reason = str(exc)
-        logger.error(f"[Memory] Query failed closed: {exc}")
-        return []
+            # Tool rules use a wider threshold so behavioral constraints stay grounded.
+            rule_filter = {"$and": [{"user_id": uid}, {"type": "tool_rule"}]}
+            rule_results = collection.query(query_texts=[query_text], n_results=3, where=rule_filter)
+        except Exception as exc:
+            _record_memory_failure(exc)
+            logger.error(
+                "[Memory] Query failed closed (%s). Retrying in %ss.",
+                type(exc).__name__,
+                MEMORY_RETRY_SECONDS,
+            )
+            return []
+        _clear_memory_failure()
 
     formatted_results = []
     
@@ -120,89 +164,86 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
     return formatted_results
 
 def delete_memory(doc_id: str, user_id: str = None, clear: bool = False):
-    """Prunes a specific memory entry by ID. Enforces ownership if user_id is in context."""
+    """Prune memory while enforcing ownership when a user context exists."""
     uid = user_id or user_context.get()
     try:
-        # Clear existing if needed
-        if clear:
-            logger.info(f"[Memory] Clearing existing collection for User: {uid or 'Global'}")
-            collection.delete(where={"user_id": uid} if uid else {})
-        else:
-            # If we have a user context, we only delete if the user owns it
-            if uid:
+        with _memory_lock:
+            if clear:
+                logger.info("[Memory] Clearing existing collection for the active scope.")
+                collection.delete(where={"user_id": uid} if uid else {})
+            elif uid:
                 collection.delete(ids=[doc_id], where={"user_id": uid})
             else:
                 collection.delete(ids=[doc_id])
-            logger.debug(f"DEBUG: Memory {doc_id} successfully pruned.")
-    except Exception as e:
-        logger.debug(f"DEBUG: Pruning failed: {e}")
+        logger.debug("[Memory] Entry pruned.")
+    except Exception as exc:
+        logger.debug("[Memory] Pruning failed (%s).", type(exc).__name__)
+
 
 def log_insight(insight_title: str, insight_body: str, metadata_ext: Dict = None, user_id: str = None):
-    """Logs a project decision or architectural insight with categorization and user tagging."""
+    """Log a project decision or architectural insight with user isolation."""
     uid = user_id or user_context.get()
     if not uid:
-        print("WARNING: Attempted to log insight without a User ID. Skipping.")
+        logger.warning("Attempted to log insight without a User ID. Skipping.")
         return
 
     doc_id = f"insight_{uid}_{insight_title.lower().replace(' ', '_')}_{int(time.time() * 1000)}"
     metadata = {"type": "insight", "title": insight_title, "category": "architecture"}
     if metadata_ext:
         metadata.update(metadata_ext)
-    
     index_document(doc_id, insight_body, metadata, user_id=uid)
-    print(f"DEBUG: Neural Memory updated with insight for user {uid}: {insight_title}")
+    logger.debug("[Memory] Neural insight stored for the active user.")
 
-# WARMUP: Trigger a background load of the embedding model to prevent first-query lag
+
 def warmup_memory():
     try:
-        # A dummy query to force model loading in the background
-        collection.peek(limit=1)
-        print("DEBUG: Neural Memory (RAG) warmed up successfully.")
-    except:
-        pass
+        with _memory_lock:
+            collection.peek(limit=1)
+        logger.debug("Neural Memory (RAG) warmed up successfully.")
+    except Exception as exc:
+        logger.debug("[Memory] Warmup skipped (%s).", type(exc).__name__)
 
-import threading
+
 threading.Thread(target=warmup_memory, daemon=True).start()
+
+
 def prune_stale_memories(days: int = 30, user_id: str = None):
-    """
-    Removes memories older than X days to maintain high retrieval performance.
-    Skips entries with metadata 'permanent': True.
-    FIX #7: Also enforces a hard cap on total collection size.
-    """
+    """Remove stale non-permanent memories and enforce a bounded store size."""
     uid = user_id or user_context.get()
-    MAX_MEMORY_ENTRIES = 10000  # Hard cap to prevent unbounded growth
-    
+    max_entries = 10000
     cutoff = time.time() - (days * 86400)
     try:
-        # Phase 1: Prune stale entries
-        if uid:
-            where_filter = {"$and": [{"timestamp": {"$lt": cutoff}}, {"user_id": uid}]}
-        else:
-            where_filter = {"timestamp": {"$lt": cutoff}}
-            
-        stale = collection.get(
-            where=where_filter
-        )
-        
-        if stale and stale['ids']:
-            ids_to_delete = []
-            for i in range(len(stale['ids'])):
-                metadata = stale['metadatas'][i] if stale['metadatas'] else {}
-                if not metadata.get('permanent'):
-                    ids_to_delete.append(stale['ids'][i])
-            
-            if ids_to_delete:
-                collection.delete(ids=ids_to_delete)
-                logger.info(f"[Memory] Pruned {len(ids_to_delete)} stale memory entries.")
-        
-        # Phase 2: Enforce hard cap (remove oldest if over limit)
-        total_count = collection.count()
-        if total_count > MAX_MEMORY_ENTRIES:
-            overflow = total_count - MAX_MEMORY_ENTRIES
-            oldest = collection.get(limit=overflow)
-            if oldest and oldest['ids']:
-                collection.delete(ids=oldest['ids'])
-                logger.info(f"[Memory] Pruned {len(oldest['ids'])} overflow entries (cap: {MAX_MEMORY_ENTRIES}).")
-                
-    except Exception as e:
-        print(f"ERROR: Memory pruning failed: {str(e)}")
+        with _memory_lock:
+            where_filter = (
+                {"$and": [{"timestamp": {"$lt": cutoff}}, {"user_id": uid}]}
+                if uid
+                else {"timestamp": {"$lt": cutoff}}
+            )
+            stale = collection.get(where=where_filter)
+            if stale and stale.get("ids"):
+                stale_ids = [
+                    entry_id
+                    for entry_id, metadata in zip(stale["ids"], stale.get("metadatas") or [])
+                    if not (metadata or {}).get("permanent")
+                ]
+                if stale_ids:
+                    collection.delete(ids=stale_ids)
+                    logger.info("[Memory] Pruned %s stale memory entries.", len(stale_ids))
+
+            total_count = collection.count()
+            if total_count > max_entries:
+                snapshot = collection.get(include=["metadatas"])
+                candidates = sorted(
+                    (
+                        (float((metadata or {}).get("timestamp", 0)), entry_id)
+                        for entry_id, metadata in zip(snapshot.get("ids") or [], snapshot.get("metadatas") or [])
+                        if not (metadata or {}).get("permanent")
+                    ),
+                    key=lambda item: item[0],
+                )
+                overflow_ids = [entry_id for _, entry_id in candidates[: total_count - max_entries]]
+                if overflow_ids:
+                    collection.delete(ids=overflow_ids)
+                    logger.info("[Memory] Pruned %s overflow entries (cap: %s).", len(overflow_ids), max_entries)
+    except Exception as exc:
+        logger.error("[Memory] Pruning failed (%s).", type(exc).__name__)

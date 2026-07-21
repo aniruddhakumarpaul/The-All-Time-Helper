@@ -1,4 +1,4 @@
-import { state } from './state.js';
+import { state } from './state.js?v=210';
 
 const DRAFT_MIME = window.__EMAIL_DRAFT_MIME || 'application/x-helper-email-draft';
 const CONTEXT_MARKER = 'EMAIL_DRAFT_CONTEXT:';
@@ -113,6 +113,7 @@ function renderTray() {
         remove.type = 'button';
         remove.textContent = '×';
         remove.title = 'Remove attached email draft context';
+        remove.setAttribute('aria-label', 'Remove attached email draft context');
         remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
         remove.addEventListener('click', () => {
             const pos = state.attachedContexts.indexOf(ctx);

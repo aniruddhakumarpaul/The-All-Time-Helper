@@ -1,9 +1,11 @@
 // job_center.js
-// Lightweight job center for live inference queue visibility and cancellation.
+// User-owned inference task visibility and cancellation.
 (function () {
     const MODAL_ID = 'job-center-modal';
     const BUTTON_ID = 'open-job-center-btn';
+    const apiUrl = path => window.helperApiUrl ? window.helperApiUrl(path) : path;
     let refreshTimer = null;
+    let isLoading = false;
 
     function authHeaders() {
         const token = localStorage.getItem('helper_token_v2') || '';
@@ -31,9 +33,10 @@
             .job-title{font-size:1.22rem;font-weight:850;}
             .job-sub{font-size:.82rem;color:var(--text-sub);margin-top:4px;}
             .job-actions{display:flex;gap:10px;align-items:center;}
-            .job-btn{border:1px solid var(--glass-border);background:rgba(255,255,255,.06);color:var(--text-main);padding:9px 13px;border-radius:12px;cursor:pointer;font-weight:700;font-size:.82rem;}
-            .job-btn.danger{color:#ff8c8c;border-color:rgba(255,93,93,.4);}
-            .job-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px;}
+            .job-btn{border:1px solid var(--glass-border);background:rgba(255,255,255,.06);color:var(--text-main);padding:9px 13px;border-radius:999px;cursor:pointer;font-weight:700;font-size:.82rem;}
+            .job-btn:disabled{opacity:.55;cursor:progress;}
+            .job-btn.danger{color:#ffb0b0;border-color:rgba(255,93,93,.45);}
+            .job-stats{display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:12px;margin-bottom:16px;}
             .job-stat,.job-item{border:1px solid var(--glass-border);background:rgba(255,255,255,.045);border-radius:16px;padding:12px;}
             .job-stat-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-sub);font-weight:900;}
             .job-stat-value{font-size:1.15rem;font-weight:850;margin-top:4px;}
@@ -42,8 +45,8 @@
             .job-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.76rem;word-break:break-all;}
             .job-meta{color:var(--text-sub);font-size:.76rem;margin-top:8px;line-height:1.45;}
             .job-empty{color:var(--text-sub);border:1px dashed var(--glass-border);border-radius:16px;padding:18px;text-align:center;}
-            .job-error{padding:14px;border:1px solid rgba(255,93,93,.45);border-radius:14px;color:#ff8c8c;background:rgba(255,93,93,.08);}
-            #${BUTTON_ID}{cursor:pointer;}
+            .job-error{padding:14px;margin-bottom:12px;border:1px solid rgba(255,93,93,.45);border-radius:14px;color:#ffb0b0;background:rgba(255,93,93,.08);}
+            @media(max-width:620px){.job-head{align-items:flex-start;flex-direction:column}.job-actions{width:100%}.job-actions .job-btn{flex:1}.job-stats{grid-template-columns:1fr}.job-card{padding:20px}.job-item-head{align-items:flex-start;flex-direction:column}.job-item-head .job-btn{width:100%}}
         `;
         document.head.appendChild(style);
     }
@@ -54,29 +57,35 @@
         if (modal) return modal;
         modal = document.createElement('div');
         modal.id = MODAL_ID;
+        modal.dataset.helperDialog = '';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-labelledby', 'active-tasks-title');
+        modal.setAttribute('aria-hidden', 'true');
         modal.innerHTML = `
-            <div class="job-card" role="dialog" aria-modal="true" aria-label="Job Center">
+            <div class="job-card">
                 <div class="job-head">
                     <div>
-                        <div class="job-title">Job Center</div>
-                        <div class="job-sub" id="job-center-subtitle">Live inference queue and active requests.</div>
+                        <div class="job-title" id="active-tasks-title">Active Tasks</div>
+                        <div class="job-sub" id="job-center-subtitle">Requests currently running for your account.</div>
                     </div>
                     <div class="job-actions">
-                        <button class="job-btn" id="job-center-refresh">Refresh</button>
-                        <button class="job-btn" id="job-center-close">Close</button>
+                        <button type="button" class="job-btn" id="job-center-refresh">Refresh</button>
+                        <button type="button" class="job-btn" id="job-center-close">Close</button>
                     </div>
                 </div>
-                <div id="job-center-content"><div class="job-empty">Loading...</div></div>
+                <div id="job-center-content" aria-live="polite"><div class="job-empty">Loading...</div></div>
             </div>
         `;
         document.body.appendChild(modal);
         modal.addEventListener('click', event => { if (event.target === modal) closeJobCenter(); });
         modal.querySelector('#job-center-close')?.addEventListener('click', closeJobCenter);
-        modal.querySelector('#job-center-refresh')?.addEventListener('click', loadJobs);
+        modal.querySelector('#job-center-refresh')?.addEventListener('click', () => loadJobs({ showLoading: true }));
         modal.addEventListener('click', event => {
             const button = event.target.closest('[data-cancel-job-id]');
-            if (button) cancelJob(button.dataset.cancelJobId);
+            if (button) cancelJob(button);
         });
+        window.HelperDialogs?.sync();
         return modal;
     }
 
@@ -86,57 +95,105 @@
         const subtitle = modal.querySelector('#job-center-subtitle');
         const queue = data?.queue || {};
         const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
-        if (subtitle) subtitle.textContent = `${jobs.length} active job(s), ${queue.queue_depth || 0} queued globally.`;
+        if (subtitle) subtitle.textContent = jobs.length
+            ? `${jobs.length} task(s) running for your account.`
+            : 'No requests are running for your account.';
         content.innerHTML = `
             <div class="job-stats">
-                <div class="job-stat"><div class="job-stat-label">Active</div><div class="job-stat-value">${escapeHtml(queue.user_active_jobs || 0)}</div></div>
-                <div class="job-stat"><div class="job-stat-label">Queued</div><div class="job-stat-value">${escapeHtml(queue.queue_depth || 0)}</div></div>
-                <div class="job-stat"><div class="job-stat-label">Workers</div><div class="job-stat-value">${escapeHtml(queue.max_workers || 0)}</div></div>
-                <div class="job-stat"><div class="job-stat-label">Depth Limit</div><div class="job-stat-value">${escapeHtml(queue.max_queue_depth || 0)}</div></div>
+                <div class="job-stat"><div class="job-stat-label">Your tasks</div><div class="job-stat-value">${escapeHtml(queue.user_active_jobs || 0)}</div></div>
+                <div class="job-stat"><div class="job-stat-label">Waiting</div><div class="job-stat-value">${escapeHtml(queue.queue_depth || 0)}</div></div>
+                <div class="job-stat"><div class="job-stat-label">Capacity</div><div class="job-stat-value">${escapeHtml(queue.max_workers || 0)}</div></div>
             </div>
             <div class="job-list">
                 ${jobs.length ? jobs.map(job => `
                     <section class="job-item">
                         <div class="job-item-head">
                             <div class="job-id">${escapeHtml(job.id)}</div>
-                            <button class="job-btn danger" data-cancel-job-id="${escapeHtml(job.id)}">Cancel</button>
+                            <button type="button" class="job-btn danger" data-cancel-job-id="${escapeHtml(job.id)}" aria-label="Stop task ${escapeHtml(job.id)}">Stop task</button>
                         </div>
-                        <div class="job-meta">Status: ${escapeHtml(job.status)} · Elapsed: ${escapeHtml(job.elapsed_seconds)}s · Timeout: ${escapeHtml(job.timeout_seconds)}s</div>
+                        <div class="job-meta">Status: ${escapeHtml(job.status)} | Elapsed: ${escapeHtml(job.elapsed_seconds)}s | Limit: ${escapeHtml(job.timeout_seconds)}s</div>
                     </section>
-                `).join('') : '<div class="job-empty">No active jobs for your account.</div>'}
+                `).join('') : '<div class="job-empty">No active tasks. New requests will appear here while they run.</div>'}
             </div>
         `;
     }
 
-    async function loadJobs() {
+    function showJobError(message) {
+        const content = ensureModal().querySelector('#job-center-content');
+        if (!content) return;
+        content.querySelector('.job-error')?.remove();
+        const error = document.createElement('div');
+        error.className = 'job-error';
+        error.setAttribute('role', 'alert');
+        error.textContent = message || 'The task request failed.';
+        content.prepend(error);
+    }
+
+    async function loadJobs({ showLoading = false } = {}) {
+        if (isLoading) return;
+        isLoading = true;
         const modal = ensureModal();
         const content = modal.querySelector('#job-center-content');
-        if (content) content.innerHTML = '<div class="job-empty">Loading jobs...</div>';
+        const refresh = modal.querySelector('#job-center-refresh');
+        if (showLoading && content) content.innerHTML = '<div class="job-empty">Loading active tasks...</div>';
+        if (refresh) {
+            refresh.disabled = true;
+            refresh.setAttribute('aria-busy', 'true');
+        }
         try {
-            const response = await fetch('/jobs/status', { headers: authHeaders(), cache: 'no-store' });
+            const response = await fetch(apiUrl('/jobs/status'), { headers: authHeaders(), cache: 'no-store' });
+            window.handleHelperUnauthorized?.(response);
             const data = await response.json().catch(() => ({}));
-            if (!response.ok || data.success === false) throw new Error(data.error || `HTTP ${response.status}`);
+            if (!response.ok || data.success === false) throw new Error(data.error || data.detail || 'Active tasks could not be loaded.');
             renderJobs(data);
         } catch (error) {
-            if (content) content.innerHTML = `<div class="job-error">${escapeHtml(error.message || error)}</div>`;
+            showJobError(error.message || 'Active tasks could not be loaded.');
+        } finally {
+            isLoading = false;
+            if (refresh) {
+                refresh.disabled = false;
+                refresh.removeAttribute('aria-busy');
+            }
         }
     }
 
-    async function cancelJob(jobId) {
-        if (!jobId) return;
+    async function cancelJob(button) {
+        const jobId = button?.dataset.cancelJobId;
+        if (!jobId || button.disabled) return;
+        const original = button.textContent;
+        button.disabled = true;
+        button.setAttribute('aria-busy', 'true');
+        button.textContent = 'Stopping...';
         try {
-            await fetch(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', headers: authHeaders() });
+            const response = await fetch(apiUrl(`/jobs/${encodeURIComponent(jobId)}/cancel`), {
+                method: 'POST',
+                headers: authHeaders()
+            });
+            window.handleHelperUnauthorized?.(response);
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || data.success === false) throw new Error(data.error || data.detail || 'This task could not be stopped.');
+            await loadJobs({ showLoading: false });
+        } catch (error) {
+            showJobError(error.message || 'This task could not be stopped.');
         } finally {
-            loadJobs();
+            if (button.isConnected) {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+                button.textContent = original;
+            }
         }
     }
 
     function openJobCenter() {
-        ensureModal().classList.add('active');
-        loadJobs();
+        const modal = ensureModal();
+        modal.classList.add('active');
+        window.HelperDialogs?.sync();
+        loadJobs({ showLoading: true });
         clearInterval(refreshTimer);
         refreshTimer = setInterval(() => {
-            if (document.getElementById(MODAL_ID)?.classList.contains('active')) loadJobs();
+            if (document.getElementById(MODAL_ID)?.classList.contains('active')) {
+                loadJobs({ showLoading: false });
+            }
         }, 4000);
     }
 
@@ -144,16 +201,20 @@
         document.getElementById(MODAL_ID)?.classList.remove('active');
         clearInterval(refreshTimer);
         refreshTimer = null;
+        window.HelperDialogs?.sync();
     }
 
     function installButton() {
         if (document.getElementById(BUTTON_ID)) return true;
         const nav = document.querySelector('#sidebar .bottom-nav');
         if (!nav) return false;
-        const button = document.createElement('div');
+        const button = document.createElement('button');
+        button.type = 'button';
         button.className = 'set-btn';
         button.id = BUTTON_ID;
-        button.innerHTML = '<span style="font-size:1rem;line-height:1;">↯</span> Job Center';
+        button.setAttribute('aria-haspopup', 'dialog');
+        button.setAttribute('aria-controls', MODAL_ID);
+        button.innerHTML = '<span class="nav-glyph" aria-hidden="true">T</span><span>Active Tasks</span>';
         button.addEventListener('click', openJobCenter);
         nav.insertBefore(button, nav.firstChild);
         return true;
@@ -168,7 +229,13 @@
         }
         window.openJobCenter = openJobCenter;
         document.addEventListener('keydown', event => {
-            if (event.key === 'Escape') closeJobCenter();
+            if (event.key !== 'Escape') return;
+            const modal = document.getElementById(MODAL_ID);
+            if (!modal?.classList.contains('active')) return;
+            if (window.HelperDialogs && !window.HelperDialogs.isTop(modal)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeJobCenter();
         });
     }
 

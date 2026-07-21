@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends
 
 from app.database import DB_FILE, get_db
 from app.inference_queue import inference_queue
-from app.logic.agent_model_registry import CLOUD_MODEL_CONFIG, OPENROUTER_KEY_ENVS
+from app.logic.agent_model_registry import CLOUD_MODEL_CONFIG, cloud_runtime_status
 from app.logic.cloud_token_budget import cloud_output_token_budget
 from app.security import get_current_user
 
@@ -33,20 +34,6 @@ def _component(name: str, status: str, summary: str, details: dict[str, Any] | N
     }
 
 
-def _frontend_versions() -> dict[str, str]:
-    template = BASE_DIR / "templates" / "index.html"
-    versions: dict[str, str] = {}
-    try:
-        text = template.read_text(encoding="utf-8")
-    except OSError:
-        return versions
-    for asset in ("app.js", "particles.js", "palette.js", "utils.js", "email_draft.js"):
-        marker = f"/static/js/{asset}?v="
-        if marker in text:
-            versions[asset] = text.split(marker, 1)[1].split('"', 1)[0]
-    return versions
-
-
 def _count_user_chats(db: sqlite3.Connection, current_user: str) -> int:
     try:
         row = db.execute("SELECT COUNT(*) AS count FROM chats WHERE user_email = ?", (current_user,)).fetchone()
@@ -60,129 +47,160 @@ async def _ollama_status() -> dict[str, Any]:
     try:
         response = await anyio.to_thread.run_sync(lambda: requests.get(f"{ollama_url}/api/tags", timeout=0.75))
         if response.status_code != 200:
-            return {"running": False, "url": ollama_url, "error": f"HTTP {response.status_code}"}
+            return {"running": False, "model_count": 0}
         models = [item.get("name") for item in response.json().get("models", []) if item.get("name")]
-        return {"running": True, "url": ollama_url, "models": models[:20], "model_count": len(models)}
-    except Exception as exc:
-        return {"running": False, "url": ollama_url, "error": str(exc)}
+        return {"running": True, "model_count": len(models)}
+    except Exception:
+        return {"running": False, "model_count": 0}
 
 
 def _memory_status() -> dict[str, Any]:
     try:
-        from app.logic.memory import collection
+        from app.logic.memory import memory_runtime_status
 
-        return {"healthy": True, "count": collection.count()}
-    except Exception as exc:
-        return {"healthy": False, "error": str(exc)}
+        return memory_runtime_status()
+    except Exception:
+        return {"healthy": False, "degraded": True, "retry_after_seconds": 0}
 
-
-def _queue_status() -> dict[str, Any]:
+def _queue_status(owner: str) -> dict[str, Any]:
+    active_jobs = getattr(inference_queue, "_active_jobs", {})
+    user_active_jobs = sum(1 for job in active_jobs.values() if getattr(job, "owner", None) == owner)
     return {
         "started": bool(getattr(inference_queue, "_started", False)),
         "queue_depth": inference_queue.queue_depth,
+        "inference_queue_depth": inference_queue.inference_queue_depth,
+        "tool_queue_depth": inference_queue.tool_queue_depth,
         "max_queue_depth": int(getattr(inference_queue, "_max_queue_depth", 0)),
         "max_workers": int(getattr(inference_queue, "_max_workers", 0)),
-        "active_jobs": len(getattr(inference_queue, "_active_jobs", {})),
+        "tool_workers": int(getattr(inference_queue, "_max_fast_workers", 0)),
+        "user_active_jobs": user_active_jobs,
     }
+
+
+def _public_link_active() -> tuple[bool, bool]:
+    enabled = str(os.getenv("ENABLE_NGROK", "")).lower() in {"1", "true", "yes", "on"}
+    public_url = str(os.getenv("NGROK_PUBLIC_URL") or "").strip()
+    runtime_url = BASE_DIR / ".runtime" / "ngrok_url.txt"
+    if not public_url and runtime_url.is_file():
+        try:
+            public_url = runtime_url.read_text(encoding="utf-8").strip()
+        except OSError:
+            public_url = ""
+    return enabled, bool(public_url)
 
 
 @router.get("/status")
 async def admin_status(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
-    openrouter_ready = any(_has_real_env(name) for name in OPENROUTER_KEY_ENVS)
-    smtp_ready = _has_real_env("SENDER_EMAIL") and _has_real_env("SENDER_PWD")
-    admin_key_ready = _has_real_env("ADMIN_KEY")
-    ngrok_enabled = str(os.getenv("ENABLE_NGROK", "")).lower() in {"1", "true", "yes", "on"}
-    root_ngrok_url = BASE_DIR / "ngrok_url.txt"
-    runtime_ngrok_url = BASE_DIR / ".runtime" / "ngrok_url.txt"
-    public_url = str(os.getenv("NGROK_PUBLIC_URL") or "").strip()
-    if not public_url and runtime_ngrok_url.is_file():
-        try:
-            public_url = runtime_ngrok_url.read_text(encoding="utf-8").strip()
-        except OSError:
-            public_url = ""
-
+    cloud = cloud_runtime_status()
+    cloud_ready = cloud["available"]
+    cloud_reason = cloud.get("reason")
+    cloud_summary = (
+        "Ready"
+        if cloud_ready
+        else "Cloud provider needs configuration"
+        if not cloud["configured"]
+        else {
+            "rate_limited": "Provider rate limit reached; Auto is using local models",
+            "network_unavailable": "Cloud network unavailable; Auto is using local models",
+            "authentication_failed": "Cloud credentials were rejected; Auto is using local models",
+            "timed_out": "Cloud provider timed out; Auto is using local models",
+            "provider_unavailable": "Cloud provider unavailable; Auto is using local models",
+        }.get(cloud_reason, "Temporarily unavailable; Auto is using local models")
+    )
     ollama = await _ollama_status()
     memory = _memory_status()
-    queue = _queue_status()
-    frontend = _frontend_versions()
-    db_path = Path(DB_FILE)
+    queue = _queue_status(current_user)
+    public_link_enabled, public_link_active = _public_link_active()
+    db_available = Path(DB_FILE).exists()
     chat_count = _count_user_chats(db, current_user)
+
+    email_mode = str(os.getenv("EMAIL_MODE", "SIMULATE")).strip().upper()
+    smtp_ready = _has_real_env("SENDER_EMAIL") and _has_real_env("SENDER_PWD")
+    email_ready = email_mode != "LIVE" or smtp_ready
 
     components = [
         _component(
-            "OpenRouter",
-            "ok" if openrouter_ready else "warn",
-            "Configured" if openrouter_ready else "Missing API key",
+            "Cloud assistant",
+            "ok" if cloud_ready else "warn",
+            cloud_summary,
             {
-                "env_names": list(OPENROUTER_KEY_ENVS),
-                "token_budget": cloud_output_token_budget(),
-                "configured_models": sorted(CLOUD_MODEL_CONFIG.keys()),
+                "configured": cloud["configured"],
+                "available": cloud_ready,
+                "retry_after_seconds": cloud["retry_after_seconds"],
+                "routes_configured": len(CLOUD_MODEL_CONFIG),
+                "state": "ready" if cloud_ready else cloud_reason,
+                "max_output_tokens": cloud_output_token_budget(),
             },
         ),
         _component(
-            "Ollama",
-            "ok" if ollama.get("running") else "warn",
-            f"{ollama.get('model_count', 0)} local model(s) available" if ollama.get("running") else "Local daemon unavailable",
-            ollama,
-        ),
-        _component(
-            "Ngrok",
-            "ok" if ngrok_enabled and public_url else "warn" if ngrok_enabled else "off",
-            "Tunnel active" if public_url else "Enabled but no public URL" if ngrok_enabled else "Disabled",
+            "Local assistant",
+            "ok" if ollama["running"] else "off",
+            f"{ollama['model_count']} local model(s) available" if ollama["running"] else "Optional local service is offline",
             {
-                "enabled": ngrok_enabled,
-                "public_url": public_url,
-                "root_ngrok_url_file_present": root_ngrok_url.is_file(),
+                "available": ollama["running"],
+                "model_count": ollama["model_count"],
             },
         ),
         _component(
-            "Database",
-            "ok" if db_path.exists() else "warn",
-            f"{chat_count} chat(s) for current user",
-            {"path": str(db_path), "exists": db_path.exists(), "current_user_chats": chat_count},
+            "Public link",
+            "ok" if public_link_active else "warn" if public_link_enabled else "off",
+            "Active" if public_link_active else "Enabled but unavailable" if public_link_enabled else "Disabled",
+            {
+                "enabled": public_link_enabled,
+                "active": public_link_active,
+            },
         ),
         _component(
-            "Inference Queue",
+            "Conversations",
+            "ok" if db_available else "fail",
+            f"{chat_count} saved conversation(s)",
+            {
+                "available": db_available,
+                "current_user_chats": chat_count,
+            },
+        ),
+        _component(
+            "Active tasks",
             "ok" if queue["queue_depth"] < queue["max_queue_depth"] else "warn",
-            f"{queue['active_jobs']} active / {queue['queue_depth']} queued",
-            queue,
+            f"{queue['user_active_jobs']} active for your account",
+            {
+                "service_started": queue["started"],
+                "waiting": queue["queue_depth"],
+                "capacity": queue["max_workers"],
+            },
         ),
         _component(
             "Memory",
-            "ok" if memory.get("healthy") else "warn",
-            f"{memory.get('count', 0)} memory item(s)" if memory.get("healthy") else "Memory unavailable",
-            memory,
+            "ok" if memory["healthy"] else "warn",
+            "Ready" if memory["healthy"] else "Retrying after a transient storage error",
+            {
+                "available": memory["healthy"],
+                "retry_after_seconds": int(memory.get("retry_after_seconds", 0)),
+            },
         ),
         _component(
-            "Email",
-            "ok" if smtp_ready else "warn",
-            "SMTP configured" if smtp_ready else "SMTP incomplete",
-            {"mode": os.getenv("EMAIL_MODE", "SIMULATE"), "sender_configured": _has_real_env("SENDER_EMAIL")},
-        ),
-        _component(
-            "Security",
-            "ok" if admin_key_ready else "warn",
-            "Admin key configured" if admin_key_ready else "Admin key missing",
-            {"admin_key_configured": admin_key_ready},
-        ),
-        _component(
-            "Frontend Assets",
-            "ok" if frontend else "warn",
-            f"app.js v{frontend.get('app.js', 'unknown')}",
-            {"versions": frontend},
+            "Email delivery",
+            "ok" if email_ready else "warn",
+            "Live delivery ready" if email_mode == "LIVE" and smtp_ready else "Safe simulation mode" if email_mode != "LIVE" else "Live delivery needs configuration",
+            {
+                "mode": "live" if email_mode == "LIVE" else "simulate",
+                "configured": smtp_ready,
+            },
         ),
     ]
 
-    overall = "ok"
-    if any(item["status"] == "fail" for item in components):
+    core_available = db_available and (cloud_ready or ollama["running"])
+    if not core_available:
         overall = "fail"
     elif any(item["status"] == "warn" for item in components):
         overall = "warn"
+    else:
+        overall = "ok"
 
     return {
         "success": True,
         "overall": overall,
         "user": current_user,
-        "generated_at": anyio.current_time(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "components": components,
     }

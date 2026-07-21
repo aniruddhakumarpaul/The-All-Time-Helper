@@ -6,6 +6,7 @@
 - `static/js/app.js` owns refresh restore end-to-end: it reads local cache, fetches remote chats once, merges once, renders history once, and opens a single active chat once.
 - `static/js/ui_restore.js` remains a compatibility no-op, and `static/js/latest_view_guard.js` is no longer part of the active restore path.
 - New user messages update the per-user local cache and active-chat ID immediately, before the debounced cloud sync, so refresh cannot reopen an older conversation.
+- Background history restoration is revision-guarded: starting, opening, or sending in a thread after restore begins must prevent the late merge from replacing the user's chosen view.
 - `/sync_chats` is merge-based; it no longer deletes unmentioned chats from a stale client snapshot.
 - Chat deletion uses explicit tombstones (`deleted_chat_ids`) so deletes are intentional and can be retried safely.
 - Rendered email widgets must update their backing `EMAIL_DRAFT_PAYLOAD:` message whenever fields change, so refresh/export use the current UI state.
@@ -19,6 +20,7 @@
 - The stop button now cancels the active backend job by job_id, and the chat stream exits early instead of awaiting the full worker future after cancellation.
 - Pasted code/logs that ask for explanation, syntax breakdown, summary, or description are direct chat requests; they must bypass tool/email routing unless the user explicitly asks to send, attach, edit files, run code, or execute another action.
 - Runtime theme changes must keep `data-theme` synchronized on both `<html>` and `<body>` because CSS uses ancestor theme selectors and JS visual effects observe the body attribute.
+- Runtime theme changes must also select the matching brand asset: dark mode uses the red `/static/img/logo.png`, while light mode uses the blue `/static/img/logo(2).jpg`; the favicon follows the same mapping.
 - Email-template attachment requests using frontend attached-context blocks should produce `EMAIL_DRAFT_PAYLOAD:` directly; raw `send_email_tool` JSON from cloud agents is a recoverable tool-plan leak and must be converted to the email widget payload.
 - Page refresh starts the prompt composer fresh: pending prompt text, drag/drop attached contexts, and unsent image attachments are cleared on frontend startup while saved chat history remains persisted.
 - Prompt-bar drag/drop contexts are bounded before send to keep multi-context requests model-safe; current submitted prompts are skipped when building backend history context to avoid duplicating attached-context payloads.
@@ -46,8 +48,50 @@
 - SQLite schema changes use explicit versioned migrations. Legacy `users.admin_authorized` values are cleared and ignored at runtime; authorization is request-scoped only.
 - LLM tools may build email drafts but cannot send SMTP messages. The deterministic delivery helper validates inputs and uses the inference job ID as its idempotency key.
 - Active frontend controls use module-bound listeners instead of inline event attributes. The CSP candidate remains documentation-only until browser smoke verification is complete.
-- The template owns the canonical `email_draft.js?v=2` early load and marks it with `data-helper-extension="email-draft-core"` so bootstrap does not inject a second copy; drag capture must ignore interactive controls inside `.email-draft-card` so edit, use, and send buttons remain clickable.
+- The template owns the canonical `email_draft.js?v=4` early load and marks it with `data-helper-extension="email-draft-core"` so bootstrap does not inject a second copy; drag capture must ignore interactive controls inside `.email-draft-card` so edit, use, and send buttons remain clickable.
 - Ngrok lifecycle is owned by the direct local launcher (`python -m app.main`), not the FastAPI factory or production ASGI lifespan.
+- The direct launcher keeps Uvicorn reload disabled by default for stable Windows multiprocessing; set HELPER_RELOAD=true when development hot reload is explicitly needed.
+
+## Product Acceptance Boundary
+- Every visible control has one explicit purpose and one active event owner. In particular, Preferences binds only to `#open-settings-btn`; generic `.set-btn` selectors must never capture Active Tasks or System Status.
+- Toggle preference rows delegate to their single switch so the full visual target is clickable without creating a second state owner or double-firing direct switch clicks.
+- Native buttons, form labels, accessible names, and `role="switch"` semantics are part of the active shell contract. Icon-only controls must have an accessible name.
+- Route, theme, attachment, and dynamic removal controls use native buttons. Choice menus support arrow/Home/End navigation and Escape focus restoration; Escape in the composer must never discard a draft or start a new chat.
+- Modal surfaces opt into `data-helper-dialog`. `dialog_manager.js` keeps only the highest visible modal exposed, makes background siblings inert, traps Tab within that modal, and restores focus on close.
+- Preferences persist under `helper_preferences_v1`; response style is mirrored to the legacy `helper_response_style_v1` key and sent from `state.responseStyle` as `adaptive`, `concise`, `deep`, or `creative`.
+- Auth, upload, export, context, task, and status failures use non-blocking in-app feedback. Active frontend code must not use blocking `alert()`.
+- Stopped and failed generations are stored as durable assistant messages so refresh does not erase the outcome.
+- Active REST controls treat non-2xx status as failure. Cancellation must not refresh away a failed result or imply success without a confirmed success payload.
+- The authenticated System Status panel is user-facing readiness, not an administrator diagnostics dump. It must remain sanitized even though the compatibility route is `/admin/status`.
+- Expensive chat/context inputs are bounded at the Pydantic boundary, and backend exception text is logged rather than returned or streamed verbatim.
+- `app/tests/test_product_acceptance.py` is the deterministic regression gate for these contracts.
+## Restored Legacy Interface
+- The active visual shell is the original templates/index.html plus static/css/style_v3.css, including its centered greeting, glass sidebar, floating composer, Outfit typography, logo gradients, and particle canvas.
+- static/css/flagship.css and static/js/experience.js are not active entry points. The rejected redesign is retained only under .runtime/ui_redesign_backup_20260717_0430 for reversible recovery.
+- Current runtime behavior remains connected to the legacy shell: helper-auto stays the default route, the request-origin API base remains injected, multi-file attachments remain available, and current chat-sync/backend contracts remain unchanged.
+- Legacy particle motion is restored intentionally because it is part of the requested old interface.
+- Click feedback is owned by the idempotent `motion_enhancements.js` layer: controls react on pointer-down, cancel on drag, release with a short spring, and non-native controls support keyboard activation. The layer must not delay or replace existing click handlers and must respect reduced-motion preferences.
+- Message text is a selection surface, not a default native drag source. Context dragging uses the visible message handle; hold-`G` may temporarily enable whole-bubble grab mode for power users.
+- Ctrl+K renders one scrollable ARIA listbox whose keyboard index always maps to a rendered option. Its header, results viewport, and footer cannot overlap, and Ctrl+Shift shortcuts must not toggle it.
+- Hover may emphasize message, history, and code actions, but those controls keep a visible resting state and core message geometry does not move on hover so element inspection remains stable.
+- Helper Auto treats credentials and runtime health separately. A pre-content cloud failure opens a short circuit and retries locally once; explicit cloud choices remain explicit and sanitized status APIs expose only availability and retry timing.
+- LiteLLM bundled metadata and CrewAI/OTel telemetry defaults are configured before dependency import so local startup does not perform a blocking metadata fetch; explicit environment overrides remain authoritative.
+- DDGS text and image searches, plus dependency HTTP stacks, use the bundled `certifi` CA file rather than the Windows user certificate store; `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` are set only when not explicitly configured, and TLS verification remains enabled.
+- Text search tries stable providers in a fixed `Brave -> Yahoo -> Yandex -> Bing` order and stops on the first non-empty response; one provider outage must not disable research.
+- Explicit web/image actions bypass CrewAI on local and cloud routes, and CrewAI storage defaults to `.runtime/crewai`; deterministic tools must not fail because a dependency tries to open a user-profile SQLite database.
+- The default OpenRouter chain must use models verified against the account privacy policy. Anonymous search providers remain first; the cited OpenRouter web-search server tool is a bounded last resort and only accepted when URL annotations are present.
+- Model controls describe active capabilities rather than obsolete provider IDs; compatibility IDs may remain backend-only, but stale Nemotron/North labels do not belong in the visible route menu.
+- Current and recent attachment IDs are resolved under the authenticated owner before vision inference; an expired or cross-owner reference must never become a filesystem path or silent cross-user lookup.
+- A transient neural-memory query failure opens a bounded retry circuit and must be reflected by the status dashboard; it cannot permanently disable memory until process restart.
+- A protected API `401` clears stale browser identity state and returns to authentication once, instead of leaving a visually signed-in but unusable workspace.
+- Supplemental classic scripts are inserted with ordered execution, and the canonical template must not contain controls that JavaScript removes after load; stable DOM identity is required for clicks, accessibility, and element inspection.
+- Startup diagnostics distinguish configured credentials from verified provider availability and never print credential fragments. The standalone system audit targets the active OpenRouter, Ollama, draft, and memory pipelines rather than retired Groq assumptions.
+- Creative-image routing uses one shared actionable-intent contract across classifier, direct execution, cloud execution, and context assembly. Tool-capability discussion cannot trigger generation, while an unresolved visual request may absorb short creative-latitude follow-ups exactly once.
+- Current-turn chat history is sent once. The browser excludes the just-added message, and cloud/local message builders defensively remove one duplicate from legacy clients.
+- Vision-capable OpenRouter/Gemma routes receive owner-validated images as native multimodal message parts. Simple local visual questions use cached Moondream perception and return that answer directly; no route should run a long vision description plus an unnecessary second model pass.
+- Vision and general tool telemetry must remain argument-free. Log model/tool identifiers, outcomes, byte counts, and durations only; never log raw base64, attachment-owner paths, recipient addresses, or full image-generation URLs.
+- Ordinary code generation/debugging is direct model work. CrewAI is reserved for actual external actions or coordinated multi-tool workflows, not as an automatic wrapper around every code-related prompt.
+- Mobile composer action targets must remain at least 36 px wide and 44 px high without horizontal overflow at 320 px; the send target remains 44 px square.
 
 This file records the current high-level architectural decisions.
 
@@ -59,3 +103,7 @@ This file records the current high-level architectural decisions.
 - Image-to-email workflows should resolve or generate real image bytes before drafting the email widget.
 - The repository should favor markdown source-of-truth docs and code search over vector retrieval for normal development context.
 - Repo-local Codex hooks live under `.codex/` and act as lightweight workflow guardrails: load docs-first context, remind before edits, record edit/verification activity, and nudge a narrow verification before final responses after edits.
+- Keep local/cloud model inference serialized, but route only proven model-free generation/search actions through a separate bounded tool lane. The route must precompute a forced direct-tool intent; uncertain or potentially model-backed workflows must remain on the inference lane.
+- Cloud degradation is represented by a short-lived sanitized reason enum rather than a generic boolean or raw exception. Status UI labels route counts as configured, not available, and Auto continues to recover locally.
+- Generated-image enhancement is additive: never publish or log the prompt-bearing source URL from the upscaler, and fall back once to the validated original image when local enhancement fails.
+- CrewAI tracing is always noninteractive in the request path.

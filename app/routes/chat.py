@@ -4,19 +4,23 @@ import queue
 import sqlite3
 import threading
 import time
-import traceback
 import uuid
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.inference_queue import inference_queue
 from app.logger import logger
-from app.logic.agents import ask_the_helper
-from app.logic.attachment_store import AttachmentStoreError, MAX_ATTACHMENT_BYTES, save_attachment_bytes
+from app.logic.agents import ask_the_helper, is_deterministic_tool_lane_request
+from app.logic.attachment_store import (
+    AttachmentStoreError,
+    MAX_ATTACHMENT_BYTES,
+    resolve_attachment_reference,
+    save_attachment_bytes,
+)
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.memory import admin_auth_context, query_memory, user_context
 from app.logic.neural_explainer import explain_neural_context
@@ -41,11 +45,11 @@ class Attachment(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    prompt: str
-    history: List[dict] = Field(default_factory=list)
-    model: str = "gemma4:e2b"
+    prompt: str = Field(max_length=100_000)
+    history: List[dict] = Field(default_factory=list, max_length=200)
+    model: str = "helper-auto"
     img: Optional[Any] = None
-    attachments: List[Attachment] = Field(default_factory=list)
+    attachments: List[Attachment] = Field(default_factory=list, max_length=6)
     name: str = "Human"
     sys: dict = Field(default_factory=dict)
     persona: bool = False
@@ -53,8 +57,8 @@ class ChatRequest(BaseModel):
 
 
 class RetrieveRequest(BaseModel):
-    text: str
-    n: int = 3
+    text: str = Field(min_length=1, max_length=100_000)
+    n: int = Field(default=3, ge=1, le=10)
 
 
 def _new_job_id() -> str:
@@ -65,6 +69,44 @@ def _normalize_chat_image_payload(req: ChatRequest):
     if req.attachments:
         return [item.model_dump(exclude_none=True) for item in req.attachments]
     return req.img
+
+
+def _hydrate_current_image_payload(payload: Any, owner: str):
+    if not payload:
+        return payload
+    was_list = isinstance(payload, list)
+    items = payload if was_list else [payload]
+    hydrated = [
+        resolve_attachment_reference(item, owner)
+        if isinstance(item, dict) and item.get("id")
+        else item
+        for item in items
+    ]
+    return hydrated if was_list else hydrated[0]
+
+
+def _hydrate_history_attachment_references(history: List[dict], owner: str, max_lookups: int = 6) -> List[dict]:
+    hydrated = [dict(message) if isinstance(message, dict) else message for message in history or []]
+    remaining = max_lookups
+    for index in range(len(hydrated) - 1, -1, -1):
+        if remaining <= 0 or not isinstance(hydrated[index], dict):
+            continue
+        attachments = hydrated[index].get("attachments")
+        if not attachments:
+            continue
+        items = attachments if isinstance(attachments, list) else [attachments]
+        resolved_items = []
+        for item in items:
+            if isinstance(item, dict) and item.get("id") and remaining > 0:
+                remaining -= 1
+                try:
+                    resolved_items.append(resolve_attachment_reference(item, owner))
+                except AttachmentStoreError:
+                    logger.info("[Attachments] Historical attachment is unavailable or expired.")
+                continue
+            resolved_items.append(item)
+        hydrated[index]["attachments"] = resolved_items
+    return hydrated
 
 
 def _message_role(message: dict) -> str:
@@ -109,15 +151,16 @@ async def upload_attachments(
     files: List[UploadFile] = File(...),
     current_user: str = Depends(get_current_user),
 ):
+    if len(files) > 6:
+        raise HTTPException(status_code=400, detail="Attach no more than 6 files at once.")
     saved = []
     try:
-        for upload in files[:6]:
+        for upload in files:
             data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
             saved.append(save_attachment_bytes(upload.filename or "attachment", upload.content_type or "", data, current_user))
         return {"success": True, "attachments": saved}
     except AttachmentStoreError as exc:
-        return {"success": False, "error": str(exc)}
-
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.post("/sync_chats")
 def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
@@ -125,19 +168,18 @@ def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current
         ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
     except Exception as exc:
-        traceback.print_exc()
-        return {"success": False, "error": str(exc)}
-
+        logger.exception("[ChatSync] Failed to persist conversations for %s", current_user)
+        raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
 
 @router.post("/chat/jobs/{job_id}/cancel")
 async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
     try:
         uuid.UUID(job_id)
-    except ValueError:
-        return {"success": False, "error": "Job not found"}
-    cancelled = inference_queue.cancel(job_id, current_user)
-    return {"success": cancelled, **({} if cancelled else {"error": "Job not found"})}
-
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    if not inference_queue.cancel(job_id, current_user):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"success": True}
 
 @router.post("/retrieve_context")
 def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_current_user)):
@@ -148,7 +190,7 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
                 draft, _ = json.JSONDecoder().raw_decode(raw)
                 return {"success": True, "kind": "email_draft", "draft": draft, "results": [], "explanation": ""}
             except (json.JSONDecodeError, TypeError):
-                return {"success": False, "error": "Invalid email draft context"}
+                raise HTTPException(status_code=400, detail="Invalid email draft context")
     token = user_context.set(current_user)
     try:
         results = query_memory(req.text, n_results=req.n)
@@ -160,8 +202,8 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
             "explanation": explanation,
         }
     except Exception as exc:
-        traceback.print_exc()
-        return {"success": False, "error": str(exc)}
+        logger.exception("[Memory] Related context retrieval failed for %s", current_user)
+        raise HTTPException(status_code=503, detail="Related context is temporarily unavailable.") from exc
     finally:
         user_context.reset(token)
 
@@ -170,9 +212,12 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
 async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
     target_model = req.model
     prompt = req.prompt
-    img = _normalize_chat_image_payload(req)
+    try:
+        img = _hydrate_current_image_payload(_normalize_chat_image_payload(req), current_user)
+        history = _hydrate_history_attachment_references(req.history, current_user)
+    except AttachmentStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     has_visual_input = bool(img)
-    history = req.history
     sys_config = req.sys
 
     if not req.isMasked:
@@ -210,6 +255,26 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     else:
         admin_auth_context.set(None)
 
+    use_tool_lane = bool(
+        not req.isMasked
+        and not req.persona
+        and not has_visual_input
+        and is_deterministic_tool_lane_request(prompt, history)
+    )
+    execution_lane = "tool" if use_tool_lane else "inference"
+    direct_tool_intent = (
+        {
+            "is_sensitive": False,
+            "requires_tools": True,
+            "complexity": "single",
+            "is_local": False,
+            "force_direct_tool": True,
+        }
+        if use_tool_lane
+        else None
+    )
+    logger.info("[Chat] Selected %s execution lane for job request", execution_lane)
+
     abort_event = threading.Event()
 
     async def listen_for_disconnect():
@@ -234,13 +299,13 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             listener_task = asyncio.create_task(listen_for_disconnect())
             try:
                 yield json.dumps({"job_id": job_id}).encode() + b'\n'
-                yield json.dumps({"status": "Initializing Neural Core..."}).encode() + b'\n'
+                yield json.dumps({"status": "Starting your request..."}).encode() + b'\n'
                 await asyncio.sleep(0.5)
 
                 if has_visual_input:
-                    yield json.dumps({"status": "Vision Pipeline Processing Image..."}).encode() + b'\n'
+                    yield json.dumps({"status": "Reading the attached image..."}).encode() + b'\n'
                 else:
-                    yield json.dumps({"status": "Scanning Semantic Memory..."}).encode() + b'\n'
+                    yield json.dumps({"status": "Checking relevant context..."}).encode() + b'\n'
 
                 streaming_occurred = []
                 status_queue = queue.Queue()
@@ -264,7 +329,9 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         admin_auth_context.set(_admin_key_for_thread)
                     return ask_the_helper(
                         prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
-                        status_callback=status_callback, chunk_callback=chunk_callback,
+                        status_callback=status_callback,
+                        chunk_callback=chunk_callback,
+                        intent=direct_tool_intent,
                     )
 
                 task = asyncio.create_task(
@@ -274,6 +341,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         abort_event,
                         timeout=1500.0,
                         owner=current_user,
+                        lane=execution_lane,
                     )
                 )
 
@@ -302,7 +370,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
 
                 if abort_event.is_set():
-                    yield json.dumps({"message": {"content": "⚠️ *Request Cancelled.*"}, "done": True}).encode() + b'\n'
+                    yield json.dumps({"message": {"content": "Request cancelled."}, "done": True}).encode() + b'\n'
                 else:
                     is_tool_res = result and result.strip() in ["SUCCESS", "ERROR", "AUTH_REQUIRED"]
                     if is_tool_res or not streaming_occurred:
@@ -317,9 +385,14 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 abort_event.set()
                 inference_queue.cancel(job_id, current_user)
                 raise
-            except Exception as exc:
-                logger.error(f"Agent Error: {str(exc)}")
-                yield json.dumps({"message": {"content": f"⚠️ **Agent Error:** {str(exc)}"}, "done": True}).encode() + b'\n'
+            except Exception:
+                logger.exception("[Chat] Assistant task failed for job %s", job_id)
+                yield json.dumps({
+                    "message": {
+                        "content": "I could not complete that response. Please retry or choose another route."
+                    },
+                    "done": True,
+                }).encode() + b'\n'
             finally:
                 abort_event.set()
                 listener_task.cancel()
@@ -335,5 +408,5 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as exc:
-        traceback.print_exc()
-        return {"error": str(exc)}
+        logger.exception("[Chat] Failed to start assistant request")
+        raise HTTPException(status_code=500, detail="The assistant request could not be started.") from exc

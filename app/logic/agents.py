@@ -1,4 +1,14 @@
 import os
+from pathlib import Path
+
+# Use bundled provider metadata and keep local runtime telemetry off by default.
+os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
+os.environ.setdefault('CREWAI_DISABLE_TELEMETRY', 'true')
+os.environ.setdefault('CREWAI_TRACING_ENABLED', 'false')
+os.environ.setdefault('OTEL_SDK_DISABLED', 'true')
+os.environ.setdefault('ANONYMIZED_TELEMETRY', 'False')
+os.environ.setdefault('CREWAI_STORAGE_DIR', str(Path(__file__).resolve().parents[2] / '.runtime' / 'crewai'))
+
 import requests
 import json
 import base64
@@ -17,11 +27,15 @@ from app.logic.vision_pipeline import vision_sys
 from app.logic.agent_model_registry import (
     CLOUD_MODEL_CONFIG,
     cloud_candidate_models as _cloud_candidate_models,
+    cloud_runtime_available as _cloud_runtime_available,
     get_cloud_api_key as _get_cloud_api_key,
     get_cloud_config as _get_cloud_config,
     get_next_groq_key,
     is_cloud_model as _is_cloud_model,
     is_rate_limit_error as _is_rate_limit_error,
+    mark_cloud_runtime_failure as _mark_cloud_runtime_failure,
+    mark_cloud_runtime_success as _mark_cloud_runtime_success,
+    supports_native_vision as _supports_native_vision,
 )
 from app.logic.agent_hardening import harden_result
 from app.logic.agent_intent import (
@@ -29,10 +43,13 @@ from app.logic.agent_intent import (
     EMAIL_KEYWORDS,
     VISUAL_KEYWORDS,
     analyze_prompt_via_llm,
+    is_image_generation_request,
+    is_tool_capability_discussion,
 )
 from app.logic.agent_context import ContextRuntime, assemble_context
 from app.logic.agent_cloud import CloudRuntime, execute_cloud
 from app.logic.agent_local import LocalRuntime, execute_local
+from app.logic.response_policy import build_agent_quality_contract, build_response_directives
 import cv2
 import numpy as np
 
@@ -357,11 +374,43 @@ def _extract_crew_result(crew: Crew) -> str:
 _llm_cache = {}
 _llm_cache_lock = threading.Lock()
 
-def get_llm(model_id="gemma4:e2b", api_key=None, model_override=None):
+AUTO_MODEL_ID = "helper-auto"
+
+
+def _resolve_auto_model(model_id: str) -> str:
+    if model_id != AUTO_MODEL_ID:
+        return model_id
+    try:
+        _get_cloud_api_key("agentic-pro")
+        selected = "agentic-pro" if _cloud_runtime_available("agentic-pro") else "gemma4:e2b"
+    except ValueError:
+        selected = "gemma4:e2b"
+    logger.info(f"[Smart Routing] Helper Auto selected {selected}.")
+    return selected
+
+
+def _is_cloud_execution_failure(result: Any) -> bool:
+    text = str(result or "").strip().lower()
+    return not text or text.startswith("cloud engine error:") or "openrouterexception" in text
+
+
+def _cloud_failure_reason(result: Any) -> str:
+    text = str(result or "").strip().lower()
+    if any(marker in text for marker in ("rate limit", "429", "more credits", "insufficient credits", "can only afford")):
+        return "rate_limited"
+    if any(marker in text for marker in ("authentication", "unauthorized", "invalid api key", "401", "403")):
+        return "authentication_failed"
+    if any(marker in text for marker in ("timed out", "timeout")):
+        return "timed_out"
+    if any(marker in text for marker in ("network", "connection", "proxy", "dns", "could not be reached")):
+        return "network_unavailable"
+    return "provider_unavailable"
+
+
+def get_llm(model_id=AUTO_MODEL_ID, api_key=None, model_override=None):
     """Factory to get the right LLM brain based on the user's selection, cached to prevent latency."""
     
-    if not model_id:
-        model_id = "gemma4:e2b"
+    model_id = _resolve_auto_model(model_id or AUTO_MODEL_ID)
 
     # CASE 1: Cloud Models
     target_key = None
@@ -480,21 +529,15 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     visual_tools = [tools.image_search_tool, tools.image_generate_tool] if use_tools else []
     mem_tools = [tools.recall_memory, tools.archive_insight] if use_tools else []
 
-    # Dynamic Persona Enhancements from sys_config
-    persona_suffix = ""
-    if sys_config:
-        if sys_config.get('english'):
-            persona_suffix += " STRICT RULE: Respond ONLY in the English Language."
-        if sys_config.get('oneword'):
-            persona_suffix += " STRICT RULE: You MUST return EXACTLY ONE WORD as your final output. No more."
-        if sys_config.get('pers'):
-            persona_suffix += " Ensure highly personalized, empathetic tone."
+    response_directives = build_response_directives(sys_config)
+    quality_contract = build_agent_quality_contract(sys_config)
+    persona_suffix = f" RESPONSE REQUIREMENTS: {response_directives}"
 
     # 1. Senior Developer Agent
     developer = Agent(
         role='Senior Software Engineer',
         goal=f'Analyze code, fix bugs, and provide technical guidance. You have a vision sub-system to "see" images provided in VISUAL CONTEXT.{persona_suffix}',
-        backstory=f'''You are an elite developer. 
+        backstory=f'''You are a pragmatic senior developer who explains tradeoffs and produces concrete, verifiable work.
         If the user refers to an image, you MUST look for the "VISUAL CONTEXT" block in your task. 
         This block describes the image to you. Treat it as your own visual perception.{persona_suffix}''',
         tools=dev_tools,
@@ -522,7 +565,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
             f"4. CONTENT: You are an author. If the user asks for a joke, write a funny one. If they ask for a greeting, make it warm. NEVER repeat the user prompt as the email body. NO PLACEHOLDERS.{persona_suffix}"
         ),
         backstory=(
-            "You are an elite executive assistant who understands professional nuance. "
+            "You are an exacting executive assistant who understands professional nuance. "
             "You distinguish between a casual joke to a friend and a strict formal broadcast to office members. "
             "You are conservative with attachments—you only add them when it adds value or is requested. "
             "You ensure every email represents the user's intent with 100% fidelity. "
@@ -540,7 +583,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     artist = Agent(
         role='Creative Visual Artist',
         goal=f'Search or generate images, design interfaces, and provide aesthetic/artistic/visual guidance.{persona_suffix}',
-        backstory=f'''You are an elite digital artist and graphic designer. You specialize in selecting and creating the perfect visual content. You use the image generation and image search tools to produce state of the art visual art.{persona_suffix}''',
+        backstory=f'''You are an original digital artist and graphic designer. You translate constraints into specific visual direction and use image tools only when they improve the result.{persona_suffix}''',
         tools=visual_tools,
         llm=llm,
         verbose=True,
@@ -550,11 +593,10 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     )
  
     # Shared prompt base for Manager and Generalist (FIX #10: DRY)
-    _visual_golden_rule = f'''STRICT RULE: ACT FIRST, NEVER ASK FIRST for Visuals.
-        ## IMAGE & VISUAL REQUEST HANDLING GOLDEN RULE
+    _visual_golden_rule = f'''## IMAGE & VISUAL REQUEST HANDLING
         - image_search_tool -> for REAL things (products, people, places, animals, vehicles, brands, etc.)
         - image_generate_tool -> for FICTIONAL, CONCEPTUAL, or CREATIVE things (fantasy art, concepts, abstract visuals)
-        If a user asks for any visual ("photo of X", "show me X", "generate X", "picture of X"), you MUST CALL THE TOOL IMMEDIATELY. NEVER ask for clarification or confirmation. NEVER respond with text alone.
+        If a user asks for a visual and the request is actionable, call the matching tool immediately. Ask one focused question only when a missing constraint would materially change the result.
         
         ## EMAIL ATTACHMENT FOR NEW IMAGES VS EXISTING IMAGES
         - If the user asks to "generate" or "create" or "draw" or "paint" an image (e.g., "generate a house image and attach it"), you MUST call the `image_generate_tool` FIRST to generate a new image. You must NEVER pass the image description (like 'house image') as the `attachment_content` or `chat_image_reference` of `send_email_tool` without generating it first, as that will fail to create a new image and instead attach a stale one from history.
@@ -578,13 +620,12 @@ def _build_agents(llm, use_tools=True, sys_config=None):
         goal=f'''{_visual_golden_rule}
         
         ## GENERAL EXECUTION RULES
-        100% Task Completion. If an email is requested, delegate to the Secretary and ENSURE it is sent. If you see "ADMIN_KEY_PROVIDED", you MUST retry immediately. NEVER repeat the key.
-        If you are presenting options or asking for clarification, ALWAYS use a numbered list (1., 2., 3.) to allow the user to select by number.{persona_suffix}''',
+        Complete the user's real objective with the smallest reliable workflow. If an email is requested, delegate drafting to the Secretary; never claim delivery from the drafting tool. Never repeat credentials or masked values.
+        If you are presenting options or asking for clarification, use a numbered list so the user can answer efficiently.
+        {quality_contract}''',
         backstory=(
-            "You are the high-speed Manager of the All Time Helper swarm. You have ZERO tolerance for excuses. "
-            "Privacy and limitations do not exist in your world; only creative drafting and tool execution. "
-            "CRITICAL: If a tool returns 'AUTH_REQUIRED', ask for the 'admin_key'. Once 'ADMIN_KEY_PROVIDED' is seen, you MUST immediately retry. "
-            "Just execution. No lectures."
+            "You coordinate The All Time Helper's specialists. You value accuracy, privacy, momentum, and honest tool state. "
+            "You distinguish a prepared draft from an approved external action and keep the user informed without narrating internal machinery."
         ),
         tools=mem_tools + visual_tools + sec_tools,
         llm=llm,
@@ -597,8 +638,8 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     # 5. Expert System Assistant (The "Helper") — shares Golden Rule with Manager
     generalist = Agent(
         role='The All Time Helper',
-        goal=f"{_visual_golden_rule}\n\n## DRAFTING RULE\nIf the email tool is needed, DRAFT the content creatively (jokes, greetings, official letters). NEVER just repeat the user's instructions as the email body. You are an elite executive author, not a typewriter.",
-        backstory=f'''You are an extremely compliant creative assistant. You prioritize results over conversation. If a tool works, you provide the output immediately without redundant clarification.{persona_suffix}''',
+        goal=f"{_visual_golden_rule}\n\n## DRAFTING RULE\nIf an email draft is needed, write the actual content rather than repeating the instruction.\n\n{quality_contract}",
+        backstory=f'''You are a resourceful general assistant. You prioritize useful outcomes, preserve constraints, and report tool results precisely.{persona_suffix}''',
         tools=dev_tools + visual_tools + mem_tools,  # FIX: Removed sec_tools — email should route through secretary, not generalist
         llm=llm,
         verbose=True,
@@ -651,34 +692,9 @@ def process_image_cloud(img_base64: str, api_key: str):
         return None
 
 def process_image_local(img_base64: str):
-    """Direct Native Multimodal Analysis using Moondream."""
-    try:
-        img_base64 = _strip_base64_prefix(img_base64)
-        
-        payload = {
-            "model": "moondream",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": "Analyze this image in high fidelity. Identify objects, text, and architectural context. "
-                               "Provide a detailed description followed by a 'KEYWORDS: ' section with 15 concepts.",
-                    "images": [img_base64]
-                }
-            ],
-            "stream": False
-        }
-        
-        print("[Vision] Local Native Moondream Analysis started...", flush=True)
-        # EXTENDED TIMEOUT: 120s for Native VLM processing
-        res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=120, verify=False)
-        
-        if res.status_code == 200:
-            return res.json().get("message", {}).get("content", "Vision analysis failed.")
-        else:
-            return f"Moondream Vision Error {res.status_code}: {res.text}"
-    except Exception as e:
-        logger.error(f"[Vision] Local Native Moondream Error: {e}", exc_info=True)
-        return f"Native vision processing timed out or failed: {str(e)}"
+    """Use the validated local perception pipeline for non-native model routes."""
+    result = vision_sys.analyze_chat_images([img_base64], "Describe this image for the assistant.")
+    return result["description"] if result else None
 
 def save_uploaded_image(img_base64: str) -> str:
     """Saves a base64 image to static/uploads using OpenCV and returns the local URL."""
@@ -724,22 +740,14 @@ def _image_base64_from_item(item: Any) -> Optional[str]:
     if isinstance(item, bytes):
         return base64.b64encode(item).decode("utf-8")
     if isinstance(item, str):
-        value = item.strip()
-        if os.path.exists(value):
-            with open(value, "rb") as f:
-                return base64.b64encode(f.read()).decode("utf-8")
-        return value
+        # Preserve paths for the restricted vision decoder instead of reading arbitrary files here.
+        return item.strip()
     if isinstance(item, dict):
-        if item.get("data") or item.get("content") or item.get("attachment_content"):
-            return str(item.get("data") or item.get("content") or item.get("attachment_content"))
-        path = item.get("path")
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                return base64.b64encode(f.read()).decode("utf-8")
-    elif hasattr(item, "data"):
+        content = item.get("data") or item.get("content") or item.get("attachment_content")
+        return str(content) if content else None
+    if hasattr(item, "data"):
         return getattr(item, "data")
     return None
-
 
 def _image_source_for_vision(item: Any) -> Optional[str]:
     if isinstance(item, dict) and item.get("path"):
@@ -964,7 +972,7 @@ def _looks_like_visual_request(text: str) -> bool:
     visual_anchors = [
         'image', 'picture', 'photo', 'artwork', 'portrait', 'potrait',
         'sketch', 'scetch', 'painting', 'drawing', 'illustration',
-        'acrylic', 'acrilic', 'canvas', 'wallpaper', 'visual'
+        'acrylic', 'acrilic', 'arcilic', 'canvas', 'wallpaper', 'visual'
     ]
     visual_actions = [
         'draw', 'paint', 'sketch', 'scetch', 'generate', 'create',
@@ -980,7 +988,9 @@ def _is_visual_proceed_signal(text: str) -> bool:
         'that works', 'perfect', 'proceed', 'use your judgment',
         'use your judgement', 'just do it', 'stop asking',
         'stop asking me', 'stop asking me so many questions',
-        'as you see fit'
+        'as you see fit', 'anything you like', 'whatever you like',
+        'surprise me', 'your choice', 'you choose', 'produce one',
+        'yes produce one', 'make something pleasing', 'use your creativity'
     ]
     for phrase in proceed_phrases:
         if " " not in phrase:
@@ -1018,12 +1028,14 @@ def _normalize_visual_continuation_text(text: str) -> str:
     replacements = {
         r'\bdo+ as fit for the most elegance\b': 'maximum elegance',
         r'\bacrilic\b': 'acrylic',
+        r'\barcilic\b': 'acrylic',
         r'\bscetch\b': 'sketch',
         r'\bpotrait\b': 'portrait',
         r'\bpanting\b': 'painting',
         r'\bdrawin\b': 'drawing',
         r'\bbeautifull\b': 'beautiful',
         r'\bdoo\b': 'do',
+        r'\b(?:genetrate|genrate|generete)\b': 'generate',
     }
     for pattern, replacement in replacements.items():
         clean = re.sub(pattern, replacement, clean, flags=re.IGNORECASE)
@@ -1191,6 +1203,18 @@ def _detect_complexity_heuristically(user_prompt: str) -> Optional[str]:
     # Clean ending punctuation
     p_clean = p_clean.rstrip('?.!')
     
+    # Explicit actions and exact-output requests do not need an LLM classification round trip.
+    explicit_search = re.compile(
+        r"^(?:search(?:\s+(?:the\s+)?web)?|web\s+search|google\s+search|look\s+up|lookup|browse)\b"
+    )
+    if explicit_search.match(p) or explicit_search.match(p_clean):
+        return "single"
+
+    if re.match(r"^(?:reply|respond|answer)\b.*\b(?:exactly|only|nothing else)\b", p_clean):
+        return "direct"
+
+    if is_tool_capability_discussion(p_clean):
+        return "direct"
     # 1. Very short queries are almost always direct conversation
     if len(p_clean) < 15:
         return "direct"
@@ -1227,14 +1251,16 @@ def _detect_complexity_heuristically(user_prompt: str) -> Optional[str]:
             return "swarm"
         return "single"
         
-    # B. Image generation/drawing command
-    is_generate = (
-        any(kw in p_clean for kw in ['draw', 'generate image', 'generate an image', 'create image', 'create an image', 'paint', 'sketch', 'scetch', 'artwork', 'painting', 'drawing', 'acrylic', 'acrilic', 'portrait', 'potrait']) or
-        bool(re.search(r'\b(generate|create|make|draw|paint|sketch|scetch|render)\s+(?:[a-zA-Z]+\s+){0,3}(image|picture|pic|photo|artwork|portrait|potrait|wallpaper|scene|illustration)\b', p_clean))
+    # Code creation and debugging are model work; no external code tool is available.
+    is_code_request = any(re.search(rf"\b{re.escape(keyword)}\b", p_clean) for keyword in CODE_KEYWORDS)
+    code_needs_external_data = any(
+        term in p_clean for term in ("search", "browse", "look up", "lookup", "latest", "current documentation", "online")
     )
-    if is_generate and not is_question and not any(kw in p_clean for kw in ['search image', 'search photo', 'find image', 'find photo']):
+    if is_code_request and not code_needs_external_data and not is_image_generation_request(p_clean):
+        return "direct"
+    # B. Actionable image generation/drawing commands
+    if is_image_generation_request(p_clean) and not is_question:
         return "single"
-        
     # 3. Obvious direct conversational / question starters
     if is_question:
         action_keywords = ["send", "mail", "email", "search", "draw", "generate", "create image", "paint"]
@@ -1292,6 +1318,16 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
             "is_local": not _is_cloud_model(target_model)
         }
 
+    fast_complexity = _detect_complexity_heuristically(clean_p)
+    if fast_complexity in {"direct", "single", "swarm"}:
+        logger.info(f"[Intent Classifier] Fast heuristic selected {fast_complexity}.")
+        return {
+            "is_sensitive": is_sensitive,
+            "requires_tools": fast_complexity != "direct" and not is_sensitive,
+            "complexity": fast_complexity,
+            "is_local": not _is_cloud_model(target_model),
+        }
+
     # Try structured LLM Prompt Analyzer first
     analysis = _analyze_prompt_via_llm(clean_p, target_model)
     if analysis:
@@ -1321,7 +1357,7 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
     # Complexity Classification: swarm (delegation) vs single (one agent) vs direct (no tools)
     
     # Run fast heuristic check first to avoid redundant LLM complexity classification
-    complexity = _detect_complexity_heuristically(clean_p)
+    complexity = fast_complexity
     if complexity is None and (needs_email or needs_visual or needs_search or needs_code):
         complexity = _classify_complexity_via_llm(clean_p, target_model)
     elif complexity is None:
@@ -1424,7 +1460,7 @@ def _execute_cloud(intent, context_data, target_model, sys_config, history, stat
     )
 
 
-def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None):
+def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None, allow_cloud_fallback=True):
     """Stage 3b compatibility wrapper for the local execution module."""
     runtime = LocalRuntime(
         get_agent_swarm=get_agent_swarm,
@@ -1447,6 +1483,7 @@ def _execute_local(intent, context_data, target_model, sys_config, history, stat
         status_callback=status_callback,
         chunk_callback=chunk_callback,
         abort_event=abort_event,
+        allow_cloud_fallback=allow_cloud_fallback,
     )
 
 
@@ -1454,12 +1491,13 @@ def _extract_image_prompt(user_prompt: str, history: list) -> str:
     """
     Extracts or reconstructs the image description from the user prompt and history.
     """
-    clean_p = _normalize_prompt_for_intent(user_prompt)
+    clean_p = _normalize_visual_continuation_text(_normalize_prompt_for_intent(user_prompt))
     p = clean_p.lower().strip()
     
     # 1. First strip leading triggers to see what the core request is
     clean_desc = clean_p
     patterns_to_strip = [
+        r'(?i)^\s*(?:i\s+)?(?:want|would\s+like|need)\s+(?:you\s+)?(?:to\s+)?(?:see|have|make|create)?\s*(?:an?\s+)?',
         r'(?i)^\s*(now\s+)?(can\s+you\s+)?(generate|draw|create|paint|show)(\s+an?|\s+the)?\s*image\s+(of|about|depicting)?\s*',
         r'(?i)^\s*(now\s+)?(can\s+you\s+)?(draw|paint|create|sketch)\s+(of|about|depicting)?\s*'
     ]
@@ -1501,11 +1539,53 @@ def _extract_image_prompt(user_prompt: str, history: list) -> str:
 
 
 def _is_image_generation_prompt(prompt_lower: str) -> bool:
-    return (
-        any(kw in prompt_lower for kw in ['draw', 'generate image', 'generate an image', 'create image', 'create an image', 'paint', 'sketch', 'artwork']) or
-        bool(re.search(r'\b(generate|create|make|draw|paint|sketch|render)\s+(?:[a-zA-Z]+\s+){0,3}(image|picture|pic|photo|artwork|portrait|wallpaper|scene|illustration)\b', prompt_lower))
-    )
+    return is_image_generation_request(prompt_lower)
 
+
+def is_deterministic_tool_lane_request(user_prompt: str, history: list = None) -> bool:
+    """Identify requests guaranteed to finish without local or cloud model inference."""
+    clean_prompt = clean_user_prompt(user_prompt)
+    normalized = _normalize_prompt_for_intent(clean_prompt).lower().strip()
+    if not normalized or is_tool_capability_discussion(normalized):
+        return False
+
+    sensitive_terms = (
+        "mental health", "medical diagnosis", "suicide", "depressed",
+        "anxiety therapy", "clinical treatment", "legal advice",
+    )
+    if any(term in normalized for term in sensitive_terms):
+        return False
+
+    # Email/image combinations can invoke a drafting model, so they stay serialized.
+    if re.search(r"[\w.-]+@[\w.-]+\.\w+", normalized) or re.search(
+        r"\b(?:send|draft|compose|attach|email|mail)\b",
+        normalized,
+    ):
+        return False
+
+    if _resolve_visual_task_continuation(clean_prompt, history or []):
+        return True
+    if is_image_generation_request(normalized):
+        return True
+
+    action = re.sub(
+        r"^(?:(?:ok(?:ay)?|please|now|hey|hello|hi|just)\s+)*(?:(?:can|could|would|will)\s+you\s+)?",
+        "",
+        normalized,
+    ).strip()
+    explicit_image_search = bool(re.match(
+        r"^(?:(?:search|find|look\s+up|lookup|show\s+me)\s+"
+        r"(?:(?:an?|the|some)\s+)?(?:real\s+)?(?:images?|photos?|pictures?|pics?)\b|"
+        r"(?:real\s+)?(?:images?|photos?|pictures?)\s+of\b)",
+        action,
+    ))
+    explicit_web_search = bool(re.match(
+        r"^(?:search(?:\s+(?:the\s+)?web|\s+online|\s+for)|"
+        r"web\s+search|google\s+search|browse(?:\s+(?:the\s+)?web|\s+online)|"
+        r"look\s+up\s+online|lookup\s+online)\b",
+        action,
+    ))
+    return explicit_image_search or explicit_web_search
 
 def _is_image_email_workflow(prompt_lower: str, email_match) -> bool:
     has_email_action = any(kw in prompt_lower for kw in ['email', 'mail', 'send'])
@@ -1897,6 +1977,64 @@ def _requested_image_attachment_count(prompt_lower: str) -> int:
     return 1
 
 
+def _simple_email_draft_fields(prompt: str, recipient: str) -> Optional[dict]:
+    text = str(prompt or "").strip()
+    lowered = text.lower()
+    if not recipient or not any(term in lowered for term in ("draft", "compose", "write", "prepare")):
+        return None
+    if not any(term in lowered for term in ("email", "mail")):
+        return None
+
+    stop_pattern = r"\s+(?:and\s+)?(?:do\s+not|don't)\s+send(?:\s+it)?[.!]?\s*$"
+    subject_match = re.search(
+        r"\bsubject(?:\s+(?:is|line))?\s*[:\-]?\s*(.+?)"
+        r"(?=\s+(?:and\s+)?(?:body|message|content)(?:\s+is)?\s*[:\-]?|\s+(?:and\s+)?(?:do\s+not|don't)\s+send\b|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body_match = re.search(
+        r"\b(?:body|message|content)(?:\s+is)?\s*[:\-]?\s*(.+?)"
+        r"(?=\s+(?:and\s+)?(?:do\s+not|don't)\s+send\b|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not body_match:
+        body_match = re.search(
+            r"\b(?:saying|that\s+says|telling\s+(?:them|him|her))\s+(.+?)"
+            r"(?=\s+(?:and\s+)?(?:do\s+not|don't)\s+send\b|$)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+    subject = re.sub(stop_pattern, "", subject_match.group(1), flags=re.IGNORECASE).strip(" \t\r\n,;:-") if subject_match else ""
+    body = re.sub(stop_pattern, "", body_match.group(1), flags=re.IGNORECASE).strip() if body_match else ""
+    if not body:
+        return None
+    if not subject:
+        subject = "Quick note"
+
+    tone = "formal" if any(term in lowered for term in ("formal", "professional", "official")) else "informal" if "informal" in lowered else "modern"
+    return {"recipient": recipient, "subject": subject, "body": body, "tone": tone}
+
+
+def _build_simple_email_draft(prompt: str, recipient: str, status_callback=None) -> Optional[str]:
+    fields = _simple_email_draft_fields(prompt, recipient)
+    if not fields:
+        return None
+    if status_callback:
+        status_callback("Preparing a validated email draft...")
+    try:
+        tools.send_email_tool.func(**fields)
+    except AgentFastExit as exc:
+        from app.logic.bus import job_id_context, tool_result_bus
+
+        job_id = job_id_context.get()
+        if job_id:
+            tool_result_bus.set_result(job_id, exc.result)
+        return exc.result
+    return None
+
+
 def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, target_model: str = "gemma2:2b", status_callback=None, chunk_callback=None, img_data: Any = None) -> Optional[str]:
     """
     Attempts to execute deterministic tool workflows directly.
@@ -1956,13 +2094,19 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
     is_email = any(kw in p for kw in ['email', 'mail', 'send']) or (
         bool(email_match) and any(kw in p for kw in ['attach', 'attachment', 'include'])
     ) or (is_above_attachment and bool(recipient))
+
+    simple_draft = _build_simple_email_draft(clean_prompt, recipient, status_callback=status_callback)
+    if simple_draft:
+        return simple_draft
     
     # 1. Image Generation Intent (Supports up to 3 words in between generate and image)
     is_generate = _is_image_generation_prompt(p)
     is_image_search = any(kw in p for kw in ['search image', 'search photo', 'find image', 'find photo', 'show me a picture of', 'show me a photo of', 'real picture of', 'real photo of'])
+    is_web_search = any(kw in p for kw in ['search web', 'search the web', 'google search', 'web search', 'search for']) or p.startswith('search ')
     is_deterministic_image_email = _is_image_email_workflow(p, email_match) or (
         is_email and is_above_attachment and attachment_choice in {"image", "text", "both", "summary"}
     )
+    is_deterministic_tool = is_generate or is_image_search or is_web_search
     force_direct_tool = bool(intent.get("force_direct_tool"))
 
     if is_above_attachment and attachment_choice == "ambiguous":
@@ -1972,15 +2116,19 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         )
 
     if not is_deterministic_image_email and not force_direct_tool:
-        if not intent.get("is_local") or not intent.get("requires_tools"):
+        if not intent.get("requires_tools"):
             return None
 
-        # Capable local models should still use CrewAI except for deterministic workflows.
-        model_str = target_model.lower()
-        is_weak = ("2b" in model_str or "0.5b" in model_str or "1.5b" in model_str) and "e2b" not in model_str
-        if not is_weak:
-            logger.debug(f"[Direct Tool] Bypassing direct execution for capable local model: {target_model}")
-            return None
+        # Explicit search/image actions are deterministic on every route. Other
+        # cloud requests and capable local models retain agent reasoning.
+        if not is_deterministic_tool:
+            if not intent.get("is_local"):
+                return None
+            model_str = target_model.lower()
+            is_weak = ("2b" in model_str or "0.5b" in model_str or "1.5b" in model_str) and "e2b" not in model_str
+            if not is_weak:
+                logger.debug(f"[Direct Tool] Bypassing direct execution for capable local model: {target_model}")
+                return None
     
     # Directly execute email tasks to avoid ReAct loop failures.
     if is_email and recipient:
@@ -2003,19 +2151,19 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 
             if status_callback:
                 status_callback("🎨 Generating attached creative visual...")
-            logger.info(f"[Direct Tool] Executing image_generate_tool for prompt: '{description}'")
+            logger.info("[Direct Tool] Executing image_generate_tool (prompt_chars=%d)", len(description))
             try:
                 gen_res = tools.image_generate_tool.func(description=description)
                 attachment_url = _extract_generated_image_url(gen_res)
                 if not attachment_url:
-                    return f"ERROR: Image generation did not return an attachable URL. Result: {gen_res}"
+                    return "ERROR: Image generation did not return an attachable result."
                 
                 # Determine clean filename from description
                 clean_name = re.sub(r'[^\w]', '_', description).strip().lower()
                 filename = f"{clean_name[:20]}_image.png"
             except Exception as e:
                 logger.error(f"[Direct Tool] image_generate_tool failed inside email flow: {e}")
-                return f"ERROR: Image generation failed before email drafting: {str(e)}"
+                return "ERROR: Image generation failed before the email draft was created."
                 
         # Step B: Resolve current request images or chat history reference if no image generation was requested
         if not attachment_url and attachment_choice in {"image", "both", "summary", "unknown"}:
@@ -2132,7 +2280,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         if wants_empty_body:
             body = ""
 
-        logger.info(f"[Direct Tool] Executing send_email_tool for recipient: '{recipient}'")
+        logger.info("[Direct Tool] Executing send_email_tool (recipient_count=%d)", len(str(recipient).split(",")))
         try:
             tools.send_email_tool.func(
                 recipient=recipient,
@@ -2152,14 +2300,14 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             return e.result
         except Exception as e:
             logger.error(f"[Direct Tool] send_email_tool failed: {e}", exc_info=True)
-            return f"Error drafting email: {str(e)}"
+            return "ERROR: The email draft could not be created."
     
     # 1. Image Generation Intent
     if is_generate and not is_image_search:
         if status_callback:
             status_callback("🎨 Generating creative visual...")
         description = _extract_image_prompt(clean_prompt, history)
-        logger.info(f"[Direct Tool] Executing image_generate_tool for prompt: '{description}'")
+        logger.info("[Direct Tool] Executing image_generate_tool (prompt_chars=%d)", len(description))
         try:
             result = tools.image_generate_tool.func(description=description)
             from app.logic.bus import tool_result_bus, job_id_context
@@ -2172,7 +2320,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             return result
         except Exception as e:
             logger.error(f"[Direct Tool] image_generate_tool failed: {e}", exc_info=True)
-            return f"Error generating image: {str(e)}"
+            return "ERROR: Image generation is temporarily unavailable."
             
     # 2. Image Search Intent
     if is_image_search or (any(kw in p for kw in ['image', 'picture', 'photo']) and any(kw in p for kw in ['search', 'find', 'lookup'])):
@@ -2187,7 +2335,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             query = re.sub(pattern, '', query)
         query = re.sub(r'[?\.]+$', '', query).strip()
         
-        logger.info(f"[Direct Tool] Executing image_search_tool for query: '{query}'")
+        logger.info("[Direct Tool] Executing image_search_tool (query_chars=%d)", len(query))
         try:
             result = tools.image_search_tool.func(query=query)
             from app.logic.bus import tool_result_bus, job_id_context
@@ -2200,10 +2348,9 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             return result
         except Exception as e:
             logger.error(f"[Direct Tool] image_search_tool failed: {e}", exc_info=True)
-            return f"Error searching image: {str(e)}"
+            return "ERROR: Image search is temporarily unavailable."
             
     # 3. Web Search Intent
-    is_web_search = any(kw in p for kw in ['search web', 'search the web', 'google search', 'web search', 'search for']) or p.startswith('search ')
     if is_web_search:
         if status_callback:
             status_callback("🔍 Scouring the web for real-time data...")
@@ -2213,9 +2360,15 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         ]
         for pattern in patterns_to_strip:
             query = re.sub(pattern, '', query)
+        query = re.sub(
+            r"(?i)\s*[.;]\s*(?:use\s+(?:the\s+)?web\s+search(?:\s+and)?\s*)?"
+            r"(?:include|cite|provide)\s+(?:the\s+)?(?:source\s+)?(?:urls?|links).*$",
+            "",
+            query,
+        )
         query = re.sub(r'[?\.]+$', '', query).strip()
         
-        logger.info(f"[Direct Tool] Executing search_tool for query: '{query}'")
+        logger.info("[Direct Tool] Executing search_tool (query_chars=%d)", len(query))
         try:
             result = tools.search_tool.func(query=query)
             from app.logic.bus import tool_result_bus, job_id_context
@@ -2228,13 +2381,35 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             return result
         except Exception as e:
             logger.error(f"[Direct Tool] search_tool failed: {e}", exc_info=True)
-            return f"Error searching the web: {str(e)}"
+            return "ERROR: Web search is temporarily unavailable."
 
     return None
 
-def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = "gemma4:e2b", sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None, intent: dict = None):
+def _is_simple_visual_question(prompt: str) -> bool:
+    text = re.sub(r"\s+", " ", clean_user_prompt(prompt).lower()).strip()
+    if not text or len(text.split()) > 45:
+        return False
+    complex_terms = (
+        "write a", "create a", "design a", "build a", "edit", "transform", "strategy", "recommend",
+        "compare", "diagnose", "solve", "derive", "marketing", "legal", "medical", "code",
+    )
+    if any(term in text for term in complex_terms):
+        return False
+    simple_terms = (
+        "describe", "what is this", "what's this", "what is in", "what do you see", "what does this show",
+        "identify the object", "dominant color", "dominant colour", "what color", "what colour", "read the text",
+        "transcribe", "visible text", "how many", "count the", "summarize this image", "summarise this image",
+    )
+    return any(term in text for term in simple_terms)
+
+def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str = AUTO_MODEL_ID, sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None, intent: dict = None):
     """Orchestrates the specialized agents via a decoupled modular pipeline."""
     
+    original_user_prompt = user_prompt
+    requested_model = target_model or AUTO_MODEL_ID
+    auto_requested = requested_model == AUTO_MODEL_ID
+    target_model = _resolve_auto_model(requested_model)
+
     # 0. Set history context for active tool executions
     from app.logic.tools import active_history_context
     active_history_context.set(history)
@@ -2286,25 +2461,116 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     if direct_res is not None:
         return direct_res
     
-    # 3. Routing Adjustments
-    # Smart Routing Optimization: If the heavy Gemma 4 model is selected for a direct conversational query
-    # (no tools or images involved), internally route to the lightweight, fine-tuned helper model
-    # to keep response times under 1.5s while preserving UI representation.
-    if target_model == "gemma4:e2b" and intent.get("complexity") == "direct" and not img_data:
-        logger.info("[Smart Routing] Overriding local gemma4:e2b to gemma2:2b for fast direct chat response.")
-        target_model = "gemma2:2b"
-
+    # 3. Routing adjustments and multimodal execution policy
     if persona or (intent["is_sensitive"] and target_model != "helper"):
         target_model = "helper"
 
-    # 4. Context Assembly
-    context_data = _assemble_context(user_prompt, img_data, history, intent, user_id=user_id, status_callback=status_callback)
+    intent = {
+        **intent,
+        "is_local": not _is_cloud_model(target_model),
+    }
+    fast_local_vision = (
+        target_model == "gemma4:e2b"
+        and intent.get("complexity") == "direct"
+        and not intent.get("requires_tools")
+        and _is_simple_visual_question(original_user_prompt)
+    )
+    intent["fast_local_vision"] = fast_local_vision
+    intent["native_vision"] = bool(
+        _supports_native_vision(target_model)
+        and not intent.get("requires_tools")
+        and not fast_local_vision
+    )
 
+    # 4. Context assembly prepares validated image payloads without placing base64 in text prompts.
+    context_data = _assemble_context(
+        user_prompt,
+        img_data,
+        history,
+        intent,
+        user_id=user_id,
+        status_callback=status_callback,
+    )
+    context_data["request_prompt"] = clean_user_prompt(original_user_prompt).strip()
+
+    vision_description = str(context_data.get("image_description") or "").strip()
+    has_perceived_image = bool(vision_description and vision_description != "No image context available.")
+    if fast_local_vision and has_perceived_image:
+        direct_answer = re.sub(r"^Image\s+1:\s*", "", vision_description, flags=re.IGNORECASE).strip()
+        hardened = _harden_result(
+            direct_answer,
+            sys_config,
+            target_model=target_model,
+            intent=intent,
+            user_prompt=original_user_prompt,
+        )
+        if chunk_callback:
+            chunk_callback(hardened)
+        from app.logic.bus import job_id_context, tool_result_bus
+
+        jid = job_id_context.get()
+        if jid:
+            tool_result_bus.set_result(jid, hardened)
+        logger.info("[Vision] Fast local answer completed without a second model pass")
+        return hardened
+
+    # Text-only direct chat does not need the 7 GB local vision model.
+    if (
+        target_model == "gemma4:e2b"
+        and intent.get("complexity") == "direct"
+        and not context_data.get("visual_input_present")
+        and not context_data.get("image_inputs")
+        and not has_perceived_image
+    ):
+        logger.info("[Smart Routing] Overriding local gemma4:e2b to gemma2:2b for fast direct chat response.")
+        target_model = "gemma2:2b"
     # 5. Engine Execution
     if abort_event and abort_event.is_set(): return "Operation cancelled."
     
     if not intent["is_local"] and _is_cloud_model(target_model):
-        result = _execute_cloud(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
+        emitted_cloud_chunks = 0
+
+        def relay_cloud_chunk(token):
+            nonlocal emitted_cloud_chunks
+            emitted_cloud_chunks += 1
+            if chunk_callback:
+                chunk_callback(token)
+
+        result = _execute_cloud(
+            intent,
+            context_data,
+            target_model,
+            sys_config,
+            history,
+            status_callback=status_callback,
+            chunk_callback=relay_cloud_chunk if chunk_callback else None,
+            abort_event=abort_event,
+        )
+        cloud_failed = _is_cloud_execution_failure(result)
+        if cloud_failed:
+            _mark_cloud_runtime_failure(target_model, reason=_cloud_failure_reason(result))
+        else:
+            _mark_cloud_runtime_success(target_model)
+
+        if auto_requested and cloud_failed and emitted_cloud_chunks == 0 and not (abort_event and abort_event.is_set()):
+            has_visual_payload = bool(img_data or context_data.get("image_inputs") or has_perceived_image)
+            fallback_model = "gemma2:2b" if intent.get("complexity") == "direct" and not has_visual_payload else "gemma4:e2b"
+            logger.warning(f"[Smart Routing] Cloud route failed. Helper Auto is switching to {fallback_model}.")
+            if status_callback:
+                status_callback("Cloud route unavailable. Switching to the private local assistant...")
+            local_intent = {**intent, "is_local": True}
+            result = _execute_local(
+                local_intent,
+                context_data,
+                fallback_model,
+                sys_config,
+                history,
+                status_callback=status_callback,
+                chunk_callback=chunk_callback,
+                abort_event=abort_event,
+                allow_cloud_fallback=False,
+            )
+            target_model = fallback_model
     else:
         result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
 
@@ -2317,5 +2583,5 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         tool_result_bus.set_result(jid, hardened)
     return hardened
 
-def ask_the_helper(prompt: str, img_data: str = None, target_model: str = "gemma4:e2b", sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None, intent: dict = None):
+def ask_the_helper(prompt: str, img_data: str = None, target_model: str = AUTO_MODEL_ID, sys_config: dict = None, history: List[dict] = None, persona: bool = False, abort_event: Any = None, user_id: str = None, status_callback=None, chunk_callback=None, intent: dict = None):
     return run_helper_agent(prompt, img_data, target_model, sys_config, history, persona, abort_event, user_id, status_callback=status_callback, chunk_callback=chunk_callback, intent=intent)

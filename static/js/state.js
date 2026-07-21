@@ -25,7 +25,8 @@ class AppState {
         this.currentSearch = '';
         
         // --- UI State ---
-        this.selectedModel = 'gemma4:e2b';
+        this.selectedModel = 'helper-auto';
+        this.responseStyle = 'adaptive';
         this.tiltSettleTimer = null;
         
         // --- Bot Mascot ---
@@ -78,7 +79,7 @@ const state = new AppState();
 function loadEmailDraftRepairLayer() {
     if (document.querySelector('script[data-helper-extension="email-draft-repair"]')) return;
     const script = document.createElement('script');
-    script.src = '/static/js/email_draft_repair.js?v=1';
+    script.src = '/static/js/email_draft_repair.js?v=4';
     script.defer = true;
     script.dataset.helperExtension = 'email-draft-repair';
     document.body.appendChild(script);

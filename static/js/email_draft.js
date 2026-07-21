@@ -29,7 +29,7 @@
         if (document.querySelector('script[data-helper-extension="draft-context-prompt"]')) return;
         const script = document.createElement('script');
         script.type = 'module';
-        script.src = '/static/js/email_context_prompt.js?v=2';
+        script.src = '/static/js/email_context_prompt.js?v=4';
         script.dataset.helperExtension = 'draft-context-prompt';
         document.body.appendChild(script);
     }

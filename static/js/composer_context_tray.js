@@ -405,7 +405,12 @@
     }
 
     function markDraggable(root = document) {
-        root.querySelectorAll?.('.msg .txt, img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .email-draft-card').forEach(el => {
+        root.querySelectorAll?.('.msg .txt').forEach(el => {
+            const grabMode = Boolean(window.isGDown);
+            el.setAttribute('draggable', grabMode ? 'true' : 'false');
+            el.classList.toggle('composer-draggable-context', grabMode);
+        });
+        root.querySelectorAll?.('[data-context-drag-handle], img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .email-draft-card').forEach(el => {
             el.setAttribute('draggable', 'true');
             el.classList.add('composer-draggable-context');
         });
@@ -413,6 +418,12 @@
 
     function installDragSource() {
         document.addEventListener('dragstart', event => {
+            const textBubble = event.target?.closest?.('.msg .txt');
+            const explicitHandle = event.target?.closest?.('[data-context-drag-handle]');
+            if (textBubble && !explicitHandle && !window.isGDown) {
+                event.preventDefault();
+                return;
+            }
             const context = contextFromDragTarget(event.target);
             if (!context || !event.dataTransfer) return;
             event.stopImmediatePropagation();
@@ -551,6 +562,7 @@
         installDragSource();
         installDropTarget();
         installSourceObserver();
+        window.syncComposerDragSources = () => markDraggable(document);
         window.addComposerContext = addContext;
         window.clearComposerContextTray = clearContexts;
         window.renderComposerContextTray = scheduleRender;

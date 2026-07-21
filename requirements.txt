@@ -4,6 +4,8 @@ langchain-community
 crewai
 chromadb
 duckduckgo-search
+ddgs
+certifi
 pydantic>=2.0.0
 fastapi
 python-dotenv

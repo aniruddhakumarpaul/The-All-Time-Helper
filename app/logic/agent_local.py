@@ -11,6 +11,7 @@ from app.logic.email_draft_image_workflow import build_email_draft_body_update_p
 from app.logic.exceptions import AgentFastExit
 from app.logic.memory import admin_auth_context
 from app.logic.profile_links import resolve_public_profile_link_request
+from app.logic.response_policy import build_assistant_system_prompt
 
 
 @dataclass(frozen=True)
@@ -26,27 +27,45 @@ class LocalRuntime:
     ollama_url: str
 
 
-def _conversation_messages(context_data: dict, history: list) -> list[dict]:
+def _conversation_messages(context_data: dict, history: list, sys_config: dict | None = None) -> list[dict]:
     messages = [{
         "role": "system",
-        "content": (
-            "You are 'The All Time Helper', a high-capability AI assistant. You are technical, proactive, and elite. "
-            "Integrate supplied neural or visual context and maintain a sophisticated, helpful tone."
-        ),
+        "content": build_assistant_system_prompt(sys_config),
     }]
     if context_data.get("memory_block"):
         messages.append({"role": "system", "content": context_data["memory_block"]})
-    for message in (history or [])[-10:]:
-        role = "user" if str(message.get("role")).lower() in {"user", "u", "human"} else "assistant"
-        content = str(message.get("content", "")).strip()
+
+    history_items = list((history or [])[-10:])
+    current_prompt = str(context_data.get("request_prompt") or "").strip()
+    duplicate_index = None
+    if current_prompt:
+        for index in range(len(history_items) - 1, -1, -1):
+            item = history_items[index]
+            role = str(item.get("role") or item.get("r") or "").lower()
+            content = str(item.get("content") or item.get("c") or "").strip()
+            if role in {"user", "u", "human"} and content == current_prompt:
+                duplicate_index = index
+                break
+
+    for index, message in enumerate(history_items):
+        if index == duplicate_index:
+            continue
+        role = "user" if str(message.get("role") or message.get("r") or "").lower() in {"user", "u", "human"} else "assistant"
+        content = str(message.get("content") or message.get("c") or "").strip()
         if message.get("masked"):
             content = "[MASKED_SECRET]"
         elif len(content) > 3000:
             content = f"{content[:3000]}..."
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": context_data["final_prompt"]})
-    return messages
+        if content:
+            messages.append({"role": role, "content": content})
 
+    user_message = {"role": "user", "content": context_data["final_prompt"]}
+    image_inputs = context_data.get("image_inputs") or []
+    images = [item.get("base64") for item in image_inputs if item.get("base64")]
+    if images:
+        user_message["images"] = images
+    messages.append(user_message)
+    return messages
 
 def execute_local(
     intent,
@@ -59,6 +78,7 @@ def execute_local(
     status_callback=None,
     chunk_callback=None,
     abort_event=None,
+    allow_cloud_fallback=True,
 ):
     if status_callback:
         runtime.status_context.set(status_callback)
@@ -117,14 +137,14 @@ def execute_local(
                 agent=specialist,
             )
             try:
-                crew = Crew(agents=[specialist], tasks=[task], step_callback=runtime.step_callback)
+                crew = Crew(agents=[specialist], tasks=[task], step_callback=runtime.step_callback, tracing=False)
                 return runtime.extract_crew_result(crew)
             except AgentFastExit as exc:
                 return exc.result
 
         payload = {
             "model": target_model,
-            "messages": _conversation_messages(context_data, history),
+            "messages": _conversation_messages(context_data, history, sys_config),
             "stream": bool(chunk_callback),
         }
         if chunk_callback:
@@ -162,19 +182,25 @@ def execute_local(
         if abort_event and abort_event.is_set():
             return "Operation cancelled."
         error_message = str(exc)
-        runtime.logger.warning(f"Local Engine Timeout/Error ({error_message}). Attempting Cloud Fallback...")
         clean_error = error_message
         if "model requires more system memory" in error_message:
             match = re.search(r'"message":\s*"([^"]+)"', error_message) or re.search(r"'message':\s*'([^']+)'", error_message)
             if match:
                 clean_error = match.group(1)
+        if not allow_cloud_fallback:
+            runtime.logger.warning(f"Local Engine Timeout/Error ({clean_error}). Cloud retry disabled for this request.")
+            if status_callback:
+                status_callback("Local assistant could not complete the fallback request.")
+            return f"Local Engine Error: {clean_error}"
+
+        runtime.logger.warning(f"Local Engine Timeout/Error ({clean_error}). Attempting Cloud Fallback...")
         warning = (
             f"⚠️ **System Alert**: Local model `{target_model}` failed to load ({clean_error}). "
             "Falling back to Cloud engine...\n\n"
         )
         if chunk_callback:
             chunk_callback(warning)
-        fallback_model = "gemma4-cloud" if target_model == "gemma4:e2b" else "agentic-pro"
+        fallback_model = "agentic-pro"
         try:
             cloud_result = runtime.execute_cloud(
                 intent,

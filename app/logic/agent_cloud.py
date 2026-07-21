@@ -7,13 +7,14 @@ from typing import Any, Callable
 from crewai import Crew, Task
 
 from app.logic import tools
-from app.logic.agent_intent import specialist_for_prompt
+from app.logic.agent_intent import is_image_generation_request, specialist_for_prompt
 from app.logic.email_draft_image_workflow import (
     build_email_draft_body_update_payload_from_history,
     build_generated_image_email_draft_payload,
 )
 from app.logic.exceptions import AgentFastExit
 from app.logic.profile_links import resolve_public_profile_link_request
+from app.logic.response_policy import build_assistant_system_prompt
 
 
 @dataclass(frozen=True)
@@ -33,40 +34,51 @@ class CloudRuntime:
     logger: Any
 
 
-def _conversation_messages(context_data: dict, history: list) -> list[dict]:
-    system_prompt = (
-        "You are 'The All Time Helper', a high-capability AI assistant and professional software architect. "
-        "You are helpful, technical, and proactive. Integrate supplied context naturally. "
-        "Provide the best available answer. Maintain a premium, sophisticated tone."
-    )
+def _conversation_messages(context_data: dict, history: list, sys_config: dict | None = None) -> list[dict]:
+    system_prompt = build_assistant_system_prompt(sys_config)
     messages = [{"role": "system", "content": system_prompt}]
     if context_data.get("memory_block"):
         messages.append({"role": "system", "content": f"NEURAL MEMORY:\n{context_data['memory_block']}"})
-    for message in (history or [])[-30:]:
-        role = "user" if str(message.get("role")).lower() in {"user", "u", "human"} else "assistant"
-        content = str(message.get("content", "")).strip()
+
+    history_items = list((history or [])[-30:])
+    current_prompt = str(context_data.get("request_prompt") or "").strip()
+    duplicate_index = None
+    if current_prompt:
+        for index in range(len(history_items) - 1, -1, -1):
+            item = history_items[index]
+            role = str(item.get("role") or item.get("r") or "").lower()
+            content = str(item.get("content") or item.get("c") or "").strip()
+            if role in {"user", "u", "human"} and content == current_prompt:
+                duplicate_index = index
+                break
+
+    for index, message in enumerate(history_items):
+        if index == duplicate_index:
+            continue
+        role = "user" if str(message.get("role") or message.get("r") or "").lower() in {"user", "u", "human"} else "assistant"
+        content = str(message.get("content") or message.get("c") or "").strip()
         if message.get("masked"):
             content = "[MASKED_SECRET]"
         elif len(content) > 3000:
             content = f"{content[:3000]}..."
-        messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": context_data["final_prompt"]})
+        if content:
+            messages.append({"role": role, "content": content})
+
+    image_inputs = context_data.get("image_inputs") or []
+    if image_inputs:
+        content = [{"type": "text", "text": context_data["final_prompt"]}]
+        content.extend(
+            {"type": "image_url", "image_url": {"url": item["data_url"]}}
+            for item in image_inputs
+            if item.get("data_url")
+        )
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": context_data["final_prompt"]})
     return messages
 
-
 def _is_direct_image_generation(prompt: str) -> bool:
-    text = str(prompt or "").lower().strip()
-    if not text:
-        return False
-    if any(marker in text for marker in ("search image", "search photo", "find image", "find photo", "real picture", "real photo")):
-        return False
-    if any(term in text for term in ("draw", "paint", "sketch", "artwork", "painting", "drawing", "portrait", "wallpaper")):
-        return True
-    if re.search(r"\bcontent\s+will\s+be\s+an?\s+image\s+(of|about|depicting)?\b", text):
-        return True
-    if re.search(r"\bimage\s+of\s+", text) and any(term in text for term in ("aesthetic", "effect", "realistic", "cinematic", "style", "doll", "car", "scene")):
-        return True
-    return bool(re.search(r"\b(generate|create|make|render)\s+(?:[a-z0-9]+\s+){0,8}(image|picture|pic|photo|artwork|scene|illustration|apple|car|dog|cat|doll)\b", text))
+    return is_image_generation_request(prompt)
 
 
 def _image_description(prompt: str) -> str:
@@ -78,6 +90,35 @@ def _image_description(prompt: str) -> str:
     clean = re.sub(r"[?.!]+$", "", clean).strip()
     return clean or prompt or "a polished creative image"
 
+
+def _provider_error_category(exc: Exception) -> str:
+    text = str(exc or "").lower()
+    status_code = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    status_code = status_code or getattr(response, "status_code", None)
+    if status_code in {402, 429} or any(
+        marker in text for marker in ("rate limit", "too many requests", "more credits", "insufficient credits", "can only afford")
+    ):
+        return "rate_limited"
+    if status_code in {401, 403} or any(
+        marker in text for marker in ("authentication", "unauthorized", "invalid api key", "forbidden")
+    ):
+        return "authentication_failed"
+    if isinstance(exc, TimeoutError) or any(marker in text for marker in ("timed out", "timeout")):
+        return "timed_out"
+    if any(marker in text for marker in ("connection", "proxy", "dns", "name resolution", "network")):
+        return "network_unavailable"
+    return "provider_unavailable"
+
+
+def _provider_error_message(category: str) -> str:
+    return {
+        "authentication_failed": "Cloud credentials were rejected.",
+        "timed_out": "The cloud provider timed out.",
+        "network_unavailable": "The cloud provider could not be reached.",
+        "rate_limited": "The cloud provider is temporarily rate limited.",
+        "provider_unavailable": "The cloud provider is temporarily unavailable.",
+    }.get(category, "The cloud provider is temporarily unavailable.")
 
 def execute_cloud(
     intent,
@@ -123,7 +164,7 @@ def execute_cloud(
         if status_callback:
             status_callback("🎨 Generating creative visual...")
         description = _image_description(prompt_text)
-        runtime.logger.info(f"[Cloud Direct Tool] image_generate_tool: '{description}'")
+        runtime.logger.info("[Cloud Direct Tool] image_generate_tool (prompt_chars=%d)", len(description))
         try:
             result = tools.image_generate_tool.func(description=description)
             if chunk_callback:
@@ -131,12 +172,12 @@ def execute_cloud(
             return result
         except Exception as exc:
             runtime.logger.error(f"[Cloud Direct Tool] image_generate_tool failed: {exc}", exc_info=True)
-            return f"Error generating image: {exc}"
+            return "ERROR: Image generation is temporarily unavailable."
 
     try:
         target_key = runtime.get_api_key(target_model)
-    except ValueError as exc:
-        return f"Cloud Engine Error: {exc}"
+    except ValueError:
+        return "Cloud Engine Error: Cloud credentials are not configured."
     cloud_cfg = runtime.get_config(target_model)
     is_groq = cloud_cfg["provider"] == "groq"
     candidate_models = runtime.candidate_models(cloud_cfg)
@@ -172,14 +213,14 @@ def execute_cloud(
                     task = Task(description=f'Execute: "{context_data["final_prompt"]}"\n\n{grounding}', expected_output="The raw tool result or a direct response.", agent=specialist)
                     selected = [specialist]
                 try:
-                    crew = Crew(agents=selected, tasks=[task], step_callback=runtime.step_callback)
+                    crew = Crew(agents=selected, tasks=[task], step_callback=runtime.step_callback, tracing=False)
                     return runtime.extract_crew_result(crew)
                 except AgentFastExit as exc:
                     return exc.result
 
             import litellm
 
-            messages = _conversation_messages(context_data, history)
+            messages = _conversation_messages(context_data, history, sys_config)
             if chunk_callback:
                 response = litellm.completion(model=active_model, messages=messages, api_key=current_key, stream=True)
                 full_response = ""
@@ -192,6 +233,13 @@ def execute_cloud(
             response = litellm.completion(model=active_model, messages=messages, api_key=current_key)
             return response.choices[0].message.content
         except Exception as exc:
+            error_category = _provider_error_category(exc)
+            runtime.logger.warning(
+                "[Cloud] Model %s failed (category=%s, exception=%s)",
+                active_model,
+                error_category,
+                type(exc).__name__,
+            )
             retryable = runtime.is_rate_limit_error(exc)
             if abort_event and abort_event.is_set():
                 return "Operation cancelled."
@@ -207,4 +255,4 @@ def execute_cloud(
                     runtime.logger.warning(f"Cloud model {active_model} unavailable. Trying fallback {candidate_models[attempt + 1]}...")
                     continue
                 return runtime.rate_limit_message(target_model)
-            return f"Cloud Engine Error: {exc}"
+            return f"Cloud Engine Error: {_provider_error_message(error_category)}"

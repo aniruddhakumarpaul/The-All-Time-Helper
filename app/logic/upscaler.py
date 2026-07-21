@@ -27,7 +27,7 @@ class UpscaleManager:
         """Starts the asynchronous upscale task and returns a unique job_id."""
         job_id = str(uuid.uuid4())
         with registry_lock:
-            upscale_registry[job_id] = {"status": "pending", "url": source_url}
+            upscale_registry[job_id] = {"status": "pending", "url": None}
         
         # Start background thread
         thread = threading.Thread(target=UpscaleManager._upscale_worker, args=(source_url, job_id))
@@ -43,7 +43,8 @@ class UpscaleManager:
             with registry_lock:
                 upscale_registry[job_id]["status"] = "processing"
             
-            logger.info(f"[Upscaler] Starting job {job_id} for {source_url}")
+            source_host = httpx.URL(source_url).host or "unknown"
+            logger.info("[Upscaler] Starting job %s (source_host=%s)", job_id, source_host)
 
             # 1. Download source image (Pollinations.ai can take up to 60s to generate the image on-the-fly)
             with httpx.Client(timeout=120.0) as client:
@@ -86,7 +87,7 @@ class UpscaleManager:
             # ----------------------
 
         except Exception as e:
-            logger.error(f"[Upscaler] Job {job_id} FAILED: {str(e)}")
+            logger.error("[Upscaler] Job %s failed (%s)", job_id, type(e).__name__)
             with registry_lock:
                 upscale_registry[job_id]["status"] = "failed"
 

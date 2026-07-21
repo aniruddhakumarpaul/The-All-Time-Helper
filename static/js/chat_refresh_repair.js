@@ -170,7 +170,7 @@
             initWithState(window.__helperState);
             return;
         }
-        import('/static/js/state.js').then(module => initWithState(module.state)).catch(error => {
+        import('/static/js/state.js?v=210').then(module => initWithState(module.state)).catch(error => {
             console.warn('[ChatRefreshRepair] state module unavailable:', error);
         });
     }

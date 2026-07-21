@@ -6,6 +6,7 @@ import os
 import re
 import smtplib
 import time
+from functools import wraps
 from contextvars import ContextVar
 from urllib.parse import urlparse
 from email.mime.text import MIMEText
@@ -13,6 +14,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import requests
+import certifi
 from crewai.tools import tool
 from dotenv import load_dotenv
 from app.logic.memory import query_memory, log_insight, admin_auth_context
@@ -27,36 +29,170 @@ from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
 active_history_context: ContextVar[list] = ContextVar("active_history_context", default=[])
 
 
+def _trace_tool(tool_name: str):
+    """Emit low-cardinality tool latency/outcome telemetry without logging arguments."""
+    def decorate(function):
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            started = time.perf_counter()
+            outcome = "error"
+            try:
+                result = function(*args, **kwargs)
+                lowered = str(result or "").lower()
+                outcome = "degraded" if lowered.startswith("error") or "no reliable" in lowered else "success"
+                return result
+            except AgentFastExit as exc:
+                outcome = "rejected" if str(exc.result or "").startswith("ERROR:") else "success"
+                raise
+            finally:
+                logger.info(
+                    "[ToolTrace] tool=%s outcome=%s duration_ms=%d",
+                    tool_name,
+                    outcome,
+                    round((time.perf_counter() - started) * 1000),
+                )
+        return wrapped
+    return decorate
+
+def _ddgs_client():
+    """Build DDGS with a bundled CA file instead of the Windows user certificate store."""
+    from ddgs import DDGS
+
+    ca_file = certifi.where()
+    for env_name in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        os.environ.setdefault(env_name, ca_file)
+    return DDGS(timeout=12, verify=ca_file)
+
+
+def _ddgs_search(client, category: str, query: str, backends: tuple[str, ...], max_results: int) -> list[dict]:
+    """Try stable providers in order instead of DDGS random auto-selection."""
+    search = getattr(client, category)
+    for backend in backends:
+        try:
+            results = search(query, backend=backend, max_results=max_results)
+            if results:
+                return results
+        except Exception as exc:
+            logger.warning("[Search] DDGS %s backend %s unavailable: %s", category, backend, exc)
+    return []
+
+
+def _openrouter_grounded_search(query: str) -> str | None:
+    """Use OpenRouter's cited web-search server tool after anonymous providers fail."""
+    try:
+        from app.logic.agent_model_registry import (
+            FREE_AGENT_FALLBACKS,
+            FREE_AGENT_PRIMARY,
+            get_cloud_api_key,
+        )
+
+        api_key = get_cloud_api_key("agentic-pro")
+    except (ImportError, ValueError):
+        return None
+
+    endpoint = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:9000",
+        "X-OpenRouter-Title": "The All Time Helper",
+    }
+    prompt = (
+        "Search the web for the request below. Return a concise, factual answer and cite every "
+        "claim with source links.\n\nRequest: " + query
+    )
+
+    for configured_model in (FREE_AGENT_PRIMARY, *FREE_AGENT_FALLBACKS):
+        model = configured_model.removeprefix("openrouter/")
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [
+                {
+                    "type": "openrouter:web_search",
+                    "engine": "auto",
+                    "max_total_results": 3,
+                }
+            ],
+            "max_tokens": 700,
+            "temperature": 0.1,
+        }
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=45,
+                verify=certifi.where(),
+            )
+            data = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("[Search] OpenRouter grounded request failed for %s: %s", model, exc)
+            continue
+
+        if response.status_code != 200:
+            error = data.get("error") if isinstance(data, dict) else {}
+            message = error.get("message", "provider rejected request") if isinstance(error, dict) else "provider rejected request"
+            logger.warning(
+                "[Search] OpenRouter grounded model %s unavailable (status %s): %s",
+                model,
+                response.status_code,
+                str(message)[:160],
+            )
+            continue
+
+        choices = data.get("choices") if isinstance(data, dict) else None
+        message = ((choices or [{}])[0].get("message") or {})
+        content = str(message.get("content") or "").strip()
+        citations = []
+        seen_urls = set()
+        for annotation in message.get("annotations") or []:
+            if annotation.get("type") != "url_citation":
+                continue
+            citation = annotation.get("url_citation") or {}
+            url = str(citation.get("url") or "").strip()
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            title = str(citation.get("title") or parsed.netloc or "Source").strip()
+            citations.append((title, url))
+
+        if content and citations:
+            sources = "\n".join(f"- [{title}]({url})" for title, url in citations)
+            logger.info("DEBUG: [Search] OpenRouter grounded fallback returned %s citation(s)", len(citations))
+            return f"{content}\n\nSources:\n{sources}"
+
+        logger.warning("[Search] OpenRouter grounded model %s returned no verifiable citations", model)
+
+    return None
+
+
 @tool("web_search_text")
+@_trace_tool("web_search_text")
 def search_tool(query: str) -> str:
     """Useful for searching the web for text-based information, news, and technical questions."""
     try:
-        from ddgs import DDGS
-        import time as _time
-
         query = query.strip()
-        logger.info(f"DEBUG: [Search] Query (ddgs v9): {query}")
+        logger.info("DEBUG: [Search] Query accepted (chars=%d)", len(query))
 
         results = []
-        ddgs = DDGS()
+        ddgs = _ddgs_client()
 
         if any(kw in query.lower() for kw in ["recent", "news", "latest", "events", "politics"]):
-            try:
-                results.extend(ddgs.news(query, max_results=5))
-                logger.info(f"DEBUG: [Search] News returned {len(results)} results")
-            except Exception as ne:
-                logger.error(f"DEBUG: [Search] News failed: {ne}")
-                _time.sleep(1)
+            news_results = _ddgs_search(ddgs, "news", query, ("bing", "duckduckgo", "yahoo"), 5)
+            results.extend(news_results)
+            logger.info(f"DEBUG: [Search] News returned {len(news_results)} results")
 
         if len(results) < 3:
-            try:
-                web_results = ddgs.text(query, max_results=5)
-                results.extend(web_results)
-                logger.info(f"DEBUG: [Search] Web returned {len(web_results)} results")
-            except Exception as te:
-                logger.error(f"DEBUG: [Search] Web failed: {te}")
+            web_results = _ddgs_search(ddgs, "text", query, ("brave", "yahoo", "yandex", "bing"), 5)
+            results.extend(web_results)
+            logger.info(f"DEBUG: [Search] Web returned {len(web_results)} results")
 
         if not results:
+            grounded_result = _openrouter_grounded_search(query)
+            if grounded_result:
+                return grounded_result
             return "No reliable results found. The search engine may be temporarily unavailable."
 
         output = []
@@ -68,7 +204,7 @@ def search_tool(query: str) -> str:
         return "\n---\n".join(output)
     except Exception as e:
         logger.error(f"DEBUG: [Search] Global Failure: {str(e)}")
-        return f"Search Error: {str(e)}"
+        return "No reliable results found. The search engine may be temporarily unavailable."
 
 
 def _render_safe_markdown(text: str) -> str:
@@ -333,10 +469,11 @@ def send_or_simulate_email(
         return result
     except Exception as exc:
         logger.error(f"SMTP error: {exc}", exc_info=True)
-        return f"ERROR: Failed to send email. {exc}"
+        return "ERROR: Email delivery failed. Check the server logs and retry."
 
 
 @tool("send_email_tool")
+@_trace_tool("send_email_tool")
 def send_email_tool(
     recipient: str,
     subject: str,
@@ -414,6 +551,7 @@ def resolve_chat_image(reference: str, history: list | None = None):
 
 
 @tool("calculate_horoscope")
+@_trace_tool("calculate_horoscope")
 def calculate_horoscope(sign: str) -> str:
     """Provides a daily horoscope reading based on the user's zodiac sign."""
     readings = {
@@ -435,6 +573,7 @@ def calculate_horoscope(sign: str) -> str:
 
 
 @tool("analyze_palm_lines")
+@_trace_tool("analyze_palm_lines")
 def analyze_palm_lines(palm_description: str) -> str:
     """Analyzes a description of palm lines to provide an entertainment reading."""
     return f"Based on your palm: '{palm_description}', I see a path of great resilience and emotional depth. Your lines suggest a major turning point approaching that will lead to spiritual growth."
@@ -445,11 +584,13 @@ POLLINATIONS_IMAGE_HOST = "image.pollinations.ai"
 
 
 @tool("image_generate_tool")
+@_trace_tool("image_generate_tool")
 def image_generate_tool(description: str) -> str:
     """AI image generator for fictional, conceptual, fantasy, and creative requests."""
     import urllib.parse
 
-    clean_desc = description.strip().replace('\n', ' ')
+    clean_desc = re.sub(r"\s+", " ", str(description or "")).strip()
+    clean_desc = (clean_desc or "a polished creative image")[:800].rstrip()
     encoded = urllib.parse.quote(clean_desc)
     seed = (abs(hash(clean_desc)) + int(time.time())) % 1000000
 
@@ -457,7 +598,7 @@ def image_generate_tool(description: str) -> str:
         base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
         upscale_id = UpscaleManager.start_upscale(base_url)
         image_url_with_uid = f"{base_url}&uid={upscale_id}"
-        logger.info(f"[ART ENGINE] Generated HD URL with UID: {image_url_with_uid}")
+        logger.info("[ART ENGINE] Upscale job queued (model=%s, job_id=%s)", POLLINATIONS_IMAGE_MODEL, upscale_id)
         return f"![{clean_desc}]({image_url_with_uid})"
     except Exception as e:
         logger.error(f"[ART ENGINE] Failed to trigger upscale: {e}")
@@ -466,12 +607,12 @@ def image_generate_tool(description: str) -> str:
 
 
 @tool("image_search_tool")
+@_trace_tool("image_search_tool")
 def image_search_tool(query: str) -> str:
     """Search for a real-world image of a product, person, place, vehicle, or other real entity."""
     try:
-        from ddgs import DDGS
-        ddgs = DDGS()
-        results = ddgs.images(query, max_results=1)
+        ddgs = _ddgs_client()
+        results = _ddgs_search(ddgs, "images", query, ("bing", "duckduckgo"), 1)
 
         if not results:
             return "No reliable image results found."
@@ -480,10 +621,11 @@ def image_search_tool(query: str) -> str:
         return f"![{query}]({img_url})"
     except Exception as e:
         logger.error(f"Image Search Error: {str(e)}")
-        return f"Image Search Error: {str(e)}"
+        return "ERROR: Image search is temporarily unavailable."
 
 
 @tool("recall_memory")
+@_trace_tool("recall_memory")
 def recall_memory(query: str) -> str:
     """Semantically searches neural memory for code snippets, architectural decisions, and previous activity."""
     try:
@@ -498,14 +640,15 @@ def recall_memory(query: str) -> str:
         return "\n".join(output)
     except Exception as e:
         logger.error(f"Memory Retrieval Error: {str(e)}")
-        return f"Memory Retrieval Error: {str(e)}"
+        return "ERROR: Memory retrieval is temporarily unavailable."
 
 
 @tool("archive_insight")
+@_trace_tool("archive_insight")
 def archive_insight(title: str, body: str) -> str:
     """Permanently saves an architectural decision, user preference, or project milestone to neural memory."""
     try:
         log_insight(title, body)
         return f"Successfully archived insight: '{title}' to Neural Memory."
     except Exception as e:
-        return f"Memory Archive Error: {str(e)}"
+        return "ERROR: Memory archiving is temporarily unavailable."

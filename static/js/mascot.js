@@ -8,7 +8,7 @@
  * - Mascot drag-drop zone
  */
 
-import { state } from './state.js';
+import { state } from './state.js?v=210';
 
 const CONSTANTS = {
     MAX_ROTATION: 35,

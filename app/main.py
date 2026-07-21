@@ -56,14 +56,16 @@ def run_local_server() -> None:
         logger.info(f"[Main] Public Ngrok URL: {session.public_url}")
 
     logger.info(f"[Main] Binding to http://0.0.0.0:{port}")
+    reload_enabled = str(os.getenv("HELPER_RELOAD", "")).strip().lower() in {"1", "true", "yes", "on"}
+    run_options = {
+        "host": "0.0.0.0",
+        "port": port,
+        "reload": reload_enabled,
+    }
+    if reload_enabled:
+        run_options["reload_dirs"] = [str(BASE_DIR / path) for path in ("app", "static", "templates")]
     try:
-        uvicorn.run(
-            "app.main:app",
-            host="0.0.0.0",
-            port=port,
-            reload=True,
-            reload_dirs=[str(BASE_DIR / path) for path in ("app", "static", "templates")],
-        )
+        uvicorn.run("app.main:app", **run_options)
     finally:
         stop_ngrok(session)
 

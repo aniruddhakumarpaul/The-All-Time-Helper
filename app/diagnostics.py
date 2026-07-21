@@ -75,7 +75,7 @@ def run_startup_diagnostics():
 
     openrouter_name, openrouter_key = _first_real_env(OPENROUTER_KEY_ENVS)
     if openrouter_key:
-        print_status("Environment (OpenRouter)", "OK", f"{openrouter_name} loaded (...{openrouter_key[-4:] if len(openrouter_key)>4 else '***'})")
+        print_status("Environment (OpenRouter)", "OK", f"{openrouter_name} configured; runtime availability is checked per request.")
         print_status("Cloud Token Budget", "OK", f"max_tokens capped at {cloud_output_token_budget()} per OpenRouter request")
     else:
         print_status("Environment (OpenRouter)", "WARN", "Missing OpenRouter key. Cloud models will be unavailable.")
@@ -129,7 +129,7 @@ def run_startup_diagnostics():
         print_status("Ollama Connection", "WARN", "Cannot reach local Ollama daemon.")
 
     if openrouter_key:
-        print_status("Agentic Swarm (Cloud)", "OK", "OpenRouter infrastructure ready.")
+        print_status("Agentic Swarm (Cloud)", "OK", "OpenRouter route configured; provider availability is verified on use.")
     else:
         print_status("Agentic Swarm (Cloud)", "WARN", "OpenRouter key missing. Use local models until configured.")
 
@@ -141,7 +141,7 @@ def run_startup_diagnostics():
         print_status("Security (Admin Key)", "WARN", "Missing ADMIN_KEY. Email tool will be locked.")
 
     if sender_email and os.getenv("SENDER_PWD"):
-        print_status("Email (SMTP)", "OK", f"Sender configured ({sender_email}).")
+        print_status("Email (SMTP)", "OK", "SMTP sender credentials configured.")
     else:
         print_status("Email (SMTP)", "WARN", "SMTP credentials missing. Email tool will return errors.")
 

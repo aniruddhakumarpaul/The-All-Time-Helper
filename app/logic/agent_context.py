@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.logic.agent_intent import is_image_generation_request
+
 
 @dataclass(frozen=True)
 class ContextRuntime:
@@ -51,19 +53,7 @@ def resolve_recent_email(history: list) -> str | None:
 
 
 def _is_image_creation_prompt(prompt: str) -> bool:
-    text = str(prompt or "").lower()
-    if not text:
-        return False
-    if any(term in text for term in ("search image", "search photo", "find image", "find photo", "real image", "real photo")):
-        return False
-    return bool(
-        re.search(
-            r"\b(generate|create|make|draw|paint|sketch|render)\s+(?:[a-z0-9]+\s+){0,8}(image|picture|pic|photo|artwork|portrait|wallpaper|scene|illustration)\b",
-            text,
-        )
-        or re.search(r"\bcontent\s+will\s+be\s+an?\s+image\b", text)
-        or re.search(r"\bimage\s+of\b", text)
-    )
+    return is_image_generation_request(prompt)
 
 
 def _explicitly_references_existing_image(prompt: str) -> bool:
@@ -90,6 +80,36 @@ def _should_analyze_history_image(clean_prompt: str) -> bool:
     return _explicitly_references_existing_image(clean_prompt)
 
 
+def _native_image_input(item, runtime: ContextRuntime):
+    source = runtime.image_source(item)
+    prepare = getattr(runtime.vision_system, "prepare_image", None)
+    if source and callable(prepare):
+        prepared = prepare(source)
+        if prepared:
+            return {
+                "base64": prepared["base64"],
+                "data_url": prepared["data_url"],
+                "media_type": prepared["media_type"],
+                "sha256": prepared["sha256"],
+                "byte_size": prepared["byte_size"],
+            }
+        return None
+
+    encoded = runtime.image_base64(item)
+    if not encoded:
+        return None
+    encoded = str(encoded).strip()
+    media_type = "image/jpeg"
+    if encoded.lower().startswith("data:image/") and "," in encoded:
+        header, encoded = encoded.split(",", 1)
+        media_type = header[5:].split(";", 1)[0].lower()
+    elif isinstance(item, dict):
+        candidate = str(item.get("content_type") or item.get("type") or "").lower()
+        if candidate in {"image/png", "image/jpeg", "image/webp", "image/gif"}:
+            media_type = candidate
+    return {"base64": encoded, "data_url": f"data:{media_type};base64,{encoded}", "media_type": media_type}
+
+
 def assemble_context(
     user_prompt,
     img_data,
@@ -104,72 +124,107 @@ def assemble_context(
 
     def task_vision():
         prompt_lower = clean_prompt.lower()
-        direct_image_keywords = (
-            "this", "that", "image", "picture", "photo", "look", "see", "describe", "analyze", "what is",
-            "tell me about", "color", "colour", "who", "where", "context",
-        )
-        refers_to_current_upload = any(keyword in prompt_lower for keyword in direct_image_keywords)
-        refers_to_history_image = _should_analyze_history_image(clean_prompt)
         image_description = "No image context available."
-        prompt_with_image = user_prompt
 
         if img_data:
-            images = runtime.image_items(img_data)
-            local_urls = []
+            images = runtime.image_items(img_data)[:3]
+            native_inputs = []
+            if intent.get("native_vision") or intent.get("fast_local_vision"):
+                native_inputs = [value for value in (_native_image_input(item, runtime) for item in images) if value]
+            if intent.get("native_vision") and native_inputs:
+                return user_prompt, image_description, native_inputs
+
+            if status_callback:
+                status_callback("Analyzing visual context...")
+            descriptions = []
             for item in images:
                 image_base64 = runtime.image_base64(item)
-                local_url = runtime.save_image(image_base64) if image_base64 else None
-                if local_url:
-                    local_urls.append(local_url)
-            if local_urls:
-                markdown = "\n".join(f"![Uploaded Image]({url})" for url in local_urls)
-                prompt_with_image = f"{markdown}\n{user_prompt}"
-            if refers_to_current_upload:
-                if status_callback:
-                    status_callback("Analyzing Visual Context...")
-                descriptions = []
-                for item in images:
-                    image_base64 = runtime.image_base64(item)
-                    vision_source = runtime.image_source(item)
-                    if not intent["is_local"]:
-                        description = runtime.process_cloud(image_base64, runtime.next_groq_key()) if image_base64 else None
-                        description = description or (runtime.process_local(image_base64) if image_base64 else None)
+                vision_source = runtime.image_source(item)
+                if not intent["is_local"]:
+                    cloud_vision_key = runtime.next_groq_key()
+                    description = runtime.process_cloud(image_base64, cloud_vision_key) if image_base64 and cloud_vision_key else None
+                    description = description or (runtime.process_local(image_base64) if image_base64 else None)
+                else:
+                    if vision_source and intent.get("fast_local_vision"):
+                        result = runtime.vision_system.analyze_chat_images(
+                            [vision_source], clean_prompt, allow_fallback=False
+                        )
                     else:
                         result = runtime.vision_system.analyze_chat_images([vision_source], clean_prompt) if vision_source else None
-                        description = result["description"] if result else (runtime.process_local(image_base64) if image_base64 else None)
-                    if description:
-                        descriptions.append(description)
-                if descriptions:
-                    image_description = "\n".join(
-                        f"Image {index + 1}: {description}" for index, description in enumerate(descriptions)
-                    )
+                    description = result["description"] if result else None
+                if description:
+                    descriptions.append(str(description).strip())
+            if descriptions:
+                image_description = "\n".join(
+                    f"Image {index + 1}: {description}" for index, description in enumerate(descriptions)
+                )
                 return (
                     f"--- YOUR VISUAL PERCEPTION ---\n{image_description}\n--- END VISUAL PERCEPTION ---\n\n{user_prompt}",
                     image_description,
+                    [],
                 )
-        elif refers_to_history_image and history:
-            image_urls = []
+            if native_inputs:
+                return user_prompt, image_description, native_inputs
+            return user_prompt, image_description, []
+        if _should_analyze_history_image(clean_prompt) and history:
+            image_sources = []
             for message in reversed(history):
-                content = message.get("content", message.get("c", ""))
-                matches = re.findall(r"!\[.*?\]\((https?://.*?|/static/.*?|/api/image_proxy.*?)\)", content)
-                if matches:
-                    image_urls.extend(reversed(matches))
-                    if len(image_urls) >= 3:
+                if not isinstance(message, dict):
+                    continue
+                candidates = message.get("attachments") or message.get("img") or message.get("i") or []
+                if not isinstance(candidates, list):
+                    candidates = [candidates]
+                for item in candidates:
+                    source = runtime.image_source(item)
+                    if source and source not in image_sources:
+                        image_sources.append(source)
+                    if len(image_sources) >= 3:
                         break
-            if image_urls:
+                content = str(message.get("content", message.get("c", "")))
+                matches = re.findall(r"!\[.*?\]\((https?://.*?|/static/.*?|/api/image_proxy.*?)\)", content)
+                for match in reversed(matches):
+                    if match not in image_sources:
+                        image_sources.append(match)
+                    if len(image_sources) >= 3:
+                        break
+                if len(image_sources) >= 3:
+                    break
+
+            if image_sources:
+                native_inputs = []
+                if intent.get("native_vision") or intent.get("fast_local_vision"):
+                    native_inputs = [
+                        value for value in (_native_image_input(source, runtime) for source in image_sources) if value
+                    ]
+                    if intent.get("native_vision") and native_inputs:
+                        return user_prompt, image_description, native_inputs
                 if status_callback:
-                    status_callback("Analyzing Visual Context...")
+                    status_callback("Analyzing visual context...")
                 generic = ("how does the image look", "describe it", "what is this", "this", "in the picture")
-                targets = [image_urls[0]] if any(item in prompt_lower for item in generic) else image_urls
-                result = runtime.vision_system.analyze_chat_images(targets, clean_prompt)
+                targets = [image_sources[0]] if any(item in prompt_lower for item in generic) else image_sources
+                if intent.get("fast_local_vision"):
+                    result = runtime.vision_system.analyze_chat_images(
+                        targets, clean_prompt, allow_fallback=False
+                    )
+                else:
+                    result = runtime.vision_system.analyze_chat_images(targets, clean_prompt)
                 if result:
                     image_description = result["description"]
+                    raw_reference = str(result.get("url") or "")
+                    visible_reference = (
+                        raw_reference
+                        if raw_reference.startswith(("http://", "https://", "/static/")) and len(raw_reference) <= 200
+                        else "uploaded attachment"
+                    )
                     return (
-                        f"--- CURRENT VISUAL FOCUS ---\nImage: {result['url']}\nActual Content: {image_description}\n"
+                        f"--- CURRENT VISUAL FOCUS ---\nImage: {visible_reference}\nActual Content: {image_description}\n"
                         f"--- END VISUAL FOCUS ---\n\n{user_prompt}",
                         image_description,
+                        [],
                     )
-        return prompt_with_image, image_description
+                if native_inputs:
+                    return user_prompt, image_description, native_inputs
+        return user_prompt, image_description, []
 
     def task_memory():
         prompt_lower = clean_prompt.lower()
@@ -180,7 +235,7 @@ def assemble_context(
         if not intent.get("requires_tools") and not any(trigger in prompt_lower for trigger in triggers):
             return ""
         if status_callback:
-            status_callback("Accessing Neural Memory...")
+            status_callback("Accessing neural memory...")
         memory_filter = None
         if any(keyword in prompt_lower for keyword in ("decide", "decision", "architecture", "plan", "why did")):
             memory_filter = {"type": "insight"}
@@ -196,7 +251,7 @@ def assemble_context(
     with ThreadPoolExecutor(max_workers=2) as executor:
         vision_future = executor.submit(task_vision)
         memory_future = executor.submit(task_memory)
-        final_prompt, image_description = vision_future.result()
+        final_prompt, image_description, image_inputs = vision_future.result()
         try:
             memory_block = memory_future.result()
         except Exception as exc:
@@ -208,5 +263,7 @@ def assemble_context(
         "memory_block": memory_block,
         "history_context": build_history_context(history, user_prompt, intent.get("requires_tools", False)),
         "image_description": image_description,
+        "image_inputs": image_inputs,
+        "visual_input_present": bool(img_data or image_inputs or image_description != "No image context available."),
         "resolved_email": resolve_recent_email(history),
     }

@@ -6,7 +6,7 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=6", template)
+        self.assertIn("composer_context_tray.js?v=7", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 
@@ -15,10 +15,11 @@ class ComposerContextTrayTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("composer_context_tray.css?v=4", template)
 
-    def test_drag_sources_include_text_images_and_widgets(self):
+    def test_drag_sources_include_handles_images_and_widgets(self):
         root = Path(__file__).resolve().parents[2]
         script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
         self.assertIn(".msg .txt", script)
+        self.assertIn("[data-context-drag-handle]", script)
         self.assertIn("img.chat-rendered-img", script)
         self.assertIn("img.chat-img-preview", script)
         self.assertIn(".email-draft-card", script)

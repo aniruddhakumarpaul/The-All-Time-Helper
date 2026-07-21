@@ -144,6 +144,7 @@
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.textContent = '×';
+            remove.setAttribute('aria-label', 'Remove attached email draft context');
             remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
             remove.addEventListener('click', function () {
                 const pos = appState.attachedContexts.indexOf(ctx);
@@ -226,6 +227,9 @@
 
     function restoreVisibleChat() {
         if (!appState || !Array.isArray(appState.chats) || !appState.chats.length) return;
+        if (!document.body.classList.contains('has-active-chat')) return;
+        const welcome = document.getElementById('welcome');
+        if (welcome && window.getComputedStyle(welcome).display !== 'none') return;
         const chatArea = document.getElementById('chat-area');
         if (chatArea?.querySelector('.msg')) return;
         const savedId = localStorage.getItem('helper_active_chat_v2');
@@ -265,7 +269,7 @@
     }
 
     function init() {
-        import('/static/js/state.js').then(function (module) {
+        import('/static/js/state.js?v=210').then(function (module) {
             initWithState(module.state);
         }).catch(function (error) {
             console.warn('[EmailDraftRepair] state module failed:', error);

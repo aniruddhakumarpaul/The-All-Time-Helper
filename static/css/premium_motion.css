@@ -3,10 +3,60 @@
  * This file must stay CSS-only and must not alter core layout semantics.
  */
 :root {
+    --premium-motion-press: 65ms;
+    --premium-motion-release: 180ms;
     --premium-motion-fast: 140ms;
     --premium-motion-medium: 220ms;
     --premium-motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
     --premium-motion-spring: cubic-bezier(0.2, 0.85, 0.24, 1.08);
+}
+
+body.motion-ready [data-ui-feedback="true"] {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    transition: transform var(--premium-motion-fast) var(--premium-motion-ease),
+        filter 90ms ease,
+        background-color var(--premium-motion-fast) ease,
+        color 120ms ease,
+        border-color var(--premium-motion-fast) ease,
+        box-shadow var(--premium-motion-medium) ease,
+        opacity 120ms ease !important;
+}
+
+body.motion-ready [data-ui-feedback="true"].is-ui-pressing {
+    transform: translate3d(var(--ui-press-x, 0), var(--ui-press-y, 0), 0) scale(var(--ui-press-scale, 0.98)) !important;
+    filter: brightness(0.91) saturate(0.96);
+    transition: transform var(--premium-motion-press) cubic-bezier(0.2, 0.8, 0.2, 1),
+        filter var(--premium-motion-press) ease,
+        box-shadow 90ms ease !important;
+    will-change: transform;
+}
+
+body.motion-ready [data-ui-feedback="true"].is-ui-releasing {
+    transition: transform var(--premium-motion-release) var(--premium-motion-spring),
+        filter 130ms ease,
+        background-color var(--premium-motion-fast) ease,
+        color 120ms ease,
+        border-color var(--premium-motion-fast) ease,
+        box-shadow var(--premium-motion-medium) ease !important;
+}
+
+body.motion-ready [data-ui-feedback="true"].is-ui-pressing svg {
+    transform: scale(0.94);
+    transition: transform var(--premium-motion-press) ease !important;
+}
+
+body.motion-ready [data-ui-feedback="true"].is-ui-releasing svg {
+    transition: transform var(--premium-motion-release) var(--premium-motion-spring) !important;
+}
+
+body.motion-ready [data-ui-keyboard="custom"]:focus-visible {
+    outline: 2px solid rgba(125, 156, 255, 0.82);
+    outline-offset: 3px;
+}
+
+body.motion-ready #main-send-btn:hover {
+    transform: translateY(-1px) scale(1.04);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -17,6 +67,18 @@
         animation-iteration-count: 1 !important;
         scroll-behavior: auto !important;
         transition-duration: 0.01ms !important;
+    }
+
+    body.motion-ready [data-ui-feedback="true"],
+    body.motion-ready [data-ui-feedback="true"].is-ui-pressing,
+    body.motion-ready [data-ui-feedback="true"].is-ui-releasing {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+
+    body.motion-ready [data-ui-feedback="true"].is-ui-pressing {
+        filter: none;
+        transform: none !important;
     }
 }
 

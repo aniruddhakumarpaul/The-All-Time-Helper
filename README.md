@@ -47,7 +47,7 @@ pip install -r requirements.txt
 python -m app.main
 ```
 
-Set `ENABLE_NGROK=true` to start an Ngrok tunnel with this local launcher. The public URL is logged at startup. Direct `uvicorn app.main:app ...` startup intentionally does not create or mutate Ngrok tunnels.
+Set `ENABLE_NGROK=true` to start an Ngrok tunnel with this local launcher. The public URL is logged at startup. Direct `uvicorn app.main:app ...` startup intentionally does not create or mutate Ngrok tunnels. Set `HELPER_RELOAD=true` only when you explicitly want Uvicorn hot reload; the default direct launcher is stable without child reloader processes.
 
 Alternative:
 

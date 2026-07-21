@@ -5,12 +5,13 @@ import requests
 
 CODE_KEYWORDS = [
     "code", "bug", "logic", "python", "javascript", "html", "css", "develop", "compile", "debug", "git",
-    "refactor", "function", "class",
+    "refactor", "function", "class", "typescript", "react", "node", "sql", "bash", "powershell",
+    "java", "rust", "website", "web app", "api endpoint",
 ]
 VISUAL_KEYWORDS = [
     "draw", "paint", "sketch", "scetch", "generate", "create", "artwork", "photo of", "show me a picture of",
     "real picture of", "look like", "image", "shot", "wallpaper", "render", "pics", "pic", "capture",
-    "acrylic", "acrilic", "drawing", "drawin", "painting", "panting", "illustration", "portrait", "potrait",
+    "acrylic", "acrilic", "arcilic", "drawing", "drawin", "painting", "panting", "illustration", "portrait", "potrait",
     "canvas", "sketching",
 ]
 EMAIL_KEYWORDS = [
@@ -18,6 +19,67 @@ EMAIL_KEYWORDS = [
     "to them", "tell him", "tell her", "tell them", "message him", "message her",
 ]
 
+
+_IMAGE_OUTPUT_TERMS = (
+    "image", "picture", "pic", "photo", "artwork", "portrait", "wallpaper", "scene", "scenery",
+    "illustration", "painting", "drawing", "sketch", "canvas", "visual", "acrylic", "acrilic", "arcilic",
+    "watercolor", "watercolour", "digital art", "concept art", "3d art",
+)
+_IMAGE_SEARCH_MARKERS = (
+    "search image", "search photo", "find image", "find photo", "real image", "real photo",
+    "real picture", "look up image", "lookup image",
+)
+
+
+def is_tool_capability_discussion(prompt: str) -> bool:
+    """Return True for questions/debugging about tools rather than requests to run one."""
+    text = re.sub(r"\s+", " ", str(prompt or "").lower()).strip()
+    if not text or not any(term in text for term in ("tool", "tool calling", "feature", "pipeline", "capability")):
+        return False
+    if re.search(r"\b(?:by|and then)\s+(?:generate|create|draw|paint|render)\b", text):
+        return False
+    meta_terms = (
+        "why", "how does", "how do", "do we have", "do you have", "can it", "can you use",
+        "available", "enabled", "working", "work properly", "check", "debug", "inspect", "fix",
+        "approach it", "capability", "feature", "pipeline",
+    )
+    return any(term in text for term in meta_terms)
+
+
+def is_image_generation_request(prompt: str) -> bool:
+    """Detect an actionable creative-image request without firing on tool discussion."""
+    text = re.sub(r"\s+", " ", str(prompt or "").lower()).strip(" .?!")
+    text = re.sub(r"\b(?:genetrate|genrate|generete)\b", "generate", text)
+    if not text or any(marker in text for marker in _IMAGE_SEARCH_MARKERS):
+        return False
+    if is_tool_capability_discussion(text):
+        return False
+
+    has_visual_term = any(term in text for term in _IMAGE_OUTPUT_TERMS)
+    stripped = re.sub(
+        r"^(?:(?:ok(?:ay)?|please|now|hey|hello|hi|just)\s+)*(?:(?:can|could|would|will)\s+you\s+)?",
+        "",
+        text,
+    ).strip()
+
+    if re.match(r"^(?:draw|paint|sketch|illustrate)\b", stripped):
+        return True
+    if has_visual_term and re.match(r"^(?:generate|create|make|render|produce|design)\b", stripped):
+        return True
+    if has_visual_term and re.match(r"^use\s+(?:the\s+)?(?:image\s+)?(?:generation\s+)?tool\s+to\s+(?:generate|create|make|draw|paint|render)\b", stripped):
+        return True
+    if has_visual_term and re.search(
+        r"\b(?:i|we)\s+(?:want|need|would like|'d like)\s+(?:(?:you\s+)?to\s+(?:see|have|generate|create|make|draw|paint|sketch|render|produce)|(?:an?|the)\s+)",
+        text,
+    ):
+        return True
+    if has_visual_term and re.match(r"^(?:show|give)\s+me\s+", stripped) and any(
+        medium in text for medium in ("acrylic", "acrilic", "arcilic", "watercolor", "watercolour", "artwork", "illustration", "painting", "drawing", "sketch", "concept art")
+    ):
+        return True
+    if re.search(r"\bcontent\s+will\s+be\s+an?\s+(?:image|picture|artwork)\b", text):
+        return True
+    return False
 
 def specialist_for_prompt(prompt: str, *, swarm: bool = False) -> str:
     text = str(prompt or "").lower()
@@ -51,8 +113,12 @@ def analyze_prompt_via_llm(
     logger,
 ) -> dict | None:
     system_prompt = (
-        "Analyze the user prompt and return only JSON with keys requires_tools (boolean), "
-        "complexity (direct, single, or swarm), and category (email, visual, code, search, or casual)."
+        "Analyze the user prompt and return only JSON with keys requires_tools (boolean), complexity "
+        "(direct, single, or swarm), and category (email, visual, code, search, memory, or casual). "
+        "Available external actions are web search, real-image search, creative image generation, email drafting, "
+        "approved email delivery, and scoped memory recall/archive. Code writing, debugging, explanation, planning, "
+        "summarization, and ordinary conversation are direct and require no tool. Use single for one external action "
+        "and swarm only when two or more external actions must be coordinated."
     )
     messages = [
         {"role": "system", "content": system_prompt},

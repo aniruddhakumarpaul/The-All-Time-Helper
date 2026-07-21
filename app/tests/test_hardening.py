@@ -2,6 +2,8 @@ import asyncio
 import os
 import sqlite3
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import mock_open, patch
 
 
@@ -58,6 +60,49 @@ class HardeningTests(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_tool_lane_runs_while_inference_lane_is_busy(self):
+        from app.inference_queue import InferenceQueue
+        import threading
+
+        async def run_test():
+            work_queue = InferenceQueue(max_workers=1, fast_workers=1)
+            slow_started = threading.Event()
+            release_slow = threading.Event()
+
+            def slow_model():
+                slow_started.set()
+                release_slow.wait(timeout=3)
+                return "model complete"
+
+            slow_task = asyncio.create_task(
+                work_queue.submit(
+                    "slow-model",
+                    slow_model,
+                    threading.Event(),
+                    owner="owner@example.com",
+                )
+            )
+            try:
+                started = await asyncio.to_thread(slow_started.wait, 1)
+                self.assertTrue(started)
+                fast_result = await asyncio.wait_for(
+                    work_queue.submit(
+                        "fast-tool",
+                        lambda: "tool complete",
+                        threading.Event(),
+                        owner="owner@example.com",
+                        lane="tool",
+                    ),
+                    timeout=1,
+                )
+                self.assertEqual(fast_result, "tool complete")
+            finally:
+                release_slow.set()
+                self.assertEqual(await slow_task, "model complete")
+                await work_queue.shutdown()
+
+        asyncio.run(run_test())
+
     def test_chat_job_ids_are_uuid_values(self):
         import uuid
         from app.routes.chat import _new_job_id
@@ -77,25 +122,23 @@ class HardeningTests(unittest.TestCase):
 
     def test_gemma4_openrouter_is_additive_cloud_route(self):
         from app.logic.agents import CLOUD_MODEL_CONFIG, _detect_intent
+        from app.logic.agent_model_registry import FREE_AGENT_PRIMARY
 
         intent = _detect_intent("hello there", "gemma4-openrouter", history=[])
 
         self.assertEqual(CLOUD_MODEL_CONFIG["gemma4-openrouter"]["provider"], "openrouter")
-        self.assertEqual(
-            CLOUD_MODEL_CONFIG["gemma4-openrouter"]["model"],
-            "openrouter/google/gemma-4-26b-a4b-it:free",
-        )
+        self.assertEqual(CLOUD_MODEL_CONFIG["gemma4-openrouter"]["model"], FREE_AGENT_PRIMARY)
         self.assertEqual(intent["complexity"], "direct")
         self.assertFalse(intent["is_local"])
 
     def test_gemma4_openrouter_has_cloud_fallbacks(self):
         from app.logic.agents import CLOUD_MODEL_CONFIG, _cloud_candidate_models
+        from app.logic.agent_model_registry import FREE_AGENT_FALLBACKS, FREE_AGENT_PRIMARY
 
         models = _cloud_candidate_models(CLOUD_MODEL_CONFIG["gemma4-openrouter"])
 
-        self.assertEqual(models[0], "openrouter/google/gemma-4-26b-a4b-it:free")
-        self.assertIn("openrouter/google/gemma-4-31b-it:free", models)
-        self.assertIn("openrouter/google/gemma-3-27b-it", models)
+        self.assertEqual(models[0], FREE_AGENT_PRIMARY)
+        self.assertEqual(models[1:], list(FREE_AGENT_FALLBACKS))
         self.assertEqual(len(models), len(set(models)))
 
     def test_local_gemma4_route_is_unchanged(self):
@@ -802,12 +845,20 @@ class HardeningTests(unittest.TestCase):
         from app.services.ngrok import NgrokSession
 
         session = NgrokSession(public_url="https://example.ngrok-free.dev", started_tunnel=True)
-        with patch.dict(os.environ, {"PORT": "9123"}, clear=False):
-            with patch.object(main, "start_ngrok_if_enabled", return_value=session) as start:
-                with patch.object(main, "stop_ngrok") as stop:
-                    with patch.object(main, "append_cors_origin") as append_origin:
-                        with patch("uvicorn.run") as run:
-                            main.run_local_server()
+        with TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir)
+            with patch.object(main, "BASE_DIR", base_dir):
+                with patch.dict(os.environ, {"PORT": "9123", "HELPER_RELOAD": "true"}, clear=False):
+                    with patch.object(main, "start_ngrok_if_enabled", return_value=session) as start:
+                        with patch.object(main, "stop_ngrok") as stop:
+                            with patch.object(main, "append_cors_origin") as append_origin:
+                                with patch("uvicorn.run") as run:
+                                    main.run_local_server()
+
+            self.assertEqual(
+                (base_dir / ".runtime" / "ngrok_url.txt").read_text(encoding="utf-8"),
+                session.public_url,
+            )
 
         start.assert_called_once_with(9123)
         append_origin.assert_called_once_with(main.app, session.public_url)
@@ -816,7 +867,7 @@ class HardeningTests(unittest.TestCase):
             host="0.0.0.0",
             port=9123,
             reload=True,
-            reload_dirs=[str(main.BASE_DIR / path) for path in ("app", "static", "templates")],
+            reload_dirs=[str(base_dir / path) for path in ("app", "static", "templates")],
         )
         stop.assert_called_once_with(session)
 
@@ -837,6 +888,10 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("document.documentElement.setAttribute('data-theme', theme)", ui_js)
         self.assertIn("document.body.setAttribute('data-theme', theme)", ui_js)
+        self.assertIn('const LOGO_DARK_DATA = "/static/img/logo.png";', ui_js)
+        self.assertIn('const LOGO_LIGHT_DATA = "/static/img/logo(2).jpg";', ui_js)
+        self.assertIn("logo.src = isDark ? LOGO_DARK_DATA : LOGO_LIGHT_DATA", ui_js)
+        self.assertIn('id="app-favicon"', template)
         self.assertIn('/static/js/bootstrap.js', template)
         self.assertNotRegex(template, r"\son[a-z]+=")
 
@@ -1512,6 +1567,9 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("PERMANENT_IMAGE_ERROR_STATUSES.has(Number(status))", utils_js)
         self.assertIn("Pollinations rejected this model or account/budget.", utils_js)
         self.assertIn("img.dataset.loaded = 'true';", utils_js)
+        self.assertIn("img.dataset.originalFallbackAttempted", utils_js)
+        self.assertIn("Loading original image...", utils_js)
+        self.assertIn("img.removeAttribute('crossorigin');", utils_js)
 
     def test_image_generate_tool_uses_flux_model_only(self):
         from app.logic import tools
@@ -1524,6 +1582,22 @@ class HardeningTests(unittest.TestCase):
         self.assertIn("model=flux", result)
         self.assertNotIn("model=turbo", result)
 
+    def test_upscaler_does_not_publish_or_log_source_prompt_urls(self):
+        from app.logic.upscaler import UpscaleManager
+
+        with patch("app.logic.upscaler.threading.Thread") as thread:
+            job_id = UpscaleManager.start_upscale(
+                "https://image.pollinations.ai/prompt/private-user-description?seed=1"
+            )
+
+        status = UpscaleManager.get_status(job_id)
+        self.assertEqual(status, {"status": "pending", "url": None})
+        thread.return_value.start.assert_called_once()
+
+        source = Path("app/logic/upscaler.py").read_text(encoding="utf-8")
+        self.assertNotIn("for {source_url}", source)
+        self.assertNotIn("FAILED: {str(e)}", source)
+        self.assertIn("source_host=%s", source)
     def test_visual_typo_intent_detection(self):
         from app.logic.agents import _detect_intent
         

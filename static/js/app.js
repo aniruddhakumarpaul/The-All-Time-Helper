@@ -1,7 +1,7 @@
-import { state } from './state.js';
-import { api } from './api.js';
-import { ui } from './ui.js?v=203';
-import { mascot } from './mascot.js';
+import { state } from './state.js?v=210';
+import { api } from './api.js?v=212';
+import { ui } from './ui.js?v=219';
+import { mascot } from './mascot.js?v=210';
 import { mergeChatsByRecency } from './chat_sync.js?v=203';
 
 const MAX_ATTACHED_CONTEXTS = 6;
@@ -9,6 +9,16 @@ const MAX_CONTEXT_CHARS = 6000;
 const MAX_TOTAL_CONTEXT_CHARS = 18000;
 const CHAT_SYNC_DEBOUNCE_MS = 600;
 let syncTimer = null;
+let navigationRevision = 0;
+
+function escapeHTML(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 function ensureDeletedChatIds() {
     if (!Array.isArray(state.deletedChatIds)) state.deletedChatIds = [];
@@ -34,12 +44,13 @@ function showWelcomeState() {
         chatArea.style.display = 'none';
     }
     if (welcome) welcome.style.display = 'flex';
+    document.body.classList.remove('has-active-chat');
     ui.clearImgPreview();
     const prompt = document.getElementById('prompt');
     if (prompt) {
         prompt.value = '';
         prompt.style.height = 'auto';
-        prompt.placeholder = 'Message The All Time Helper...';
+        prompt.placeholder = 'Ask me anything...';
         prompt.classList.remove('auth-waiting');
     }
 }
@@ -147,17 +158,17 @@ function handleChatKey(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         send();
-    } else if (event.key === 'Escape') {
-        startNewChat();
     }
 }
 
 function startNewChat() {
+    navigationRevision += 1;
     state.set('activeId', Date.now().toString());
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
     if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'none'; }
     if (welcome) welcome.style.display = 'flex';
+    document.body.classList.remove('has-active-chat');
     ui.clearImgPreview();
     const prompt = document.getElementById('prompt');
     if (prompt) { prompt.value = ''; prompt.style.height = 'auto'; }
@@ -174,15 +185,18 @@ function loadChat(id, options = {}) {
         persistActiveId = true,
         renderHistory = true,
         focusPrompt = true,
+        trackNavigation = true,
     } = options;
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
+    if (trackNavigation) navigationRevision += 1;
     if (setActiveId) state.set('activeId', id);
     if (persistActiveId) localStorage.setItem('helper_active_chat_v2', id);
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
     if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'block'; }
     if (welcome) welcome.style.display = 'none';
+    document.body.classList.add('has-active-chat');
     ui.clearImgPreview();
     chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked));
     window.initUpscaleImagePolling?.(chatArea);
@@ -197,6 +211,8 @@ function loadChat(id, options = {}) {
 
 async function loadUserChats() {
     if (!state.user?.email) return;
+    const restoreRevision = navigationRevision;
+    const restoreAllowed = restoreRevision === 0;
     const key = 'helper_chats_v2_' + state.user.email;
     let localChats = [];
     let localStr = localStorage.getItem(key);
@@ -225,6 +241,10 @@ async function loadUserChats() {
     const mergedChats = mergeChatsByRecency(localChats, remoteChats);
     state.chats = mergedChats;
     syncWindowState();
+    if (!restoreAllowed || navigationRevision !== restoreRevision) {
+        ui.renderHist();
+        return;
+    }
 
     const savedActiveChatId = localStorage.getItem('helper_active_chat_v2');
     const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);
@@ -246,6 +266,7 @@ async function loadUserChats() {
         persistActiveId: false,
         renderHistory: false,
         focusPrompt: false,
+        trackNavigation: false,
     });
     syncWindowState();
 }
@@ -269,34 +290,90 @@ function requestChatPersist({ immediate = false } = {}) {
     return Promise.resolve();
 }
 
+function validateAuthInput(type) {
+    const fields = {
+        login: [
+            ['l-email', 'Enter your email address.'],
+            ['l-pwd', 'Enter your password.']
+        ],
+        signup: [
+            ['s-name', 'Enter your name.'],
+            ['s-email', 'Enter your email address.'],
+            ['s-pwd', 'Create a password.']
+        ],
+        verify: [
+            ['v-otp', 'Enter the six digit verification code.']
+        ]
+    };
+    for (const [id, message] of fields[type] || []) {
+        const input = document.getElementById(id);
+        if (!input?.value.trim()) {
+            input?.focus();
+            ui.notify(message, 'error');
+            return false;
+        }
+        if (input.type === 'email' && !input.checkValidity()) {
+            input.focus();
+            ui.notify('Enter a valid email address.', 'error');
+            return false;
+        }
+    }
+    const password = document.getElementById('s-pwd');
+    if (type === 'signup' && password.value.length < 8) {
+        password.focus();
+        ui.notify('Password must be at least 8 characters.', 'error');
+        return false;
+    }
+    const otp = document.getElementById('v-otp');
+    if (type === 'verify' && !/^[0-9]{6}$/.test(otp.value)) {
+        otp.focus();
+        ui.notify('Enter the complete six digit verification code.', 'error');
+        return false;
+    }
+    return true;
+}
+
 async function handleAuth(type) {
+    if (!validateAuthInput(type)) return;
     const btn = document.getElementById(type + '-btn');
     const original = btn?.innerHTML;
-    if (btn) { btn.disabled = true; btn.innerHTML = '<div class="spinner"></div>'; }
+    if (btn) {
+        btn.disabled = true;
+        btn.setAttribute('aria-busy', 'true');
+        btn.innerHTML = '<div class="spinner" aria-hidden="true"></div><span class="sr-only">Working</span>';
+    }
     try {
         const data = await api.handleAuth(type);
         if (data.success) {
             if (type === 'signup' || (type === 'login' && data.unverified)) {
                 ui.switchAuth('otp');
+                ui.notify('Verification code sent. Check your inbox.', 'success');
             } else {
                 state.set('user', data.user);
                 localStorage.setItem('helper_user_v2', JSON.stringify(data.user));
                 if (data.token) localStorage.setItem('helper_token_v2', data.token);
+                document.documentElement.classList.add('is-authenticated');
                 const auth = document.getElementById('auth-overlay');
                 if (auth) auth.style.display = 'none';
+                window.HelperDialogs?.sync();
                 await loadUserChats();
                 ui.updUI();
                 const themeModal = document.getElementById('theme-modal');
                 if (!localStorage.getItem('helper_theme_pref') && themeModal) themeModal.style.display = 'flex';
+                window.HelperDialogs?.sync();
                 ui.smartFocus('prompt');
             }
         } else {
-            alert(data.error || 'Check credentials');
+            ui.notify(data.error || 'Check your credentials and try again.', 'error');
         }
     } catch (error) {
-        alert('Connection Error: ' + error.message);
+        ui.notify(error.message || 'The helper service is unreachable. Try again.', 'error');
     } finally {
-        if (btn) { btn.disabled = false; btn.innerHTML = original; }
+        if (btn) {
+            btn.disabled = false;
+            btn.removeAttribute('aria-busy');
+            btn.innerHTML = original;
+        }
     }
 }
 
@@ -325,6 +402,7 @@ async function send() {
         .map((text, index) => `[Attached Context ${index + 1}]\n"""\n${text}\n"""`).join('\n\n');
     const apiPrompt = [contextText, userText].filter(Boolean).join('\n\n');
     if (!apiPrompt && !currentAttachments.length) return;
+    navigationRevision += 1;
     if (!state.activeId) state.set('activeId', Date.now().toString());
 
     let chat = state.chats.find(c => c.id === state.activeId);
@@ -338,6 +416,7 @@ async function send() {
     const chatArea = document.getElementById('chat-area');
     if (welcome) welcome.style.display = 'none';
     if (chatArea) chatArea.style.display = 'block';
+    document.body.classList.add('has-active-chat');
 
     let isMasked = false;
     if (promptEl.classList.contains('auth-waiting')) isMasked = true;
@@ -355,26 +434,33 @@ async function send() {
     ui.clearImgPreview();
     promptEl.value = '';
     promptEl.style.height = 'auto';
-    promptEl.placeholder = 'Message The All Time Helper...';
+    promptEl.placeholder = 'Ask me anything...';
     promptEl.classList.remove('auth-waiting');
-    document.getElementById('stop-btn').style.display = 'flex';
-    document.getElementById('main-send-btn').style.display = 'none';
+    const stopButton = document.getElementById('stop-btn');
+    const sendButton = document.getElementById('main-send-btn');
+    if (stopButton) {
+        stopButton.style.display = 'flex';
+        stopButton.setAttribute('aria-hidden', 'false');
+    }
+    if (sendButton) {
+        sendButton.style.display = 'none';
+        sendButton.setAttribute('aria-hidden', 'true');
+    }
+    chatArea?.setAttribute('aria-busy', 'true');
 
-    let initContent = '...';
-    const isLocal = state.selectedModel !== 'agentic-pro' && !state.selectedModel.includes('gemini');
-    if (isLocal) initContent = 'Thinking... (Local Agent initializing tools, may take 10-20s)';
+    const initContent = 'Planning the best route...';
     const modelName = document.getElementById('active-model-name')?.innerText || 'AI Assistant';
     const botText = ui.addMsg('b', initContent, null, chat.ms.length, modelName);
     const botMsg = botText.closest('.msg');
     if (botMsg) botMsg.classList.add('thinking-state');
-    botText.innerHTML = `<div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${initContent}</span></div><div class="typing-indicator"><span></span><span></span><span></span></div>`;
+    botText.innerHTML = `<div class="status-msg"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg> <span id="status-text">${escapeHTML(initContent)}</span></div><div class="typing-indicator"><span></span><span></span><span></span></div>`;
     mascot.updateBotVisuals();
     const mascotEl = document.getElementById('mascot-container');
     if (mascotEl) mascotEl.classList.add('thinking');
     state.set('abortController', new AbortController());
 
     try {
-        const historyForApi = chat.ms.map(message => ({
+        const historyForApi = chat.ms.slice(0, -1).map(message => ({
             role: message.r === 'u' ? 'user' : 'assistant',
             content: message.apiPrompt || message.c,
             attachments: message.attachments || []
@@ -391,13 +477,14 @@ async function send() {
             sys: {
                 english: Boolean(document.getElementById('t-eng')?.classList.contains('on')),
                 oneword: Boolean(document.getElementById('t-word')?.classList.contains('on')),
-                pers: Boolean(document.getElementById('t-pers')?.classList.contains('on'))
+                pers: Boolean(document.getElementById('t-pers')?.classList.contains('on')),
+                response_style: state.responseStyle || 'adaptive'
             }
         }, state.abortController.signal);
 
-        if (response.status === 401) { ui.signOut(); return; }
+        if (response.status === 401) { if (!window.handleHelperUnauthorized?.(response)) ui.signOut(); return; }
         if (!response.ok) {
-            const errorText = `System Error ${response.status}: Backend overloaded. Try again.`;
+            const errorText = `I could not reach the selected helper route (status ${response.status}). Please retry or choose another route.`;
             botText.innerText = errorText;
             chat.ms.push({ r: 'b', c: errorText, m: modelName });
             chat.updated_at = Date.now();
@@ -454,6 +541,9 @@ async function send() {
                 if (item.message?.content) fullText += item.message.content;
             } catch (_) {}
         }
+        if (!fullText.trim()) {
+            fullText = 'I could not complete that response. Please retry, or switch the route from the composer.';
+        }
         if (chat.title && chat.title.trim().length <= 5 && fullText.trim().length > 10) {
             const firstLine = fullText.split('\n')[0];
             chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
@@ -471,13 +561,27 @@ async function send() {
         botText.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
         await requestChatPersist({ immediate: true });
     } catch (error) {
-        if (error.name === 'AbortError') botText.innerText += ' [Stopped]';
-        else botText.innerText += ` [Error: ${error.message}]`;
+        const stopped = error.name === 'AbortError';
+        const failureMessage = stopped
+            ? 'Generation stopped.'
+            : 'I could not complete that response. Please retry or choose another route.';
+        botText.textContent = failureMessage;
+        chat.ms.push({ r: 'b', c: failureMessage, m: modelName });
+        chat.updated_at = Date.now();
+        await requestChatPersist({ immediate: true });
+        ui.notify(failureMessage, stopped ? 'info' : 'error');
     } finally {
         const stopBtn = document.getElementById('stop-btn');
         const sendBtn = document.getElementById('main-send-btn');
-        if (stopBtn) stopBtn.style.display = 'none';
-        if (sendBtn) sendBtn.style.display = 'flex';
+        if (stopBtn) {
+            stopBtn.style.display = 'none';
+            stopBtn.setAttribute('aria-hidden', 'true');
+        }
+        if (sendBtn) {
+            sendBtn.style.display = 'flex';
+            sendBtn.setAttribute('aria-hidden', 'false');
+        }
+        chatArea?.setAttribute('aria-busy', 'false');
         ui.checkAuthMode();
         if (mascotEl) mascotEl.classList.remove('thinking');
         document.querySelectorAll('.thinking-state').forEach(el => el.classList.remove('thinking-state'));
@@ -522,7 +626,7 @@ function togglePin(id) {
 
 function exportChat() {
     const chat = state.chats.find(c => c.id === state.activeId);
-    if (!chat || !chat.ms.length) return;
+    if (!chat || !chat.ms.length) { ui.notify('Start a conversation before exporting.', 'error'); return; }
     let md = `# ${chat.title || 'Conversation'}\n\n`;
     chat.ms.forEach(message => { md += `### ${message.r === 'u' ? 'User' : 'Assistant'}\n${message.c}\n\n---\n\n`; });
     const blob = new Blob([md], { type: 'text/markdown' });
@@ -539,7 +643,10 @@ async function retrieveContext(text) {
     if (mascotEl) mascotEl.classList.add('thinking');
     try {
         const data = await api.retrieveContext(text);
-        if (data.success) ui.showNeuralContext(data.results, data.explanation);
+        if (!data.success) throw new Error(data.error || 'Related context could not be retrieved.');
+        ui.showNeuralContext(data.results, data.explanation);
+    } catch (error) {
+        ui.notify(error.message || 'Related context could not be retrieved.', 'error');
     } finally {
         if (mascotEl) mascotEl.classList.remove('thinking');
     }
@@ -547,37 +654,51 @@ async function retrieveContext(text) {
 
 window.applyThemeChoice = function applyThemeChoice(choice) {
     localStorage.setItem('helper_theme_pref', choice);
-    const iconMap = { light: '☀️', dark: '🌙', system: '🌓' };
     const labels = { light: 'Light', dark: 'Dark', system: 'System' };
     const headerIcon = document.getElementById('current-theme-icon');
     const settingsIcon = document.getElementById('current-theme-icon-settings');
-    if (headerIcon) headerIcon.innerText = iconMap[choice] || '🌓';
-    if (settingsIcon) settingsIcon.innerText = (iconMap[choice] || '🌓') + ' ' + (labels[choice] || 'System');
-    document.querySelectorAll('.theme-opt, .menu-item').forEach(option => {
-        option.classList.remove('active');
-        if (option.innerText.toLowerCase().includes(choice)) option.classList.add('active');
+    if (headerIcon) headerIcon.innerText = labels[choice] || 'System';
+    if (settingsIcon) settingsIcon.innerText = labels[choice] || 'System';
+    const themeMenu = document.getElementById('theme-menu-settings');
+    const restoreThemeControl = themeMenu?.contains(document.activeElement);
+    document.querySelectorAll('[data-theme-choice]').forEach(option => {
+        const selected = option.dataset.themeChoice === choice;
+        option.classList.toggle('active', selected);
+        if (option.getAttribute('role') === 'menuitemradio') option.setAttribute('aria-checked', String(selected));
+        if (option.classList.contains('theme-opt')) option.setAttribute('aria-pressed', String(selected));
     });
     const resolvedTheme = choice === 'system'
         ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
         : choice;
     ui.setThemeUI(resolvedTheme);
     document.querySelectorAll('.dropdown-menu').forEach(menu => { menu.style.display = 'none'; });
+    document.getElementById('theme-btn-settings')?.setAttribute('aria-expanded', 'false');
+    if (restoreThemeControl) document.getElementById('theme-btn-settings')?.focus();
     document.querySelectorAll('.set-row').forEach(row => row.classList.remove('row-elevated'));
     const themeModal = document.getElementById('theme-modal');
-    if (themeModal?.style.display === 'flex') setTimeout(() => { themeModal.style.display = 'none'; }, 400);
+    if (themeModal?.style.display === 'flex') {
+        setTimeout(() => {
+            themeModal.style.display = 'none';
+            window.HelperDialogs?.sync();
+        }, 400);
+    }
 };
 
 window.toggleThemeMenu = function toggleThemeMenu(event, menuId) {
-    if (event) event.stopPropagation();
+    event?.stopPropagation();
     const target = menuId || 'theme-menu';
     const menu = document.getElementById(target);
     if (!menu) return;
+    const control = event?.currentTarget || document.getElementById('theme-btn-settings');
     const visible = menu.style.display === 'flex';
     document.querySelectorAll('.dropdown-menu').forEach(item => { item.style.display = 'none'; });
+    document.getElementById('theme-btn-settings')?.setAttribute('aria-expanded', 'false');
     document.querySelectorAll('.set-row').forEach(row => row.classList.remove('row-elevated'));
     if (!visible) {
         menu.style.display = 'flex';
+        control?.setAttribute('aria-expanded', 'true');
         menu.closest('.set-row')?.classList.add('row-elevated');
+        requestAnimationFrame(() => menu.querySelector('[aria-checked="true"], [data-theme-choice]')?.focus());
     }
 };
 
@@ -657,9 +778,11 @@ function initNeuralGrab() {
             message.classList.toggle('grab-mode', on);
         });
         document.body.classList.toggle('neural-grab-active', on);
+        window.syncComposerDragSources?.();
     }
     document.addEventListener('keydown', event => {
-        if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;
+        if (event.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+        if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
         if (event.key.toLowerCase() === 'g' && !window.isGDown) update(true);
     });
     document.addEventListener('keyup', event => { if (event.key.toLowerCase() === 'g') update(false); });
@@ -714,15 +837,45 @@ function bindStaticEvents() {
     on('sidebar-scrim', 'click', ui.toggleSidebar);
     on('main-logo-img', 'click', mascot.jiggleLogo);
     on('hist-search', 'input', event => ui.filterHist(event.currentTarget.value));
-    document.querySelectorAll('#open-settings-btn, .set-btn').forEach(el => el.addEventListener('click', ui.openSettings));
+    on('open-settings-btn', 'click', ui.openSettings);
     on('model-toggle', 'click', ui.toggleDropdown);
+    on('model-toggle', 'keydown', event => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        event.preventDefault();
+        const menu = document.getElementById('model-menu');
+        const options = Array.from(menu?.querySelectorAll('[data-model-id]') || []);
+        if (!menu || options.length === 0) return;
+        menu.classList.add('active');
+        event.currentTarget.setAttribute('aria-expanded', 'true');
+        const selected = menu.querySelector('[aria-selected="true"]');
+        requestAnimationFrame(() => (event.key === 'ArrowUp' ? options.at(-1) : selected || options[0])?.focus());
+    });
+    on('model-menu', 'keydown', event => {
+        const options = Array.from(event.currentTarget.querySelectorAll('[data-model-id]'));
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.currentTarget.classList.remove('active');
+            document.getElementById('model-toggle')?.setAttribute('aria-expanded', 'false');
+            document.getElementById('model-toggle')?.focus();
+            return;
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || options.length === 0) return;
+        event.preventDefault();
+        const current = Math.max(0, options.indexOf(document.activeElement));
+        const next = event.key === 'Home' ? 0
+            : event.key === 'End' ? options.length - 1
+                : event.key === 'ArrowDown' ? (current + 1) % options.length
+                    : (current - 1 + options.length) % options.length;
+        options[next].focus();
+    });
     document.querySelectorAll('[data-model-id]').forEach(el => el.addEventListener('click', () => ui.selModel(el.dataset.modelId, el.dataset.modelName)));
+    on('attach-files-btn', 'click', () => document.getElementById('img-in')?.click());
     on('img-in', 'change', event => {
         const input = event.currentTarget;
         ui.previewImg(input);
         state.pendingImageUploads = api.uploadAttachments(input.files)
             .then(items => { state.currentImages = items; })
-            .catch(error => { state.currentImages = []; alert(error.message); })
+            .catch(error => { state.currentImages = []; ui.notify(error.message || 'Attachment upload failed.', 'error'); })
             .finally(() => { state.pendingImageUploads = null; });
     });
     on('stop-btn', 'click', stopAI);
@@ -731,25 +884,46 @@ function bindStaticEvents() {
     on('neural-scrim', 'click', ui.closeNeuralContext);
     on('close-neural-btn', 'click', ui.closeNeuralContext);
     on('theme-btn-settings', 'click', event => window.toggleThemeMenu(event, 'theme-menu-settings'));
+    on('theme-menu-settings', 'keydown', event => {
+        const options = Array.from(event.currentTarget.querySelectorAll('[data-theme-choice]'));
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+            event.currentTarget.style.display = 'none';
+            event.currentTarget.closest('.set-row')?.classList.remove('row-elevated');
+            const trigger = document.getElementById('theme-btn-settings');
+            trigger?.setAttribute('aria-expanded', 'false');
+            trigger?.focus();
+            return;
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || options.length === 0) return;
+        event.preventDefault();
+        const current = Math.max(0, options.indexOf(document.activeElement));
+        const next = event.key === 'Home' ? 0
+            : event.key === 'End' ? options.length - 1
+                : event.key === 'ArrowDown' ? (current + 1) % options.length
+                    : (current - 1 + options.length) % options.length;
+        options[next].focus();
+    });
+    on('close-settings-btn', 'click', ui.closeSettings);
+    on('response-style-setting', 'change', event => ui.setResponseStyle(event.currentTarget.value));
     document.querySelectorAll('[data-theme-choice]').forEach(el => el.addEventListener('click', () => window.applyThemeChoice(el.dataset.themeChoice)));
     document.querySelectorAll('[data-toggle-setting]').forEach(el => el.addEventListener('click', () => ui.toggleSet(el.id)));
+    document.querySelectorAll('.set-row').forEach(row => {
+        const toggle = row.querySelector('[data-toggle-setting]');
+        if (!toggle) return;
+        row.addEventListener('click', event => {
+            if (!event.target.closest('[data-toggle-setting]')) toggle.click();
+        });
+    });
     on('signout-btn', 'click', ui.signOut);
     on('cancel-delete-btn', 'click', ui.closeDeleteConfirm);
     on('confirm-del-btn', 'click', deleteSelectedChat);
 
-    const personaItem = document.querySelector('.persona-switch-item');
-    personaItem?.addEventListener('click', event => {
-        if (event.target.closest('.switch')) return;
-        const toggle = document.getElementById('persona-toggle');
-        if (!toggle) return;
-        toggle.checked = !toggle.checked;
-        toggle.dispatchEvent(new Event('change'));
-    });
     const settingsModal = document.getElementById('settings-modal');
     settingsModal?.addEventListener('click', event => { if (event.target === settingsModal) ui.closeSettings(); });
     const palette = document.getElementById('cmd-palette');
     palette?.addEventListener('click', event => { if (event.target === palette) window.closePalette?.(); });
-    on('pal-in', 'input', event => window.updPal?.(event.currentTarget.value));
     on('prompt', 'drop', event => {
         const textVal = event.dataTransfer?.getData('text/plain') || '';
         if (!textVal) return;
@@ -771,25 +945,46 @@ function bindStaticEvents() {
 function bindGlobalDismissals() {
     document.addEventListener('click', event => {
         const sidebar = document.getElementById('sidebar');
-        if (window.innerWidth <= 850 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !document.getElementById('mobile-menu-btn')?.contains(event.target)) ui.toggleSidebar();
-        const themeMenu = document.getElementById('theme-menu');
-        if (themeMenu && themeMenu.style.display === 'flex' && !themeMenu.contains(event.target) && !document.getElementById('theme-btn')?.contains(event.target) && !document.getElementById('theme-btn-settings')?.contains(event.target)) themeMenu.style.display = 'none';
+        if (window.innerWidth <= 850 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !document.getElementById('mobile-menu-btn')?.contains(event.target)) {
+            ui.toggleSidebar();
+        }
+
+        const themeMenu = document.getElementById('theme-menu-settings');
+        const themeControl = document.getElementById('theme-btn-settings');
+        if (themeMenu?.style.display === 'flex' && !themeMenu.contains(event.target) && !themeControl?.contains(event.target)) {
+            themeMenu.style.display = 'none';
+            themeControl?.setAttribute('aria-expanded', 'false');
+            themeMenu.closest('.set-row')?.classList.remove('row-elevated');
+        }
+
         const modelMenu = document.getElementById('model-menu');
-        if (modelMenu?.classList.contains('active') && !modelMenu.contains(event.target) && !document.getElementById('model-toggle')?.contains(event.target)) modelMenu.classList.remove('active');
+        const modelControl = document.getElementById('model-toggle');
+        if (modelMenu?.classList.contains('active') && !modelMenu.contains(event.target) && !modelControl?.contains(event.target)) {
+            modelMenu.classList.remove('active');
+            modelControl?.setAttribute('aria-expanded', 'false');
+        }
     });
+
     window.addEventListener('popstate', () => {
         if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
+        if (document.getElementById('neural-context-card')?.classList.contains('active')) { ui.closeNeuralContext(); return; }
         if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
-        if (document.getElementById('sidebar')?.classList.contains('open')) { ui.toggleSidebar(); return; }
-        const confirm = document.getElementById('delete-confirm-modal');
-        if (confirm?.style.display === 'flex') confirm.style.display = 'none';
+        if (document.getElementById('delete-confirm-modal')?.style.display === 'flex') { ui.closeDeleteConfirm(); return; }
+        if (document.getElementById('sidebar')?.classList.contains('open')) ui.toggleSidebar();
     });
+
     window.addEventListener('keydown', event => {
         if (event.key !== 'Escape') return;
-        if (document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
-        if (document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
-        if (document.getElementById('delete-confirm-modal')?.style.display === 'flex') { document.getElementById('delete-confirm-modal').style.display = 'none'; return; }
-        if (document.getElementById('sidebar')?.classList.contains('open')) ui.toggleSidebar();
+        const canClose = id => !window.HelperDialogs || window.HelperDialogs.isTop(id);
+        if (canClose('image-modal') && document.getElementById('image-modal')?.classList.contains('active')) { ui.closeImageModal(); return; }
+        if (canClose('neural-context-card') && document.getElementById('neural-context-card')?.classList.contains('active')) { ui.closeNeuralContext(); return; }
+        if (canClose('theme-modal') && document.getElementById('theme-modal')?.style.display === 'flex') {
+            window.applyThemeChoice(localStorage.getItem('helper_theme_pref') || 'system');
+            return;
+        }
+        if (canClose('settings-modal') && document.getElementById('settings-modal')?.style.display === 'flex') { ui.closeSettings(); return; }
+        if (canClose('delete-confirm-modal') && document.getElementById('delete-confirm-modal')?.style.display === 'flex') { ui.closeDeleteConfirm(); return; }
+        if (!window.HelperDialogs?.getActive() && document.getElementById('sidebar')?.classList.contains('open')) ui.toggleSidebar();
     });
 }
 
@@ -858,15 +1053,20 @@ document.addEventListener('DOMContentLoaded', () => {
         installWindowBridge();
         clearPendingComposerDrafts();
         initTheme();
+        ui.loadPreferences();
         bindStaticEvents();
-        const activeModel = document.getElementById('active-model-name');
-        if (activeModel) activeModel.innerText = 'Gemma 4';
+        const savedModel = localStorage.getItem('helper_model_v3') || 'helper-auto';
+        const savedModelOption = document.querySelector(`[data-model-id="${CSS.escape(savedModel)}"]`);
+        const activeModel = savedModelOption ? savedModel : 'helper-auto';
+        const activeOption = savedModelOption || document.querySelector('[data-model-id="helper-auto"]');
+        ui.selModel(activeModel, activeOption?.dataset.modelName || 'Helper Auto');
 
         const savedUser = localStorage.getItem('helper_user_v2');
         if (savedUser) {
             state.set('user', JSON.parse(savedUser));
             const auth = document.getElementById('auth-overlay');
             if (auth) auth.style.display = 'none';
+            window.HelperDialogs?.sync();
             loadUserChats();
             if (localStorage.getItem('helper_active_modal_v2') === 'settings') ui.openSettings();
             ui.updUI();
@@ -887,8 +1087,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const personaToggle = document.getElementById('persona-toggle');
         const personaItem = document.querySelector('.persona-switch-item');
-        const syncPersona = () => { if (personaToggle && personaItem) personaItem.classList.toggle('persona-active', personaToggle.checked); };
-        if (personaToggle) { personaToggle.addEventListener('change', syncPersona); syncPersona(); }
+        const syncPersona = () => {
+            if (!personaToggle) return;
+            personaItem?.classList.toggle('persona-active', personaToggle.checked);
+        };
+        if (personaToggle) {
+            personaToggle.addEventListener('change', () => {
+                syncPersona();
+                ui.setPersonaEnabled(personaToggle.checked);
+            });
+            syncPersona();
+        }
 
         bindGlobalDismissals();
         initImageModal();

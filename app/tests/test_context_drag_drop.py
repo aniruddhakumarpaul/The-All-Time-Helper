@@ -9,7 +9,7 @@ class ContextDragDropTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("composer_context_tray", bootstrap)
         self.assertIn("composer-context-tray", bootstrap)
-        self.assertIn("composer_context_tray.js?v=6", template)
+        self.assertIn("composer_context_tray.js?v=7", template)
         self.assertNotIn("context_drag_drop", bootstrap)
 
     def test_composer_context_uses_attached_contexts_not_legacy_retrieve(self):
@@ -32,11 +32,15 @@ class ContextDragDropTests(unittest.TestCase):
         self.assertIn("MAX_TOTAL_CHARS", script)
         self.assertIn("EMAIL_DRAFT_CONTEXT", script)
 
-    def test_composer_context_makes_sources_draggable_without_click_blocking(self):
+    def test_composer_context_keeps_message_text_selectable_and_uses_explicit_handle(self):
         root = Path(__file__).resolve().parents[2]
         script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
-        self.assertIn("composer-draggable-context", script)
-        self.assertIn("draggable", script)
+        ui = (root / "static" / "js" / "ui.js").read_text(encoding="utf-8")
+        self.assertIn("el.setAttribute('draggable', grabMode ? 'true' : 'false')", script)
+        self.assertIn("[data-context-drag-handle]", script)
+        self.assertIn("if (textBubble && !explicitHandle && !window.isGDown)", script)
+        self.assertIn('class="txt" draggable="false"', ui)
+        self.assertIn("context-drag-handle", ui)
         self.assertIn("dragstart", script)
         self.assertIn("drop", script)
         self.assertIn("isInteractiveDraftControl", script)

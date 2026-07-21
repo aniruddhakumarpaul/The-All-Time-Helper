@@ -1,7 +1,7 @@
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.inference_queue import inference_queue
 from app.security import get_current_user
@@ -27,6 +27,7 @@ def _visible_jobs_for_owner(owner: str) -> list[dict]:
                 "created_at": created_at,
                 "elapsed_seconds": max(0, round(now - created_at, 2)),
                 "timeout_seconds": timeout,
+                "lane": getattr(job, "lane", "inference"),
                 "cancelled": cancelled,
                 "status": "cancelling" if cancelled else "active",
             }
@@ -43,8 +44,11 @@ def job_status(current_user: str = Depends(get_current_user)):
         "queue": {
             "started": bool(getattr(inference_queue, "_started", False)),
             "queue_depth": inference_queue.queue_depth,
+            "inference_queue_depth": inference_queue.inference_queue_depth,
+            "tool_queue_depth": inference_queue.tool_queue_depth,
             "max_queue_depth": int(getattr(inference_queue, "_max_queue_depth", 0)),
             "max_workers": int(getattr(inference_queue, "_max_workers", 0)),
+            "tool_workers": int(getattr(inference_queue, "_max_fast_workers", 0)),
             "user_active_jobs": len(active_jobs),
         },
         "jobs": active_jobs,
@@ -55,7 +59,8 @@ def job_status(current_user: str = Depends(get_current_user)):
 def cancel_job(job_id: str, current_user: str = Depends(get_current_user)):
     try:
         uuid.UUID(str(job_id))
-    except ValueError:
-        return {"success": False, "error": "Job not found"}
-    cancelled = inference_queue.cancel(job_id, current_user)
-    return {"success": cancelled, **({} if cancelled else {"error": "Job not found"})}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    if not inference_queue.cancel(job_id, current_user):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"success": True}

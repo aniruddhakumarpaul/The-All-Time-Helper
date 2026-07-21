@@ -1,6 +1,7 @@
 // email_approval.js
 // Add explicit user approval controls to existing email draft cards without changing the renderer.
 (function () {
+    const apiUrl = path => window.helperApiUrl ? window.helperApiUrl(path) : path;
     function generateRequestId() {
         if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
         return `email-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -40,7 +41,7 @@
         card.dataset.emailDraftRequestId = requestId;
         setEmailSending(card, button, status, true, 'Validating and sending...');
         try {
-            const response = await fetch('/email/send-draft', {
+            const response = await fetch(apiUrl('/email/send-draft'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -49,6 +50,7 @@
                 },
                 body: JSON.stringify({ draft, admin_key: approvalSecret, request_id: requestId }),
             });
+            window.handleHelperUnauthorized?.(response);
             const data = await response.json().catch(() => ({}));
             if (!response.ok || !data.success) {
                 const message = data.detail || data.status || data.error || `Send failed with status ${response.status}`;
