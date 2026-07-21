@@ -705,7 +705,10 @@ window.toggleThemeMenu = function toggleThemeMenu(event, menuId) {
 window.autoRes = function autoRes(el) {
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = el.scrollHeight + 'px';
+    const maxHeight = 200;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = nextHeight + 'px';
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
 };
 
 function initTheme() {

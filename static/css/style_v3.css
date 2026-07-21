@@ -1464,6 +1464,8 @@ input:focus {
     font-size: 0.9rem;
     padding: 10px;
     resize: none;
+    min-height: 36px;
+    overflow-y: hidden;
     max-height: 200px;
     font-family: inherit;
     line-height: 1.7;

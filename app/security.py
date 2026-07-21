@@ -8,7 +8,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from typing import Annotated
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"), override=True)
 
 # SECURITY FIX: No fallback secret. App MUST crash if SECRET_KEY is not set.
 SECRET_KEY = os.getenv("SECRET_KEY")

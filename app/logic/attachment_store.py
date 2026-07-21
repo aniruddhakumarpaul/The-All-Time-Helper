@@ -17,12 +17,17 @@ ATTACHMENT_ROOT = os.getenv("ATTACHMENT_STORE_DIR", os.path.join(REPO_ROOT, ".ru
 MAX_ATTACHMENT_BYTES = int(os.getenv("ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
 ATTACHMENT_TTL_SECONDS = int(os.getenv("ATTACHMENT_TTL_SECONDS", str(24 * 60 * 60)))
 
-ALLOWED_IMAGE_TYPES = {
+ALLOWED_FILE_TYPES = {
     "png": "image/png",
     "jpg": "image/jpeg",
     "gif": "image/gif",
     "webp": "image/webp",
+    "txt": "text/plain",
+    "md": "text/markdown",
+    "pdf": "application/pdf",
 }
+ALLOWED_IMAGE_TYPES = {key: value for key, value in ALLOWED_FILE_TYPES.items() if key in {"png", "jpg", "gif", "webp"}}
+TEXT_EXTRACTION_MAX_CHARS = 30_000
 
 
 def detect_file_type(data: bytes) -> Optional[str]:
@@ -82,13 +87,16 @@ def save_attachment_bytes(name: str, content_type: str, data: bytes, owner: str)
         raise AttachmentStoreError(f"Attachment exceeds {MAX_ATTACHMENT_BYTES} bytes.")
 
     detected_ext = detect_file_type(data)
-    if detected_ext not in ALLOWED_IMAGE_TYPES:
-        raise AttachmentStoreError("Only PNG, JPEG, GIF, and WEBP image uploads are supported.")
+    if detected_ext not in ALLOWED_FILE_TYPES:
+        if (name or "").lower().endswith((".txt", ".md")):
+            detected_ext = "md" if (name or "").lower().endswith(".md") else "txt"
+        else:
+            raise AttachmentStoreError("Supported attachments are PNG, JPEG, GIF, WEBP, TXT, Markdown, and PDF.")
 
-    verified_type = ALLOWED_IMAGE_TYPES[detected_ext]
+    verified_type = ALLOWED_FILE_TYPES[detected_ext]
     supplied_type = (content_type or "").split(";")[0].strip().lower()
-    if supplied_type and not supplied_type.startswith("image/"):
-        raise AttachmentStoreError("Attachment content type must be an image.")
+    if supplied_type and supplied_type != verified_type and not (detected_ext in {"txt", "md"} and supplied_type == "application/octet-stream"):
+        raise AttachmentStoreError("Attachment content type does not match the file.")
 
     attachment_id = uuid.uuid4().hex
     safe_name = _safe_filename(name, f"attachment.{detected_ext}")
@@ -134,6 +142,27 @@ def resolve_attachment_metadata(attachment_id: str, owner: str) -> Dict[str, Any
     metadata["path"] = resolved_path
     return metadata
 
+
+def extract_attachment_text(ref: Dict[str, Any]) -> str:
+    """Extract bounded plain text from a resolved text or PDF attachment."""
+    content_type = str(ref.get("content_type") or ref.get("type") or "").lower()
+    if content_type not in {"text/plain", "text/markdown", "application/pdf"}:
+        return ""
+    try:
+        raw = base64.b64decode(str(ref.get("content") or ""), validate=True)
+        if content_type == "application/pdf":
+            try:
+                import fitz
+                import io
+                document = fitz.open(stream=raw, filetype="pdf")
+                text = "\n".join(page.get_text() for page in document)
+            except ImportError:
+                return "[PDF attached; PDF text extraction is unavailable in this environment.]"
+        else:
+            text = raw.decode("utf-8-sig", errors="replace")
+    except Exception:
+        return "[Attachment text could not be extracted.]"
+    return text[:TEXT_EXTRACTION_MAX_CHARS].strip()
 
 def resolve_attachment_reference(ref: Dict[str, Any], owner: str) -> Dict[str, Any]:
     attachment_id = ref.get("id")

@@ -24,6 +24,7 @@ Generated images follow a two-stage path:
 - Empty output and known garbage sentinels are rejected before caching or returning. Bounded fallback to Gemma 4 is allowed only where latency policy permits it.
 - Vision logs contain only source class, validated byte count, model, outcome, and duration. They never contain image bytes, base64, local owner paths, or full remote URLs.
 - Attachment inference no longer writes a second copy into `static/uploads`; owner-scoped attachment storage remains the canonical uploaded file source.
+- /attachments accepts PNG, JPEG, GIF, WEBP, TXT, Markdown, and PDF files. Text and Markdown are decoded with a 30,000-character cap; PDFs use the installed itz extractor when available, and document bytes are never routed as vision images.
 ## Email Attachments
 - Generated-image email attachments must use downloaded bytes, not a raw Pollinations URL.
 - Attachment download logic validates HTTP success, image bytes, and size before accepting the payload.

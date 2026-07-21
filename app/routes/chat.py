@@ -18,6 +18,7 @@ from app.logic.agents import ask_the_helper, is_deterministic_tool_lane_request
 from app.logic.attachment_store import (
     AttachmentStoreError,
     MAX_ATTACHMENT_BYTES,
+    extract_attachment_text,
     resolve_attachment_reference,
     save_attachment_bytes,
 )
@@ -217,6 +218,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         history = _hydrate_history_attachment_references(req.history, current_user)
     except AttachmentStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    document_blocks = []
+    for item in (img if isinstance(img, list) else ([img] if img else [])):
+        if isinstance(item, dict):
+            extracted = extract_attachment_text(item)
+            if extracted:
+                filename = item.get("filename") or item.get("name") or "document"
+                document_blocks.append(f"--- ATTACHED DOCUMENT: {filename} ---\n{extracted}\n--- END ATTACHED DOCUMENT ---")
+    if document_blocks:
+        prompt = prompt + "\n\n" + "\n\n".join(document_blocks)
     has_visual_input = bool(img)
     sys_config = req.sys
 
