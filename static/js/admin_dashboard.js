@@ -99,7 +99,9 @@
             </div>
         `;
         document.body.appendChild(modal);
-        modal.addEventListener('click', event => { if (event.target === modal) closeDashboard(); });
+        modal.addEventListener('click', event => {
+            if (window.helperOutsideClickDismissEnabled?.() !== false && event.target === modal) closeDashboard();
+        });
         modal.querySelector('#admin-ops-close')?.addEventListener('click', closeDashboard);
         modal.querySelector('#admin-ops-refresh')?.addEventListener('click', () => loadDashboard());
         window.HelperDialogs?.sync();

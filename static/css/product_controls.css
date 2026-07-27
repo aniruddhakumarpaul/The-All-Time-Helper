@@ -278,3 +278,12 @@ button.menu-item {
     color: var(--text-main);
     background: var(--item-hover);
 }
+/* Prompt sizing contract: keep later density rules from collapsing multiline input. */
+#input-wrap .pill-bar #prompt {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-height: 36px;
+    max-height: 200px !important;
+    overflow-y: hidden;
+    line-height: 1.7;
+}

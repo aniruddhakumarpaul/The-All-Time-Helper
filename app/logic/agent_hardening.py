@@ -46,8 +46,7 @@ def harden_result(
             logger.warning("[Agents] Converted leaked send_email_tool JSON plan into email draft payload")
             return payload
 
-    if target_model and is_cloud_model(target_model):
-        return result
+
     if "EMAIL_DRAFT_PAYLOAD:" in result_text:
         return result
 
@@ -89,6 +88,10 @@ def harden_result(
         prefix = re.sub(r"```\s*$", "", prefix).strip()
         payload = f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
         return f"{prefix}\n\n{payload}" if prefix else payload
+
+    # Recover email drafts before the cloud guard, but keep other JSON/tool recovery cloud-safe.
+    if target_model and is_cloud_model(target_model):
+        return result
 
     def contains_send_plan(data):
         if isinstance(data, dict):

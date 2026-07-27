@@ -27,9 +27,11 @@ Routing is designed to prefer the smallest reliable execution path.
 - Deterministic image-to-email workflows bypass cloud routing.
 - Visual follow-ups inherit the unresolved visual task when history shows a continuing image request.
 - Email-template edit prompts should update the current draft and return `EMAIL_DRAFT_PAYLOAD:` instead of raw tool-plan JSON.
+- Hardened results recover validated unmarked email JSON from cloud responses into `EMAIL_DRAFT_PAYLOAD:` before the cloud guard; unrelated cloud JSON/tool plans still pass through unchanged.
 - One-word answers to an attachment clarification (`image`, `text`, `both`, `summary`) inherit the pending email attachment request and must resolve deterministically instead of going to normal chat.
 - Context switches to search, code, or factual questions should not inherit visual state.
 - Plain-text requests that provide a recipient, body, and optional subject use the deterministic email draft path, including natural separators such as `subject ... and body ...`; they do not initialize the agent swarm.
+- Explicit email/mail requests without a detected recipient return a blank editable `EMAIL_DRAFT_PAYLOAD:` widget; recipient validation remains in the send/delivery path.
 - CrewAI runtime storage is rooted at `.runtime/crewai` by default so local agents never depend on a user-profile database path; an explicit `CREWAI_STORAGE_DIR` override remains authoritative.
 - CrewAI tracing is explicitly disabled in environment setup and every Crew constructor so request workers never pause for an interactive trace-consent prompt.
 - `send_email_tool` creates a validated `EMAIL_DRAFT_PAYLOAD:` and never performs SMTP delivery. Approved delivery uses the deterministic helper with recipient/attachment validation, owner-scoped attachment resolution, and job-id idempotency.

@@ -2095,6 +2095,19 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         bool(email_match) and any(kw in p for kw in ['attach', 'attachment', 'include'])
     ) or (is_above_attachment and bool(recipient))
 
+    # Start an editable draft when the user requests email but has not supplied a recipient yet.
+    # Do not call send_email_tool here: recipient validation belongs to delivery, not drafting.
+    if is_email and not recipient:
+        blank_draft = {
+            "recipient": "",
+            "subject": "New email",
+            "body": "",
+            "tone": "modern",
+            "attachment_content": None,
+            "attachment_filename": "",
+        }
+        return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(blank_draft)}"
+
     simple_draft = _build_simple_email_draft(clean_prompt, recipient, status_callback=status_callback)
     if simple_draft:
         return simple_draft

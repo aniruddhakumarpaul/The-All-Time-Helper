@@ -12,6 +12,8 @@ class FrontendEmailDraftTests(unittest.TestCase):
         self.assertLess(template.index('/static/js/email_draft.js'), template.index('/static/js/app.js'))
 
         self.assertIn('function parseEmailDraftContext(text)', helper_js)
+        self.assertIn('findEmailDraftCandidate(value)', helper_js)
+        self.assertIn('const isUnmarkedJson = !found', helper_js)
         self.assertIn('function stripInternalEmailDraftMarkers(text)', helper_js)
         self.assertIn('function buildEmailDraftDragContext(message, widgetEl = null)', helper_js)
         self.assertIn('function getVisibleUserMessageContent(message, element = null)', helper_js)

@@ -78,7 +78,9 @@
             </div>
         `;
         document.body.appendChild(modal);
-        modal.addEventListener('click', event => { if (event.target === modal) closeJobCenter(); });
+        modal.addEventListener('click', event => {
+            if (window.helperOutsideClickDismissEnabled?.() !== false && event.target === modal) closeJobCenter();
+        });
         modal.querySelector('#job-center-close')?.addEventListener('click', closeJobCenter);
         modal.querySelector('#job-center-refresh')?.addEventListener('click', () => loadJobs({ showLoading: true }));
         modal.addEventListener('click', event => {

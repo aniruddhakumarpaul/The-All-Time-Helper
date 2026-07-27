@@ -409,24 +409,58 @@ function renderHist() {
 
 function startRename(id, e) {
     e.stopPropagation();
+    if (state.isRenaming) return;
     state.isRenaming = true;
-    const span = document.getElementById(`t-${safeDomId(id)}`);
+    const span = document.getElementById('t-' + safeDomId(id));
     if (!span || span.querySelector('input')) return;
     const old = span.innerText;
+    const anchor = span.closest('.history-item') || span;
     span.textContent = '';
+    span.classList.add('is-renaming');
+
     const input = document.createElement('input');
     input.type = 'text';
-    input.className = 'rename-in';
+    input.className = 'rename-in rename-popout';
     input.value = old;
-    input.id = `edit-${safeDomId(id)}`;
+    input.size = Math.max(12, old.length + 2);
+    input.style.width = String(Math.max(12, old.length + 2)) + 'ch';
+    input.id = 'edit-' + safeDomId(id);
     input.setAttribute('aria-label', 'Rename conversation');
     input.addEventListener('click', event => event.stopPropagation());
-    span.appendChild(input);
+    document.body.appendChild(input);
+
+    const reposition = () => {
+        const rect = anchor.getBoundingClientRect();
+        const available = Math.max(180, window.innerWidth - rect.right - 24);
+        input.style.maxWidth = available + 'px';
+        input.style.left = Math.min(rect.right + 12, window.innerWidth - input.offsetWidth - 12) + 'px';
+        input.style.top = Math.max(12, Math.min(rect.top, window.innerHeight - input.offsetHeight - 12)) + 'px';
+    };
+    const cleanup = () => {
+        document.getElementById('history-list')?.removeEventListener('scroll', reposition);
+        window.removeEventListener('resize', reposition);
+        input.remove();
+    };
+    const finish = () => {
+        const value = input.value;
+        cleanup();
+        saveRename(id, value);
+    };
+    document.getElementById('history-list')?.addEventListener('scroll', reposition, { passive: true });
+    window.addEventListener('resize', reposition);
+    input.addEventListener('blur', finish, { once: true });
+    reposition();
     input.focus();
-    input.onblur = () => saveRename(id, input.value);
+    input.select();
     input.onkeydown = (ev) => {
-        if (ev.key === 'Enter') { ev.stopPropagation(); saveRename(id, input.value); }
-        if (ev.key === 'Escape') { ev.stopPropagation(); state.isRenaming = false; renderHist(); }
+        if (ev.key === 'Enter') { ev.preventDefault(); ev.stopPropagation(); input.blur(); }
+        if (ev.key === 'Escape') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            cleanup();
+            state.isRenaming = false;
+            renderHist();
+        }
     };
 }
 

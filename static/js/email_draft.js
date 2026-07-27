@@ -142,26 +142,47 @@
         try { return normalizeDraft(JSON.parse(card.dataset.emailDraft || '{}')); } catch (_) { return null; }
     }
 
+    function findEmailDraftCandidate(value) {
+        if (!value || typeof value !== 'object') return null;
+        if (!Array.isArray(value) && (value.recipient || value.to)
+            && Object.prototype.hasOwnProperty.call(value, 'subject')
+            && Object.prototype.hasOwnProperty.call(value, 'body')) return value;
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                const found = findEmailDraftCandidate(item);
+                if (found) return found;
+            }
+            return null;
+        }
+        for (const item of Object.values(value)) {
+            const found = findEmailDraftCandidate(item);
+            if (found) return found;
+        }
+        return null;
+    }
+
     function parseEmailDraftContext(text) {
         const source = String(text || '');
         const found = findMarker(source);
-        if (!found) return null;
-        const afterMarker = found.index + found.marker.length;
-        const jsonStart = source.indexOf('{', afterMarker);
+        const isUnmarkedJson = !found && source.trimStart().startsWith('{');
+        if (!found && !isUnmarkedJson) return null;
+        const jsonStart = found ? source.indexOf('{', found.index + found.marker.length) : source.indexOf('{');
         if (jsonStart === -1) return null;
         const jsonEnd = findJsonEnd(source, jsonStart);
         if (jsonEnd === -1) return null;
         try {
             const rawJson = source.slice(jsonStart, jsonEnd);
-            const draft = normalizeDraft(JSON.parse(rawJson));
-            if (!draft) return null;
+            const parsed = JSON.parse(rawJson);
+            const rawDraft = found ? parsed : findEmailDraftCandidate(parsed);
+            const draft = normalizeDraft(rawDraft);
+            if (!draft || (!found && (!draft.recipient || !draft.subject))) return null;
             return {
-                marker: found.marker,
+                marker: found?.marker || null,
                 draft,
                 rawJson,
-                start: found.index,
+                start: found ? found.index : jsonStart,
                 end: jsonEnd,
-                before: source.slice(0, found.index).trim(),
+                before: source.slice(0, found ? found.index : jsonStart).trim(),
                 after: source.slice(jsonEnd).trim()
             };
         } catch (error) {

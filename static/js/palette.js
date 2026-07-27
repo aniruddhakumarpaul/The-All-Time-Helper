@@ -239,7 +239,7 @@ function installPaletteEvents() {
     input?.addEventListener('input', event => updPal(event.currentTarget.value));
     close?.addEventListener('click', closePalette);
     palette?.addEventListener('pointerdown', event => {
-        if (event.target === palette) closePalette();
+        if (window.helperOutsideClickDismissEnabled?.() !== false && event.target === palette) closePalette();
     });
 }
 

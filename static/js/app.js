@@ -539,7 +539,7 @@ async function send() {
             try {
                 const item = JSON.parse(buffer);
                 if (item.message?.content) fullText += item.message.content;
-            } catch (_) {}
+            } catch (_) { }
         }
         if (!fullText.trim()) {
             fullText = 'I could not complete that response. Please retry, or switch the route from the composer.';
@@ -598,7 +598,7 @@ async function send() {
 }
 
 function stopAI() {
-    if (state.activeJobId) api.cancelInferenceJob(state.activeJobId).catch(() => {});
+    if (state.activeJobId) api.cancelInferenceJob(state.activeJobId).catch(() => { });
     if (state.abortController) state.abortController.abort();
 }
 
@@ -704,11 +704,12 @@ window.toggleThemeMenu = function toggleThemeMenu(event, menuId) {
 
 window.autoRes = function autoRes(el) {
     if (!el) return;
-    el.style.height = 'auto';
     const maxHeight = 200;
-    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = '0px';
+    const contentHeight = Math.max(el.scrollHeight, 36);
+    const nextHeight = Math.min(contentHeight, maxHeight);
     el.style.height = nextHeight + 'px';
-    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    el.style.overflowY = contentHeight > maxHeight ? 'auto' : 'hidden';
 };
 
 function initTheme() {
@@ -837,7 +838,9 @@ function bindStaticEvents() {
     on('v-otp', 'keydown', event => { if (event.key === 'Enter') handleAuth('verify'); });
     document.querySelectorAll('#new-chat-btn, .new-chat').forEach(el => el.addEventListener('click', startNewChat));
     on('mobile-menu-btn', 'click', ui.toggleSidebar);
-    on('sidebar-scrim', 'click', ui.toggleSidebar);
+    on('sidebar-scrim', 'click', () => {
+        if (window.helperOutsideClickDismissEnabled?.() !== false) ui.toggleSidebar();
+    });
     on('main-logo-img', 'click', mascot.jiggleLogo);
     on('hist-search', 'input', event => ui.filterHist(event.currentTarget.value));
     on('open-settings-btn', 'click', ui.openSettings);
@@ -884,7 +887,9 @@ function bindStaticEvents() {
     on('stop-btn', 'click', stopAI);
     on('export-chat-btn', 'click', exportChat);
     on('main-send-btn', 'click', send);
-    on('neural-scrim', 'click', ui.closeNeuralContext);
+    on('neural-scrim', 'click', () => {
+        if (window.helperOutsideClickDismissEnabled?.() !== false) ui.closeNeuralContext();
+    });
     on('close-neural-btn', 'click', ui.closeNeuralContext);
     on('theme-btn-settings', 'click', event => window.toggleThemeMenu(event, 'theme-menu-settings'));
     on('theme-menu-settings', 'keydown', event => {
@@ -924,9 +929,13 @@ function bindStaticEvents() {
     on('confirm-del-btn', 'click', deleteSelectedChat);
 
     const settingsModal = document.getElementById('settings-modal');
-    settingsModal?.addEventListener('click', event => { if (event.target === settingsModal) ui.closeSettings(); });
+    settingsModal?.addEventListener('click', event => {
+        if (window.helperOutsideClickDismissEnabled?.() !== false && event.target === settingsModal) ui.closeSettings();
+    });
     const palette = document.getElementById('cmd-palette');
-    palette?.addEventListener('click', event => { if (event.target === palette) window.closePalette?.(); });
+    palette?.addEventListener('click', event => {
+        if (window.helperOutsideClickDismissEnabled?.() !== false && event.target === palette) window.closePalette?.();
+    });
     on('prompt', 'drop', event => {
         const textVal = event.dataTransfer?.getData('text/plain') || '';
         if (!textVal) return;
@@ -947,6 +956,7 @@ function bindStaticEvents() {
 
 function bindGlobalDismissals() {
     document.addEventListener('click', event => {
+        if (window.helperOutsideClickDismissEnabled?.() === false) return;
         const sidebar = document.getElementById('sidebar');
         if (window.innerWidth <= 850 && sidebar?.classList.contains('open') && !sidebar.contains(event.target) && !document.getElementById('mobile-menu-btn')?.contains(event.target)) {
             ui.toggleSidebar();
@@ -997,7 +1007,8 @@ function initImageModal() {
     if (!image || !container) return;
     image.onclick = event => { event.stopPropagation(); image.classList.toggle('is-zoomed'); };
     container.onclick = event => {
-        if (event.target === container || event.target.classList.contains('lightbox-close')) {
+        const backdropClick = event.target === container && window.helperOutsideClickDismissEnabled?.() !== false;
+        if (backdropClick || event.target.classList.contains('lightbox-close')) {
             image.classList.remove('is-zoomed');
             ui.closeImageModal();
         }
@@ -1085,8 +1096,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const prompt = document.getElementById('prompt');
         const sendBtn = document.getElementById('main-send-btn');
         if (prompt) {
-            prompt.addEventListener('input', () => { window.autoRes(prompt); sendBtn?.classList.toggle('pulsing', prompt.value.trim().length > 0); });
+            prompt.addEventListener('input', () => {
+                window.autoRes(prompt);
+                sendBtn?.classList.toggle('pulsing', prompt.value.trim().length > 0);
+            });
             prompt.addEventListener('keydown', handleChatKey);
+            window.autoRes(prompt);
         }
         const personaToggle = document.getElementById('persona-toggle');
         const personaItem = document.querySelector('.persona-switch-item');

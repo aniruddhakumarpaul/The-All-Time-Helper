@@ -24,11 +24,13 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `app/logic/tools.py`: image, email, search, and memory-facing tools with argument-free outcome/latency telemetry; DDGS and process-level HTTPS clients use the bundled `certifi` CA path on Windows while keeping TLS verification enabled. When anonymous search providers all fail, a configured OpenRouter key can invoke the cited web-search server tool with a three-result cap.
 - `app/logic/memory.py`: ChromaDB-backed semantic memory with lock-guarded operations and a recoverable transient-failure circuit.
 - `static/js/app.js`: frontend orchestrator and chat state persistence.
-- `static/js/ui.js`: DOM rendering, persisted response preferences, non-blocking user feedback, and explicit per-message context-drag handles.
+- `static/js/ui.js`: DOM rendering, persisted response preferences, non-blocking user feedback, and explicit per-message context-drag handles. The rename control temporarily becomes a fixed, animated popover so long titles are not clipped by the sidebar.
+- `static/css/product_controls.css`: final prompt sizing contract and control overrides applied after density styles.
 - `static/js/composer_context_tray.js`: bounded prompt context, explicit drag sources, and composer drop handling; message text remains selectable unless hold-`G` grab mode is active.
 - `static/js/palette.js`: Ctrl+K command/search listbox, route switching, workspace shortcuts, and keyboard selection.
 - `static/js/api.js`: normalized JSON/HTTP/network error contract for active frontend requests.
 - `static/js/dialog_manager.js`: top-modal focus trapping, background isolation with `inert`, and invoking-control focus restoration.
+- `static/js/runtime_config.js`: server-rendered UI feature flags; `OUTSIDE_CLICK_DISMISS=false` disables backdrop/outside-click dismissal while preserving Escape and explicit close controls.
 - static/js/bootstrap.js: request-origin setup, centralized expired-session recovery, and ordered supplemental extension loading; active controls are never removed after page load.
 - `static/js/utils.js`: markdown rendering and legacy global helpers.
 - `static/js/motion_enhancements.js`: additive prompt motion plus delegated pointer and keyboard feedback for static and dynamic controls.

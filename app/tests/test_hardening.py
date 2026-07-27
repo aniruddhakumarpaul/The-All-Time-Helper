@@ -16,6 +16,24 @@ class HardeningTests(unittest.TestCase):
             self.assertFalse(security.verify_admin_key("wrong-secret"))
             self.assertFalse(security.verify_admin_key(None))
 
+    def test_email_without_recipient_returns_editable_widget(self):
+        from app.logic import agents
+        import json
+
+        with patch.object(agents.tools.send_email_tool, "func", side_effect=AssertionError("drafting must not validate recipients")):
+            result = agents._try_direct_tool_execution(
+                "draft an email",
+                {"requires_tools": True, "is_local": True},
+                [],
+                target_model="gemma2:2b",
+            )
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "")
+        self.assertEqual(payload["subject"], "New email")
+        self.assertEqual(payload["body"], "")
+
     def test_local_email_execution_ignores_persistent_admin_state(self):
         from app.logic import agents
         from app.logic.memory import admin_auth_context
@@ -1706,9 +1724,10 @@ class HardeningTests(unittest.TestCase):
             self.assertEqual(analysis["complexity"], "single")
             self.assertEqual(analysis["category"], "visual")
 
-    def test_harden_result_skips_cloud(self):
+    def test_harden_result_recovers_unmarked_cloud_email_json(self):
         from app.logic.agents import _harden_result
-        
+        import json
+
         raw_json_input = """
         {
             "to": "recipient@example.com",
@@ -1716,10 +1735,12 @@ class HardeningTests(unittest.TestCase):
             "body": "Hello world"
         }
         """
-        # For a cloud model, _harden_result should NOT execute fallback parsing
         result = _harden_result(raw_json_input, None, target_model="gemma4-openrouter")
-        self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
-        self.assertEqual(result.strip(), raw_json_input.strip())
+        self.assertIn("EMAIL_DRAFT_PAYLOAD:", result)
+        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "recipient@example.com")
+        self.assertEqual(payload["subject"], "Greeting")
+        self.assertEqual(payload["body"], "Hello world")
 
     def test_multiple_attachments_handling(self):
         from app.routes.chat import ChatRequest, Attachment

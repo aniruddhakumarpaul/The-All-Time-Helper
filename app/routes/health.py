@@ -14,7 +14,14 @@ router = APIRouter()
 @router.get("/")
 async def serve_ui(request: Request):
     templates = request.app.state.templates
-    return templates.TemplateResponse(request, "index.html", {"request": request})
+    outside_click_dismiss = str(os.getenv("OUTSIDE_CLICK_DISMISS", "true")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"request": request, "outside_click_dismiss": outside_click_dismiss},
+    )
 
 
 @router.get("/status")
