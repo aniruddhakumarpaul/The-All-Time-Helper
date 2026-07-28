@@ -48,6 +48,7 @@
 - SQLite schema changes use explicit versioned migrations. Legacy `users.admin_authorized` values are cleared and ignored at runtime; authorization is request-scoped only.
 - LLM tools may build email drafts but cannot send SMTP messages. The deterministic delivery helper validates inputs and uses the inference job ID as its idempotency key.
 - Active frontend controls use module-bound listeners instead of inline event attributes. The CSP candidate remains documentation-only until browser smoke verification is complete.
+- The sign-out hover effect uses visible but fluid liquid-fire movement, soft ember flow, and a compact close-to-control glow. Dark mode uses near-black hover text against the fire surface; its animated layers remain active through the hover return transition, then stop after the button settles; it must honor `prefers-reduced-motion` and avoid layout-affecting animation.
 - The template owns the canonical `email_draft.js?v=4` early load and marks it with `data-helper-extension="email-draft-core"` so bootstrap does not inject a second copy; drag capture must ignore interactive controls inside `.email-draft-card` so edit, use, and send buttons remain clickable.
 - Ngrok lifecycle is owned by the direct local launcher (`python -m app.main`), not the FastAPI factory or production ASGI lifespan.
 - The direct launcher keeps Uvicorn reload disabled by default for stable Windows multiprocessing; set HELPER_RELOAD=true when development hot reload is explicitly needed.

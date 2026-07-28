@@ -33,7 +33,7 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `static/js/runtime_config.js`: server-rendered UI feature flags; `OUTSIDE_CLICK_DISMISS=false` disables backdrop/outside-click dismissal while preserving Escape and explicit close controls.
 - static/js/bootstrap.js: request-origin setup, centralized expired-session recovery, and ordered supplemental extension loading; active controls are never removed after page load.
 - `static/js/utils.js`: markdown rendering and legacy global helpers.
-- `static/js/motion_enhancements.js`: additive prompt motion plus delegated pointer and keyboard feedback for static and dynamic controls.
+- `static/js/motion_enhancements.js`: additive prompt motion, delegated pointer/keyboard feedback, and sign-out fire lifecycle timing. CSS hover starts the sign-out fire independently, while JavaScript only keeps it alive through the return transition.
 - `static/css/premium_motion.css`: additive motion timing, press/release feedback, and reduced-motion handling for the legacy visual shell.
 - `static/css/product_controls.css`: accessibility-safe native-control resets, preference controls, and glass status feedback layered over the restored visual shell.
 - Static and rendered controls bind events from JavaScript modules; active HTML contains no inline event attributes. See `docs/csp.md` for the not-yet-enabled CSP candidate.

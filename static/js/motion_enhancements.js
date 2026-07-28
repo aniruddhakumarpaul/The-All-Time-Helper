@@ -265,6 +265,36 @@
         });
     }
 
+    function installSignoutFireLifecycle() {
+        const signout = document.getElementById('signout-btn');
+        if (!signout || signout.dataset.signoutFireLifecycle === 'true') return;
+        signout.dataset.signoutFireLifecycle = 'true';
+        let settleTimer = null;
+
+        const clearSettleTimer = () => {
+            if (settleTimer !== null) window.clearTimeout(settleTimer);
+            settleTimer = null;
+        };
+        const stopAfterSettle = () => {
+            clearSettleTimer();
+            settleTimer = window.setTimeout(() => {
+                signout.classList.remove('signout-fire-active');
+                settleTimer = null;
+            }, 560);
+        };
+
+        signout.addEventListener('mouseenter', () => {
+            clearSettleTimer();
+            if (!reducedMotion.matches) signout.classList.add('signout-fire-active');
+        });
+        signout.addEventListener('mouseleave', stopAfterSettle);
+        reducedMotion.addEventListener?.('change', event => {
+            if (event.matches) {
+                clearSettleTimer();
+                signout.classList.remove('signout-fire-active');
+            }
+        });
+    }
     function observeRoot(root, selector) {
         if (!root || root.dataset.motionObserver === 'true') return;
         root.dataset.motionObserver = 'true';
@@ -340,6 +370,7 @@
         observeInteractiveControls();
         observeDisclosureState();
         bindControlFeedback();
+        installSignoutFireLifecycle();
         installContextScanHook();
         window.hydratePremiumMotion = hydrateMotion;
     }
