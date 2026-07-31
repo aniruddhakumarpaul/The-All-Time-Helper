@@ -26,6 +26,7 @@ Do not claim lint, type-check, browser, or cloud-provider verification unless th
 ## Non-negotiable invariants
 
 - User files are owner-scoped, bounded, validated, and represented in chat state by IDs/metadata. Do not place raw base64 in prompts, local chat persistence, DOM dataset state, or logs.
+- .project_brain/ is generated Chroma runtime state; keep it ignored and never stage or delete its local database/index files.
 - Text, Markdown, and PDF attachments are document context, not visual inputs. Only image MIME types enter vision analysis.
 - Chat streaming remains NDJSON with job ID, status, heartbeat, content, final, error, disconnect, cancellation, and tool/inference lane behavior.
 - Do not add request-body replay middleware; Starlette body replay can break streaming requests.

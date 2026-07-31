@@ -33,3 +33,4 @@ scratch/
 .pytest_cache/
 .playwright-mcp/
 codex_hook_state/*.json
+.project_brain/

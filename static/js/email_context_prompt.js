@@ -3,6 +3,7 @@ import { state } from './state.js?v=210';
 const DRAFT_MIME = window.__EMAIL_DRAFT_MIME || 'application/x-helper-email-draft';
 const CONTEXT_MARKER = 'EMAIL_DRAFT_CONTEXT:';
 let lastSavedSnapshot = '';
+let saveTimer = null;
 
 function normalizeDraft(raw) {
     if (!raw || typeof raw !== 'object') return null;
@@ -117,7 +118,7 @@ function renderTray() {
         remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
         remove.addEventListener('click', () => {
             const pos = state.attachedContexts.indexOf(ctx);
-            if (pos >= 0) state.attachedContexts.splice(pos, 1);
+            if (pos >= 0) state.set('attachedContexts', state.attachedContexts.filter((_, index) => index !== pos));
             renderTray();
         });
         chip.append(label, remove);
@@ -128,10 +129,10 @@ function renderTray() {
 function attachEmailDraftToPrompt(rawDraft) {
     const draft = compactDraft(rawDraft);
     if (!draft) return false;
-    if (!Array.isArray(state.attachedContexts)) state.attachedContexts = [];
+    if (!Array.isArray(state.attachedContexts)) state.set('attachedContexts', []);
     const text = makeContextText(draft);
     const exists = state.attachedContexts.some(ctx => ctx.kind === 'email_draft' && ctx.text === text);
-    if (!exists) state.attachedContexts.push({ kind: 'email_draft', text, draft });
+    if (!exists) state.set('attachedContexts', [...state.attachedContexts, { kind: 'email_draft', text, draft }]);
     renderTray();
     const prompt = document.getElementById('prompt');
     if (prompt) prompt.focus();
@@ -165,9 +166,27 @@ function saveLocalChatCache() {
     let snapshot = '';
     try { snapshot = JSON.stringify(window.helperSanitizeChatsForPersistence?.(state.chats) || state.chats); } catch (_) { return; }
     if (!snapshot || snapshot === lastSavedSnapshot) return;
-    lastSavedSnapshot = snapshot;
-    localStorage.setItem('helper_chats_v2_' + state.user.email, snapshot);
-    if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId);
+    try {
+        localStorage.setItem('helper_chats_v2_' + state.user.email, snapshot);
+        if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId);
+        lastSavedSnapshot = snapshot;
+    } catch (_) {
+        // Cache failure must never block chat input or message delivery.
+    }
+}
+
+function scheduleLocalChatCacheSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+        saveTimer = null;
+        saveLocalChatCache();
+    }, 250);
+}
+
+function flushLocalChatCacheSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    saveLocalChatCache();
 }
 
 function installPromptWhitespaceStyle() {
@@ -183,13 +202,12 @@ function init() {
     installPromptDrop();
     installPromptWhitespaceStyle();
     renderTray();
-    setInterval(() => {
-        installPromptDrop();
-        saveLocalChatCache();
-        if (!(state.attachedContexts || []).some(ctx => ctx.kind === 'email_draft')) renderTray();
-    }, 1000);
-    window.addEventListener('beforeunload', saveLocalChatCache);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveLocalChatCache(); });
+    ['chats', 'activeId', 'user', 'attachedContexts'].forEach(key => state.subscribe(key, () => {
+        if (key === 'attachedContexts') renderTray();
+        scheduleLocalChatCacheSave();
+    }));
+    window.addEventListener('beforeunload', flushLocalChatCacheSave);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLocalChatCacheSave(); });
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

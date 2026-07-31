@@ -13,3 +13,4 @@ The project uses two memory layers:
 - Prefer markdown docs and repo search before reaching for semantic memory.
 - Use these docs first for architecture, routing, and pipeline context.
 - Keep memory as a recovery and recall layer, not the primary source of truth for normal coding work.
+- .project_brain/ is generated runtime state containing the Chroma database and index files. It is ignored by Git and must be recreated locally when absent; local contents are never deleted as part of repository maintenance.

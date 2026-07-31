@@ -25,3 +25,8 @@
 
 - Provider/network remediation is not inferred from model-list availability; cloud diagnosis requires a separately reproducible provider request failure.
 - No deployment, push, merge, release, real email, external account mutation, or destructive data cleanup is included.
+## Completed In This Iteration
+
+- Replaced email-context and email-draft-repair one-second persistence polling with state-driven debounced saves and lifecycle flushes.
+- Added queue/chat job and attachment-count telemetry with sanitized categories and timings.
+- Confirmed .project_brain/ is generated Chroma runtime state and moved it out of Git tracking without deleting local files.

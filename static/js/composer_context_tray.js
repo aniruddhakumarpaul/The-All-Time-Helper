@@ -182,7 +182,7 @@
     function contextItems() {
         const st = state();
         if (!st) return [];
-        if (!Array.isArray(st.attachedContexts)) st.attachedContexts = [];
+        if (!Array.isArray(st.attachedContexts)) st.set('attachedContexts', []);
         return st.attachedContexts;
     }
 
@@ -218,7 +218,7 @@
                 chip.dataset.index = String(index);
                 chip.innerHTML = `${contextCardHtml(item)}<button type="button" class="composer-context-remove" aria-label="Remove context">×</button><span class="composer-context-progress" aria-hidden="true"></span>`;
                 chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
-                    contextItems().splice(index, 1);
+                    const st = state(); st?.set('attachedContexts', contextItems().filter((_, itemIndex) => itemIndex !== index));
                     scheduleRender();
                 });
                 tray.appendChild(chip);
@@ -239,7 +239,7 @@
 
     function clearContexts() {
         const st = state();
-        if (st && Array.isArray(st.attachedContexts)) st.attachedContexts = [];
+        if (st) st.set('attachedContexts', []);
         const tray = ensureTray();
         if (tray) {
             tray.classList.remove('has-context', 'composer-drop-active', 'is-loading', 'is-attaching', 'is-sending');
@@ -253,6 +253,7 @@
         const last = items[items.length - 1];
         if (last && last.status === 'attaching') {
             last.status = 'ready';
+            state()?.touch('attachedContexts');
             scheduleRender();
         }
     }
@@ -276,6 +277,7 @@
             preview: normalized.preview || '',
             status: 'attaching',
         });
+        state()?.touch('attachedContexts');
         scheduleRender();
         window.setTimeout(markLastContextReady, 420);
         return true;
@@ -291,6 +293,7 @@
             if (!Array.isArray(message.contexts) || !message.contexts.length) {
                 message.contexts = cloneContextItems(pendingSentContexts).map(item => ({ ...item, status: 'ready' }));
             }
+            state()?.touch('chats');
             renderChatContextWidgets();
             return true;
         }

@@ -477,7 +477,11 @@ function startRename(id, e) {
 function saveRename(id, val) {
     if (!state.isRenaming) return;
     const chat = state.chats.find(c => c.id === id);
-    if (chat && val.trim()) { chat.title = val.trim(); }
+    if (chat && val.trim()) {
+        chat.title = val.trim();
+        state.touch('chats');
+        window.requestChatPersist?.();
+    }
     state.isRenaming = false;
     renderHist();
 }

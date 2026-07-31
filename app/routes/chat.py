@@ -296,7 +296,17 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         if use_tool_lane
         else None
     )
-    logger.info("[Chat] Selected %s execution lane for job request", execution_lane)
+    attachment_items = image_items if isinstance(image_items, list) else []
+    document_count = len(document_blocks)
+    visual_count = sum(1 for item in attachment_items if _is_visual_attachment(item))
+    bounded_attachment_bytes = sum(
+        min(int(item.get("size") or 0), MAX_ATTACHMENT_BYTES)
+        for item in attachment_items if isinstance(item, dict)
+    )
+    logger.info(
+        "[ChatTrace] lane=%s attachments=%d documents=%d visuals=%d bounded_bytes=%d",
+        execution_lane, len(attachment_items), document_count, visual_count, bounded_attachment_bytes,
+    )
 
     abort_event = threading.Event()
 
@@ -394,6 +404,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
 
                 if abort_event.is_set():
+                    logger.info("[ChatTrace] job=%s lane=%s state=cancelled reason=client_disconnect_or_stop", job_id, execution_lane)
                     yield json.dumps({"message": {"content": "Request cancelled."}, "done": True}).encode() + b'\n'
                 else:
                     is_tool_res = result and result.strip() in ["SUCCESS", "ERROR", "AUTH_REQUIRED"]

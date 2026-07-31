@@ -85,7 +85,7 @@ function addAttachedContext(text, kind = 'text') {
     const allowed = Math.max(0, Math.min(MAX_CONTEXT_CHARS, MAX_TOTAL_CONTEXT_CHARS - currentTotal));
     if (!allowed) return false;
     const clipped = clean.slice(0, allowed);
-    state.attachedContexts.push({ kind, text: clipped });
+    state.set('attachedContexts', [...state.attachedContexts, { kind, text: clipped }]);
     if (clipped.length < clean.length) console.warn('Context truncated to keep this request within the model limit');
     return true;
 }
@@ -98,7 +98,7 @@ function clearPendingComposerDrafts() {
     Object.keys(localStorage).forEach(key => {
         if (key.startsWith('helper_pending_prompt_')) localStorage.removeItem(key);
     });
-    state.attachedContexts = [];
+    state.set('attachedContexts', []);
     state.currentImages = [];
     state.pendingImageUploads = null;
 }
@@ -239,7 +239,7 @@ async function loadUserChats() {
         console.error('Cloud fetch failed:', error);
     }
     const mergedChats = mergeChatsByRecency(localChats, remoteChats);
-    state.chats = mergedChats;
+    state.set('chats', mergedChats);
     syncWindowState();
     if (!restoreAllowed || navigationRevision !== restoreRevision) {
         ui.renderHist();
@@ -384,6 +384,7 @@ async function submitEdit(idx, container) {
     const chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) return;
     chat.ms = chat.ms.slice(0, idx);
+    state.touch('chats');
     await requestChatPersist({ immediate: true });
     loadChat(state.activeId);
     mascot.triggerBotReaction(newText);
@@ -409,6 +410,7 @@ async function send() {
     if (!chat) {
         chat = { id: state.activeId, title: userText.substring(0, 35) || 'New Chat', ms: [], updated_at: Date.now() };
         state.chats.push(chat);
+        state.touch('chats');
     }
     syncWindowState();
 
@@ -428,6 +430,7 @@ async function send() {
 
     ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
     chat.ms.push({ r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
+    state.touch('chats');
     chat.updated_at = Date.now();
     requestChatPersist();
     mascot.triggerBotReaction(userText);
@@ -487,6 +490,7 @@ async function send() {
             const errorText = `I could not reach the selected helper route (status ${response.status}). Please retry or choose another route.`;
             botText.innerText = errorText;
             chat.ms.push({ r: 'b', c: errorText, m: modelName });
+            state.touch('chats');
             chat.updated_at = Date.now();
             await requestChatPersist({ immediate: true });
             return;
@@ -547,8 +551,10 @@ async function send() {
         if (chat.title && chat.title.trim().length <= 5 && fullText.trim().length > 10) {
             const firstLine = fullText.split('\n')[0];
             chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
+            state.touch('chats');
         }
         chat.ms.push({ r: 'b', c: fullText, m: modelName });
+        state.touch('chats');
         chat.updated_at = Date.now();
         botText.innerHTML = window.renderMarkdown(fullText);
         window.hydrateRenderedMarkdown?.(botText);
@@ -567,6 +573,7 @@ async function send() {
             : 'I could not complete that response. Please retry or choose another route.';
         botText.textContent = failureMessage;
         chat.ms.push({ r: 'b', c: failureMessage, m: modelName });
+        state.touch('chats');
         chat.updated_at = Date.now();
         await requestChatPersist({ immediate: true });
         ui.notify(failureMessage, stopped ? 'info' : 'error');
@@ -588,7 +595,7 @@ async function send() {
         document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
         state.abortController = null;
         state.currentImg = null;
-        state.attachedContexts = [];
+        state.set('attachedContexts', []);
         state.currentImages = [];
         state.activeJobId = null;
         syncWindowState();
@@ -607,7 +614,7 @@ async function deleteSelectedChat() {
     const deletedId = state.chatToDelete;
     const deletedIds = ensureDeletedChatIds();
     if (!deletedIds.includes(deletedId)) deletedIds.push(deletedId);
-    state.chats = state.chats.filter(chat => chat.id !== deletedId);
+    state.set('chats', state.chats.filter(chat => chat.id !== deletedId));
     if (state.activeId === deletedId) startNewChat();
     ui.closeDeleteConfirm();
     ui.renderHist();
@@ -620,6 +627,7 @@ function togglePin(id) {
     if (!chat) return;
     chat.pinned = !chat.pinned;
     chat.updated_at = Date.now();
+    state.touch('chats');
     ui.renderHist();
     requestChatPersist();
 }

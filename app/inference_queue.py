@@ -98,8 +98,12 @@ class InferenceQueue:
                         job.result_future.set_result("Operation cancelled.")
                     continue
                 
-                elapsed = time.time() - job.created_at
-                logger.debug(f"[{name}] Processing job {job.id} (waited {elapsed:.1f}s in queue)")
+                queued_for = time.time() - job.created_at
+                started_at = time.perf_counter()
+                logger.info(
+                    "[JobTrace] job=%s lane=%s state=started queue_wait_ms=%d queue_depth=%d",
+                    job.id, job.lane, round(queued_for * 1000), work_queue.qsize(),
+                )
                 
                 # Execute the blocking function in a thread with timeout
                 token = job_id_context.set(job.id)
@@ -113,10 +117,14 @@ class InferenceQueue:
                 
                 if not job.result_future.done():
                     job.result_future.set_result(result)
+                logger.info(
+                    "[JobTrace] job=%s lane=%s state=completed execution_ms=%d",
+                    job.id, job.lane, round((time.perf_counter() - started_at) * 1000),
+                )
                     
             except asyncio.TimeoutError:
                 job.abort_event.set()  # Signal the blocking thread to stop
-                logger.error(f"[{name}] Job {job.id} timed out after {job.timeout}s")
+                logger.warning("[JobTrace] job=%s lane=%s state=timed_out timeout_s=%d", job.id, job.lane, round(job.timeout))
                 
                 # FLAW 1 FIX: Check ToolResultBus for 'Ghost Success'
                 from app.logic.bus import tool_result_bus
@@ -132,11 +140,11 @@ class InferenceQueue:
                             "Please try again or switch to a lighter model."
                         )
             except asyncio.CancelledError:
-                logger.warning(f"[{name}] Job {job.id} was cancelled")
+                logger.info("[JobTrace] job=%s lane=%s state=cancelled reason=worker_cancelled", job.id, job.lane)
                 if not job.result_future.done():
                     job.result_future.set_result("Operation cancelled.")
             except Exception as e:
-                logger.error(f"[{name}] Job {job.id} failed: {e}", exc_info=True)
+                logger.error("[JobTrace] job=%s lane=%s state=failed error_type=%s", job.id, job.lane, type(e).__name__)
                 if not job.result_future.done():
                     job.result_future.set_exception(e)
             finally:
@@ -204,7 +212,7 @@ class InferenceQueue:
         await work_queue.put(job)
 
         logger.info(
-            "[InferenceQueue] Job %s queued on %s lane (depth: %d/%d)",
+            "[JobTrace] job=%s lane=%s state=queued queue_depth=%d queue_capacity=%d",
             job_id,
             lane,
             work_queue.qsize(),

@@ -5,6 +5,7 @@
     const CONTEXT_MARKER = 'EMAIL_DRAFT_CONTEXT:';
     let appState = null;
     let lastSavedSnapshot = '';
+    let saveTimer = null;
 
     function inferSubjectAndBody(subject, body) {
         let cleanSubject = String(subject || '').trim();
@@ -148,7 +149,7 @@
             remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
             remove.addEventListener('click', function () {
                 const pos = appState.attachedContexts.indexOf(ctx);
-                if (pos >= 0) appState.attachedContexts.splice(pos, 1);
+                if (pos >= 0) appState.set('attachedContexts', appState.attachedContexts.filter((_, index) => index !== pos));
                 renderTray();
             });
             chip.append(label, remove);
@@ -160,10 +161,10 @@
         if (!appState) return false;
         const normalized = normalizeDraft(draft);
         if (!normalized) return false;
-        if (!Array.isArray(appState.attachedContexts)) appState.attachedContexts = [];
+        if (!Array.isArray(appState.attachedContexts)) appState.set('attachedContexts', []);
         const text = CONTEXT_MARKER + JSON.stringify(normalized);
         const exists = appState.attachedContexts.some(ctx => ctx.kind === 'email_draft' && ctx.text === text);
-        if (!exists) appState.attachedContexts.push({ kind: 'email_draft', text, draft: normalized });
+        if (!exists) appState.set('attachedContexts', [...appState.attachedContexts, { kind: 'email_draft', text, draft: normalized }]);
         renderTray();
         document.getElementById('prompt')?.focus();
         return true;
@@ -220,9 +221,13 @@
         let snapshot = '';
         try { snapshot = JSON.stringify(window.helperSanitizeChatsForPersistence?.(appState.chats) || appState.chats); } catch (_) { return; }
         if (!snapshot || snapshot === lastSavedSnapshot) return;
-        lastSavedSnapshot = snapshot;
-        localStorage.setItem('helper_chats_v2_' + appState.user.email, snapshot);
-        if (appState.activeId) localStorage.setItem('helper_active_chat_v2', appState.activeId);
+        try {
+            localStorage.setItem('helper_chats_v2_' + appState.user.email, snapshot);
+            if (appState.activeId) localStorage.setItem('helper_active_chat_v2', appState.activeId);
+            lastSavedSnapshot = snapshot;
+        } catch (_) {
+            // Cache failure must not interrupt the repair layer or composer.
+        }
     }
 
     function restoreVisibleChat() {
@@ -246,11 +251,17 @@
         document.head.appendChild(style);
     }
 
-    function tick() {
-        installDrop();
-        installDelegatedButtons();
-        repairCards(document);
-        restoreVisibleChat();
+    function scheduleSave() {
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+            saveTimer = null;
+            saveLocalCache();
+        }, 250);
+    }
+
+    function flushSave() {
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = null;
         saveLocalCache();
     }
 
@@ -259,13 +270,20 @@
         window.attachEmailDraftToPrompt = attachDraft;
         window.renderEmailDraftPromptTray = renderTray;
         installStyle();
-        tick();
+        installDrop();
+        installDelegatedButtons();
+        repairCards(document);
+        restoreVisibleChat();
+        ['chats', 'activeId', 'user', 'attachedContexts'].forEach(key => appState.subscribe(key, () => {
+            if (key === 'chats' || key === 'activeId') restoreVisibleChat();
+            scheduleSave();
+        }));
         new MutationObserver(function (mutations) {
             mutations.forEach(function (mutation) { repairCards(mutation.target); });
         }).observe(document.body, { childList: true, subtree: true });
-        setInterval(tick, 1000);
-        window.addEventListener('beforeunload', saveLocalCache);
-        document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') saveLocalCache(); });
+
+        window.addEventListener('beforeunload', flushSave);
+        document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushSave(); });
     }
 
     function init() {

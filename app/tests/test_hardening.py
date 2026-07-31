@@ -921,7 +921,7 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("function clearPendingComposerDrafts()", app_js)
         self.assertIn("key.startsWith('helper_pending_prompt_')", app_js)
-        self.assertIn("state.attachedContexts = []", app_js)
+        self.assertIn("state.set('attachedContexts', [])", app_js)
         self.assertIn("state.currentImages = []", app_js)
         self.assertIn("clearPendingComposerDrafts();", app_js)
 

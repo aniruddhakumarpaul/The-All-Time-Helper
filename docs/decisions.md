@@ -110,3 +110,5 @@ This file records the current high-level architectural decisions.
 - CrewAI tracing is always noninteractive in the request path.
 - Attachment IDs are validated as server-generated hexadecimal identifiers, and resolved metadata is authoritative over client-supplied type/filename fields. This prevents path traversal and prevents document uploads from being misclassified as images.
 - Chat persistence strips transient image base64, attachment bytes, and email draft attachment payloads while retaining owner-scoped IDs and metadata. Live previews remain in memory only.
+- Email-context cache persistence is event-driven: state subscriptions schedule one debounced local-cache write, with beforeunload and hidden-document flushes as final safeguards. The repair layer follows the same contract and does not poll every second.
+- Queue and chat telemetry records bounded job/lane/timing/attachment counts and sanitized state categories only; prompts, responses, paths, recipients, credentials, and provider exception text remain excluded.

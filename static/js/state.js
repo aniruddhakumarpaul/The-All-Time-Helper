@@ -62,13 +62,17 @@ class AppState {
     set(key, value) {
         const old = this[key];
         this[key] = value;
-        if (this._listeners[key]) {
-            this._listeners[key].forEach(cb => {
-                try { cb(value, old); } catch (e) { console.error(`State listener error [${key}]:`, e); }
-            });
-        }
+        this.touch(key, value, old);
     }
-    
+
+    /** Notify subscribers after an in-place mutation of an array or object. */
+    touch(key, value = this[key], old = value) {
+        if (!this._listeners[key]) return;
+        this._listeners[key].forEach(cb => {
+            try { cb(value, old); } catch (e) { console.error('State listener error [' + key + ']:', e); }
+        });
+    }
+
     get(key) {
         return this[key];
     }
