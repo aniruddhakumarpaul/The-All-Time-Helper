@@ -71,7 +71,7 @@ function scrollChatToLatest(chatArea) {
 function persistLocalChatCache() {
     if (!state.user?.email) return;
     try {
-        localStorage.setItem('helper_chats_v2_' + state.user.email, JSON.stringify(state.chats));
+        localStorage.setItem('helper_chats_v2_' + state.user.email, JSON.stringify(window.helperSanitizeChatsForPersistence?.(state.chats) || state.chats));
         if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId);
     } catch (error) {
         console.warn('Local chat cache could not be updated:', error);
@@ -198,7 +198,7 @@ function loadChat(id, options = {}) {
     if (welcome) welcome.style.display = 'none';
     document.body.classList.add('has-active-chat');
     ui.clearImgPreview();
-    chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked));
+    chat.ms.forEach((message, idx) => ui.addMsg(message.r, message.c, message.i, idx, message.m || 'AI Assistant', message.masked, message.attachments || []));
     window.initUpscaleImagePolling?.(chatArea);
     if (renderHistory) ui.renderHist();
     const sidebar = document.getElementById('sidebar');
@@ -274,7 +274,7 @@ async function loadUserChats() {
 async function saveUserChats() {
     if (!state.user?.email) return;
     const deletedIds = ensureDeletedChatIds();
-    const payload = { chats: state.chats, deleted_chat_ids: deletedIds.slice() };
+    const payload = { chats: window.helperSanitizeChatsForPersistence?.(state.chats) || state.chats, deleted_chat_ids: deletedIds.slice() };
     persistLocalChatCache();
     const result = await api.syncChats(payload);
     if (!result || result.success !== false) deletedIds.length = 0;
@@ -426,8 +426,8 @@ async function send() {
         isMasked = authKeywords.some(keyword => last.includes(keyword));
     }
 
-    ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked);
-    chat.ms.push({ r: 'u', c: userText, i: state.currentImg, attachments: currentAttachments, apiPrompt, masked: isMasked });
+    ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
+    chat.ms.push({ r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
     chat.updated_at = Date.now();
     requestChatPersist();
     mascot.triggerBotReaction(userText);

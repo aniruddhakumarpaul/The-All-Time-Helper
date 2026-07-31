@@ -28,7 +28,7 @@ ALLOWED_FILE_TYPES = {
 }
 ALLOWED_IMAGE_TYPES = {key: value for key, value in ALLOWED_FILE_TYPES.items() if key in {"png", "jpg", "gif", "webp"}}
 TEXT_EXTRACTION_MAX_CHARS = 30_000
-
+ATTACHMENT_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
 def detect_file_type(data: bytes) -> Optional[str]:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -61,6 +61,12 @@ def _owner_dir(owner: str) -> str:
     os.makedirs(path, exist_ok=True)
     return path
 
+
+def _validate_attachment_id(attachment_id: str) -> str:
+    value = str(attachment_id or "").strip().lower()
+    if not ATTACHMENT_ID_PATTERN.fullmatch(value):
+        raise AttachmentStoreError("Attachment id is invalid.")
+    return value
 
 def cleanup_expired_attachments(now: Optional[float] = None) -> None:
     now = now or time.time()
@@ -127,8 +133,7 @@ def save_attachment_bytes(name: str, content_type: str, data: bytes, owner: str)
 
 
 def resolve_attachment_metadata(attachment_id: str, owner: str) -> Dict[str, Any]:
-    if not attachment_id:
-        raise AttachmentStoreError("Attachment id is required.")
+    attachment_id = _validate_attachment_id(attachment_id)
     meta_path = os.path.join(_owner_dir(owner), f"{attachment_id}.json")
     if not os.path.exists(meta_path):
         raise AttachmentStoreError("Attachment not found or expired.")
@@ -175,10 +180,10 @@ def resolve_attachment_reference(ref: Dict[str, Any], owner: str) -> Dict[str, A
     return {
         "id": attachment_id,
         "content": base64.b64encode(data).decode("utf-8"),
-        "filename": ref.get("filename") or ref.get("name") or metadata.get("name"),
-        "name": ref.get("name") or metadata.get("name"),
-        "content_type": ref.get("content_type") or ref.get("type") or metadata.get("content_type"),
-        "type": ref.get("type") or metadata.get("type"),
+        "filename": metadata.get("filename") or ref.get("filename") or ref.get("name"),
+        "name": metadata.get("name") or ref.get("name"),
+        "content_type": metadata.get("content_type") or ref.get("content_type") or ref.get("type"),
+        "type": metadata.get("type") or ref.get("type"),
         "size": metadata.get("size"),
         "sha256": metadata.get("sha256"),
     }

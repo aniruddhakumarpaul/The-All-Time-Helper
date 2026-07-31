@@ -163,7 +163,7 @@ function saveLocalChatCache() {
     if (!state.user?.email || !Array.isArray(state.chats)) return;
     if (!state.chats.length) return;
     let snapshot = '';
-    try { snapshot = JSON.stringify(state.chats); } catch (_) { return; }
+    try { snapshot = JSON.stringify(window.helperSanitizeChatsForPersistence?.(state.chats) || state.chats); } catch (_) { return; }
     if (!snapshot || snapshot === lastSavedSnapshot) return;
     lastSavedSnapshot = snapshot;
     localStorage.setItem('helper_chats_v2_' + state.user.email, snapshot);

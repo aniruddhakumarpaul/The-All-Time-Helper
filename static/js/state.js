@@ -20,6 +20,7 @@ class AppState {
         this.pendingImageUploads = null;
         this.attachedContexts = [];
         this.currentBlobUrl = null;
+        this.previewBlobUrls = [];
         this.chatToDelete = null;
         this.isRenaming = false;
         this.currentSearch = '';
@@ -76,6 +77,83 @@ class AppState {
 // Singleton instance
 const state = new AppState();
 
+function stripAttachmentPayloadForPersistence(item) {
+    if (!item || typeof item !== 'object') return item;
+    const next = { ...item };
+    delete next.content;
+    delete next.data;
+    delete next.bytes;
+    delete next.attachment_content;
+    return next;
+}
+
+function findJsonEnd(source, start) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < source.length; index += 1) {
+        const char = source[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (char === '\\') escaped = true;
+            else if (char === '"') inString = false;
+            continue;
+        }
+        if (char === '"') { inString = true; continue; }
+        if (char === '{') depth += 1;
+        if (char === '}') {
+            depth -= 1;
+            if (depth === 0) return index + 1;
+        }
+    }
+    return -1;
+}
+
+function redactDraftMarkerText(value) {
+    let text = String(value || '');
+    for (const marker of ['EMAIL_DRAFT_CONTEXT:', 'EMAIL_DRAFT_PAYLOAD:']) {
+        const markerIndex = text.indexOf(marker);
+        if (markerIndex < 0) continue;
+        const jsonStart = markerIndex + marker.length;
+        const source = text.slice(jsonStart).trimStart();
+        const offset = text.slice(jsonStart).length - source.length;
+        const jsonEnd = findJsonEnd(source, 0);
+        if (jsonEnd < 0) continue;
+        try {
+            const draft = JSON.parse(source.slice(0, jsonEnd));
+            const next = { ...draft };
+            const hadContent = Boolean(next.attachment_content);
+            delete next.attachment_content;
+            if (Array.isArray(next.attachments)) {
+                next.attachments = next.attachments.map(stripAttachmentPayloadForPersistence);
+            }
+            if (hadContent) next.has_attachment_content = true;
+            text = text.slice(0, jsonStart + offset) + JSON.stringify(next) + source.slice(jsonEnd);
+        } catch (_) {
+            // Keep malformed historical text unchanged rather than losing the conversation.
+        }
+    }
+    return text;
+}
+
+function sanitizeChatsForPersistence(chats) {
+    return (Array.isArray(chats) ? chats : []).map(chat => ({
+        ...chat,
+        ms: (Array.isArray(chat?.ms) ? chat.ms : []).map(message => {
+            const next = { ...message };
+            delete next.i;
+            delete next.img;
+            if (Array.isArray(next.attachments)) {
+                next.attachments = next.attachments.map(stripAttachmentPayloadForPersistence);
+            }
+            if (typeof next.c === 'string') next.c = redactDraftMarkerText(next.c);
+            if (typeof next.apiPrompt === 'string') next.apiPrompt = redactDraftMarkerText(next.apiPrompt);
+            return next;
+        })
+    }));
+}
+
+window.helperSanitizeChatsForPersistence = sanitizeChatsForPersistence;
 function loadEmailDraftRepairLayer() {
     if (document.querySelector('script[data-helper-extension="email-draft-repair"]')) return;
     const script = document.createElement('script');

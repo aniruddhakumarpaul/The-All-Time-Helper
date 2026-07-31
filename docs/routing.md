@@ -42,3 +42,4 @@ Routing is designed to prefer the smallest reliable execution path.
 - Invalid uploads and missing/cross-owner task cancellations return real `4xx` responses. Unexpected sync, memory, and chat-start failures return generic `5xx` responses while detailed exceptions remain server-side.
 - Chat requests are bounded to 100,000 prompt characters, 200 history items, and 6 attachments. Related-context requests accept 1-100,000 characters and 1-10 results.
 - `/admin/status` remains the compatibility route for the authenticated System Status panel. It exposes user-relevant readiness booleans and counts only; filesystem paths, provider URLs, tunnel URLs, environment names, raw exceptions, configured model IDs, and security settings are forbidden.
+- Uploaded TXT, Markdown, and PDF files remain on the document-context path. The frontend displays them as file cards and does not force a vision model; only image MIME types use visual analysis.

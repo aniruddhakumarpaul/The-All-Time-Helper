@@ -3129,6 +3129,47 @@ input:checked+.slider:before {
 }
 
 /* --- Image Preview & Lightbox Styles --- */
+.attachment-preview-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: auto;
+    min-width: 60px;
+    max-width: 220px;
+    padding: 0 10px;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-sub);
+    overflow: hidden;
+}
+.attachment-file-label {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+.message-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+.message-attachment-chip {
+    display: inline-flex;
+    max-width: 240px;
+    padding: 5px 9px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-sub);
+    font-size: 0.72rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .chat-img-preview-container {
     margin-top: 15px;
     cursor: zoom-in;
@@ -3828,7 +3869,7 @@ body.motion-ready .msg:hover .txt {
 
 /* Mobile composer target integrity */
 @media (max-width: 850px) {
-    .pill-bar>.action-btn {
+    .pill-bar > .action-btn {
         box-sizing: border-box;
         width: 40px;
         min-width: 40px;
@@ -3864,7 +3905,7 @@ body.motion-ready .msg:hover .txt {
         max-width: 100%;
     }
 
-    .pill-bar>.action-btn:not(.send-btn) {
+    .pill-bar > .action-btn:not(.send-btn) {
         width: 36px;
         min-width: 36px;
         flex-basis: 36px;

@@ -110,6 +110,18 @@ def _native_image_input(item, runtime: ContextRuntime):
     return {"base64": encoded, "data_url": f"data:{media_type};base64,{encoded}", "media_type": media_type}
 
 
+def _is_visual_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return bool(item)
+    content_type = str(item.get("content_type") or item.get("type") or "").lower()
+    if content_type:
+        return content_type.startswith("image/")
+    filename = str(item.get("filename") or item.get("name") or "").lower()
+    return filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")) or bool(
+        item.get("content") or item.get("data") or item.get("attachment_content") or item.get("path")
+    )
+
+
 def assemble_context(
     user_prompt,
     img_data,
@@ -127,7 +139,7 @@ def assemble_context(
         image_description = "No image context available."
 
         if img_data:
-            images = runtime.image_items(img_data)[:3]
+            images = [item for item in runtime.image_items(img_data) if _is_visual_item(item)][:3]
             native_inputs = []
             if intent.get("native_vision") or intent.get("fast_local_vision"):
                 native_inputs = [value for value in (_native_image_input(item, runtime) for item in images) if value]
@@ -175,6 +187,8 @@ def assemble_context(
                 if not isinstance(candidates, list):
                     candidates = [candidates]
                 for item in candidates:
+                    if not _is_visual_item(item):
+                        continue
                     source = runtime.image_source(item)
                     if source and source not in image_sources:
                         image_sources.append(source)
@@ -264,6 +278,10 @@ def assemble_context(
         "history_context": build_history_context(history, user_prompt, intent.get("requires_tools", False)),
         "image_description": image_description,
         "image_inputs": image_inputs,
-        "visual_input_present": bool(img_data or image_inputs or image_description != "No image context available."),
+        "visual_input_present": bool(
+            any(_is_visual_item(item) for item in runtime.image_items(img_data))
+            or image_inputs
+            or image_description != "No image context available."
+        ),
         "resolved_email": resolve_recent_email(history),
     }

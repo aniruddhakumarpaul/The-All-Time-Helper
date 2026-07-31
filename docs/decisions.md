@@ -108,3 +108,5 @@ This file records the current high-level architectural decisions.
 - Cloud degradation is represented by a short-lived sanitized reason enum rather than a generic boolean or raw exception. Status UI labels route counts as configured, not available, and Auto continues to recover locally.
 - Generated-image enhancement is additive: never publish or log the prompt-bearing source URL from the upscaler, and fall back once to the validated original image when local enhancement fails.
 - CrewAI tracing is always noninteractive in the request path.
+- Attachment IDs are validated as server-generated hexadecimal identifiers, and resolved metadata is authoritative over client-supplied type/filename fields. This prevents path traversal and prevents document uploads from being misclassified as images.
+- Chat persistence strips transient image base64, attachment bytes, and email draft attachment payloads while retaining owner-scoped IDs and metadata. Live previews remain in memory only.

@@ -47,3 +47,4 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - Default new requests to `helper-auto`; resolve to the configured cloud route when credentials exist and to the local multimodal route otherwise.
 - Apply the shared response policy to direct cloud, direct local, and agentic execution so route changes do not change the assistant's honesty or output-quality contract.
 - Treat Think, Research, Create, and Act as human-facing intent lanes. Provider and model IDs remain implementation controls, not the primary product vocabulary.
+- Document attachments are extracted as bounded text context and are never classified as visual inputs; only validated image MIME types enter vision analysis.

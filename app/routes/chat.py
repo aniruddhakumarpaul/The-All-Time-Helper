@@ -72,6 +72,18 @@ def _normalize_chat_image_payload(req: ChatRequest):
     return req.img
 
 
+def _is_visual_attachment(item: Any) -> bool:
+    """Keep document uploads out of the vision lane while preserving legacy images."""
+    if not isinstance(item, dict):
+        return bool(item)
+    content_type = str(item.get("content_type") or item.get("type") or "").lower()
+    if content_type:
+        return content_type.startswith("image/")
+    filename = str(item.get("filename") or item.get("name") or "").lower()
+    return filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")) or bool(
+        item.get("content") or item.get("data") or item.get("attachment_content") or item.get("path")
+    )
+
 def _hydrate_current_image_payload(payload: Any, owner: str):
     if not payload:
         return payload
@@ -227,7 +239,8 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 document_blocks.append(f"--- ATTACHED DOCUMENT: {filename} ---\n{extracted}\n--- END ATTACHED DOCUMENT ---")
     if document_blocks:
         prompt = prompt + "\n\n" + "\n\n".join(document_blocks)
-    has_visual_input = bool(img)
+    image_items = img if isinstance(img, list) else ([img] if img else [])
+    has_visual_input = any(_is_visual_attachment(item) for item in image_items)
     sys_config = req.sys
 
     if not req.isMasked:
@@ -314,9 +327,10 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
                 if has_visual_input:
                     yield json.dumps({"status": "Reading the attached image..."}).encode() + b'\n'
+                elif img:
+                    yield json.dumps({"status": "Reading the attached document..."}).encode() + b'\n'
                 else:
                     yield json.dumps({"status": "Checking relevant context..."}).encode() + b'\n'
-
                 streaming_occurred = []
                 status_queue = queue.Queue()
 

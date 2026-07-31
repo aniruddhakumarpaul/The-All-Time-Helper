@@ -255,7 +255,7 @@ function toggleSet(id) {
     notify((control.getAttribute('aria-label') || 'Setting') + (active ? ' enabled.' : ' disabled.'), 'success', 1800);
 }
 
-function addMsg(r, c, i, idx, mName, isMasked = false) {
+function addMsg(r, c, i, idx, mName, isMasked = false, attachments = []) {
     const div = document.createElement('div');
     div.className = `msg ${r}-msg entering`;
     div.setAttribute('role', 'article');
@@ -314,6 +314,15 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
     }
 
     const preview = normalizePreviewImageSource(Array.isArray(i) ? i[0] : i);
+    const attachmentNames = (Array.isArray(attachments) ? attachments : [])
+        .map(item => item?.filename || item?.name)
+        .filter(Boolean);
+    const attachmentChips = attachmentNames
+        .map(name => '<span class="message-attachment-chip">' + escapeHtml(name) + '</span>')
+        .join('');
+    const attachmentHtml = attachmentNames.length
+        ? '<div class="message-attachments" aria-label="Attached files">' + attachmentChips + '</div>'
+        : '';
     div.innerHTML = `
         <div class="av-wrap">
             ${avatarHtml}
@@ -323,6 +332,7 @@ function addMsg(r, c, i, idx, mName, isMasked = false) {
         </div>
         <div class="txt" draggable="false">
             <div id="msg-text-${safeIdx}">${content}</div>
+            ${attachmentHtml}
             ${preview.src ? `<div class="chat-img-preview-container" data-preview-src="${escapeHtml(preview.src)}" data-preview-payload="${escapeHtml(preview.payload)}"><img src="${escapeHtml(preview.src)}" class="chat-img-preview"></div>` : ''}
             ${watermark}
             ${tools}
@@ -554,36 +564,56 @@ function cancelEdit(idx) {
 }
 
 function previewImg(i) {
-    if (i.files && i.files[0]) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            state.currentImg = e.target.result.split(',')[1];
-            if (state.currentBlobUrl) URL.revokeObjectURL(state.currentBlobUrl);
-            state.currentBlobUrl = URL.createObjectURL(i.files[0]);
-            const area = document.getElementById('img-preview-area');
-            area.style.display = 'flex';
-            area.textContent = '';
-            const wrapper = document.createElement('div');
-            wrapper.className = 'img-thumb-wrap';
+    const files = Array.from(i.files || []);
+    if (!files.length) return;
+    for (const url of state.previewBlobUrls || []) URL.revokeObjectURL(url);
+    state.previewBlobUrls = [];
+    state.currentBlobUrl = null;
+    state.currentImg = null;
+    const area = document.getElementById('img-preview-area');
+    if (!area) return;
+    area.style.display = 'flex';
+    area.textContent = '';
+    let firstImage = null;
+    files.forEach(file => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'img-thumb-wrap attachment-preview-item';
+        wrapper.title = file.name;
+        if (file.type.startsWith('image/')) {
             const image = document.createElement('img');
-            image.src = state.currentBlobUrl;
+            const previewUrl = URL.createObjectURL(file);
+            state.previewBlobUrls.push(previewUrl);
+            image.src = previewUrl;
             image.className = 'img-thumb';
-            const remove = document.createElement('button');
-            remove.type = 'button';
-            remove.className = 'img-remove-btn';
-            remove.setAttribute('aria-label', 'Remove attached image');
-            remove.textContent = 'x';
-            remove.addEventListener('click', clearImgPreview);
-            wrapper.append(image, remove);
-            area.appendChild(wrapper);
-            selModel('moondream', 'Moondream (Vision)');
-        };
-        reader.readAsDataURL(i.files[0]);
+            wrapper.appendChild(image);
+            if (!firstImage) firstImage = file;
+        } else {
+            const label = document.createElement('span');
+            label.className = 'attachment-file-label';
+            label.textContent = (file.type === 'application/pdf' ? 'PDF' : 'FILE') + '  ' + file.name;
+            wrapper.appendChild(label);
+        }
+        area.appendChild(wrapper);
+    });
+    if (firstImage) {
+        state.currentBlobUrl = state.previewBlobUrls[0] || null;
+        const reader = new FileReader();
+        reader.onload = event => { state.currentImg = String(event.target.result || '').split(',')[1] || null; };
+        reader.readAsDataURL(firstImage);
+        selModel('helper-auto', 'Helper Auto');
     }
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'img-remove-btn';
+    remove.setAttribute('aria-label', 'Remove attached files');
+    remove.textContent = 'x';
+    remove.addEventListener('click', clearImgPreview);
+    area.appendChild(remove);
 }
 
 function clearImgPreview() {
-    if (state.currentBlobUrl) URL.revokeObjectURL(state.currentBlobUrl);
+    for (const url of state.previewBlobUrls || []) URL.revokeObjectURL(url);
+    state.previewBlobUrls = [];
     state.currentBlobUrl = null; state.currentImg = null;
     state.currentImages = [];
     state.pendingImageUploads = null;
