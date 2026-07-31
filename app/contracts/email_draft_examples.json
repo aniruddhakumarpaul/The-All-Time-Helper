@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "legacy": {
+    "to": "person@example.com",
+    "subject": "Legacy draft",
+    "body": "Hello",
+    "tone": "modern",
+    "attachment_filename": "notes.txt",
+    "attachment_type": "text/plain"
+  },
+  "versioned": {
+    "schema_version": 1,
+    "recipient": "person@example.com",
+    "subject": "Versioned draft",
+    "body": "Hello",
+    "tone": "formal",
+    "attachments": [
+      {
+        "id": "0123456789abcdef0123456789abcdef",
+        "filename": "photo.png",
+        "mime_type": "image/png",
+        "size": 2048,
+        "sha256": "0123456789012345678901234567890123456789012345678901234567890123",
+        "available": true,
+        "source": "upload"
+      },
+      {
+        "id": "abcdef0123456789abcdef0123456789",
+        "filename": "generated.png",
+        "mime_type": "image/png",
+        "size": 4096,
+        "available": true,
+        "source": "generated"
+      }
+    ]
+  }
+}

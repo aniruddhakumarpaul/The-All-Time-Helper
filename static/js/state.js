@@ -76,6 +76,79 @@ class AppState {
     get(key) {
         return this[key];
     }
+
+    replaceChats(chats) {
+        this.set('chats', Array.isArray(chats) ? chats : []);
+        return this.chats;
+    }
+
+    appendChat(chat) {
+        if (!chat || typeof chat !== 'object') return null;
+        this.chats.push(chat);
+        this.touch('chats');
+        return chat;
+    }
+
+    updateChat(chatId, patch) {
+        const chat = this.chats.find(item => item?.id === chatId);
+        if (!chat || !patch || typeof patch !== 'object') return null;
+        Object.assign(chat, patch);
+        this.touch('chats');
+        return chat;
+    }
+
+    deleteChat(chatId) {
+        this.replaceChats(this.chats.filter(chat => chat?.id !== chatId));
+        return this.chats;
+    }
+
+    appendMessage(chatId, message) {
+        const chat = this.chats.find(item => item?.id === chatId);
+        if (!chat || !message || typeof message !== 'object') return null;
+        if (!Array.isArray(chat.ms)) chat.ms = [];
+        chat.ms.push(message);
+        this.touch('chats');
+        return message;
+    }
+
+    truncateMessages(chatId, index) {
+        const chat = this.chats.find(item => item?.id === chatId);
+        if (!chat || !Array.isArray(chat.ms)) return null;
+        chat.ms = chat.ms.slice(0, Math.max(0, Number(index) || 0));
+        this.touch('chats');
+        return chat.ms;
+    }
+
+    replaceAttachedContexts(contexts) {
+        this.set('attachedContexts', Array.isArray(contexts) ? contexts : []);
+        return this.attachedContexts;
+    }
+
+    addAttachedContext(context) {
+        if (!context || typeof context !== 'object') return null;
+        this.attachedContexts.push(context);
+        this.touch('attachedContexts');
+        return context;
+    }
+
+    removeAttachedContext(predicate) {
+        const matcher = typeof predicate === 'function' ? predicate : item => item === predicate;
+        const before = this.attachedContexts.length;
+        const filtered = this.attachedContexts.filter((item, index) => !matcher(item, index));
+        if (filtered.length === before) return false;
+        this.replaceAttachedContexts(filtered);
+        return true;
+    }
+
+    replaceCurrentImages(images) {
+        this.set('currentImages', Array.isArray(images) ? images : []);
+        return this.currentImages;
+    }
+
+    setPendingImageUploads(promise) {
+        this.set('pendingImageUploads', promise || null);
+        return this.pendingImageUploads;
+    }
 }
 
 // Singleton instance

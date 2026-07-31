@@ -181,7 +181,7 @@ def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current
         ChatRepository.sync_user_chats(db, current_user, chats)
         return {"success": True}
     except Exception as exc:
-        logger.exception("[ChatSync] Failed to persist conversations for %s", current_user)
+        logger.error("[ChatSync] Failed to persist conversations (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
 
 @router.post("/chat/jobs/{job_id}/cancel")
@@ -215,7 +215,7 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
             "explanation": explanation,
         }
     except Exception as exc:
-        logger.exception("[Memory] Related context retrieval failed for %s", current_user)
+        logger.error("[Memory] Related context retrieval failed (%s)", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Related context is temporarily unavailable.") from exc
     finally:
         user_context.reset(token)
@@ -256,7 +256,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             logger.info("[EmailWidget] Routed latest image attachment request inside chat endpoint.")
             return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
         except Exception as exc:
-            logger.warning(f"[EmailWidget] Route shortcut failed, continuing normal chat flow: {exc}")
+            logger.warning("[EmailWidget] Route shortcut failed, continuing normal chat flow (%s)", type(exc).__name__)
 
     admin_key_value = None
     if req.isMasked:
@@ -345,7 +345,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 status_queue = queue.Queue()
 
                 def status_callback(msg):
-                    logger.debug(f"[Chat] Status Update -> {msg}")
+                    logger.debug("[Chat] Status Update (chars=%d)", len(str(msg)))
                     status_queue.put({"type": "status", "data": msg})
 
                 def chunk_callback(token):
@@ -421,7 +421,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                 inference_queue.cancel(job_id, current_user)
                 raise
             except Exception:
-                logger.exception("[Chat] Assistant task failed for job %s", job_id)
+                logger.error("[Chat] Assistant task failed (stream)")
                 yield json.dumps({
                     "message": {
                         "content": "I could not complete that response. Please retry or choose another route."
@@ -443,5 +443,5 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as exc:
-        logger.exception("[Chat] Failed to start assistant request")
+        logger.error("[Chat] Failed to start assistant request (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="The assistant request could not be started.") from exc

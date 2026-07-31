@@ -112,3 +112,10 @@ This file records the current high-level architectural decisions.
 - Chat persistence strips transient image base64, attachment bytes, and email draft attachment payloads while retaining owner-scoped IDs and metadata. Live previews remain in memory only.
 - Email-context cache persistence is event-driven: state subscriptions schedule one debounced local-cache write, with beforeunload and hidden-document flushes as final safeguards. The repair layer follows the same contract and does not poll every second.
 - Queue and chat telemetry records bounded job/lane/timing/attachment counts and sanitized state categories only; prompts, responses, paths, recipients, credentials, and provider exception text remain excluded.
+
+## 2026-07-31 Hardening Decisions
+
+- Email drafts use schema version 1. Transient delivery serializers may carry attachment content only inside the request, while prompt-context and persistence serializers carry metadata and owner-scoped IDs only.
+- Active frontend collections are mutated through named state APIs (appendMessage, updateChat, replaceAttachedContexts, and related methods) so subscribers and persistence hooks observe every meaningful mutation.
+- /chat characterization tests preserve the existing NDJSON order and direct-tool/cloud fallback behavior before any route decomposition; extraction is deferred until the remaining branches have equivalent coverage.
+- Queue and agent telemetry records categories, identifiers, counts, and timings only. Raw prompts, responses, recipients, paths, credentials, tool arguments, and exception messages are excluded.

@@ -52,7 +52,7 @@ def generate_personality_batch(api_key):
             
         return json.loads(content.strip())
     except Exception as e:
-        print(f"Error generating batch: {e}")
+        print("Error generating batch (%s)" % type(e).__name__)
         return []
 
 def main():

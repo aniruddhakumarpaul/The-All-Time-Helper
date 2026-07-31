@@ -478,8 +478,7 @@ function saveRename(id, val) {
     if (!state.isRenaming) return;
     const chat = state.chats.find(c => c.id === id);
     if (chat && val.trim()) {
-        chat.title = val.trim();
-        state.touch('chats');
+        state.updateChat(id, { title: val.trim() });
         window.requestChatPersist?.();
     }
     state.isRenaming = false;
@@ -619,8 +618,8 @@ function clearImgPreview() {
     for (const url of state.previewBlobUrls || []) URL.revokeObjectURL(url);
     state.previewBlobUrls = [];
     state.currentBlobUrl = null; state.currentImg = null;
-    state.currentImages = [];
-    state.pendingImageUploads = null;
+    state.replaceCurrentImages([]);
+    state.setPendingImageUploads(null);
     document.getElementById('img-in').value = '';
     const area = document.getElementById('img-preview-area');
     area.style.display = 'none'; area.innerHTML = '';

@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 
@@ -57,18 +58,23 @@ def get_logger(name):
     return logger.getChild(name)
 
 
+def _safe_log_label(value, default="unknown"):
+    """Keep agent telemetry low-cardinality and free of model/user content."""
+    candidate = getattr(value, "name", None) or getattr(value, "role", None)
+    if not isinstance(candidate, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", candidate):
+        return default
+    return candidate
+
+
 def log_agent_step(step_output):
-    """Callback triggered after each agent step in the swarm."""
+    """Callback triggered after each agent step without logging model content."""
     try:
-        agent_name = getattr(step_output, "agent", "Unknown Agent")
-        tool_used = getattr(step_output, "tool", "No Tool")
-        thought = getattr(step_output, "thought", "Processing...")
-        log_msg = f"[AGENT: {agent_name}] | THOUGHT: {thought} | ACTION: {tool_used}"
-        logger.info(log_msg)
-        print(f"\n[WORKFLOW LOG]: {log_msg}")
-    except Exception as e:
-        logger.error(f"Failed to log step: {e}")
+        agent_label = _safe_log_label(getattr(step_output, "agent", None))
+        tool_label = _safe_log_label(getattr(step_output, "tool", None))
+        logger.info("[AgentTrace] state=step agent=%s tool=%s", agent_label, tool_label)
+    except Exception:
+        logger.error("[AgentTrace] state=log_failure")
 
 
 def log_system_error(error_msg: str):
-    logger.error(f"[SYSTEM ERROR]: {error_msg}")
+    logger.error("[SYSTEM ERROR] category=%s", type(error_msg).__name__)

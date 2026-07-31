@@ -58,6 +58,7 @@ window.addEventListener('unhandledrejection', function (event) {
     function inject() {
         injectScript('dialog_manager', '1', 'dialog-manager');
         injectScript('busy_states', '1', 'busy-states');
+        injectScript('email_draft_contract', '1', 'email-draft-contract');
         injectScript('email_draft', '4', 'email-draft-core');
         injectScript('email_approval', '4', 'draft-send');
         injectScript('admin_dashboard', '4', 'admin-dashboard');

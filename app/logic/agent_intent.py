@@ -162,5 +162,5 @@ def analyze_prompt_via_llm(
             "category": data.get("category", "casual"),
         }
     except Exception as exc:
-        logger.warning(f"[Prompt Analyzer] Failed structured analysis: {exc}")
+        logger.warning("[Prompt Analyzer] Failed structured analysis (%s)", type(exc).__name__)
         return None

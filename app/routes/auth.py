@@ -60,7 +60,7 @@ SENDER_PWD = os.getenv("SENDER_PWD")
 
 def send_otp_email(target_email, otp):
     if os.getenv("EMAIL_MODE", "").upper() == "SIMULATE":
-        logger.info(f"[SIMULATED EMAIL] To: {target_email} | OTP: {otp}")
+        logger.info("[SIMULATED EMAIL] OTP generated for verification flow")
         return True
 
     if not SENDER_EMAIL or not SENDER_PWD:
@@ -80,7 +80,7 @@ def send_otp_email(target_email, otp):
                 server.login(SENDER_EMAIL, SENDER_PWD)
                 server.send_message(msg)
         except Exception as e:
-            logger.error(f"SMTP Error while sending OTP: {e}")
+            logger.error("SMTP Error while sending OTP (%s)", type(e).__name__)
 
     threading.Thread(target=_send, daemon=True).start()
     return True

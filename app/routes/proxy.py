@@ -67,7 +67,7 @@ async def image_proxy(url: str):
     except SafeFetchError as exc:
         return Response(status_code=exc.status_code)
     except Exception as exc:
-        logger.debug(f"Proxy exception: {exc}")
+        logger.debug("Proxy request failed (%s)", type(exc).__name__)
         return Response(status_code=500)
 
     parsed = urlparse(normalized_url)

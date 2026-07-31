@@ -219,7 +219,7 @@ class ProductBackendAcceptanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_chat_failures_are_logged_but_not_streamed_verbatim(self):
         route = (ROOT / "app" / "routes" / "chat.py").read_text(encoding="utf-8")
-        self.assertIn('logger.exception("[Chat] Assistant task failed', route)
+        self.assertIn('logger.error("[Chat] Assistant task failed', route)
         self.assertIn("I could not complete that response. Please retry or choose another route.", route)
         self.assertNotIn('**Agent Error:** {str(exc)}', route)
         self.assertNotIn('return {"error": str(exc)}', route)

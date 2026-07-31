@@ -21,6 +21,7 @@ from app.logic.memory import query_memory, log_insight, admin_auth_context
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
 from app.security import verify_admin_key
+from app.contracts.email_draft import serialize_full_transient
 from app.logic.attachment_store import detect_file_type, resolve_attachment_reference
 from app.logic.exceptions import AgentFastExit
 from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
@@ -73,7 +74,7 @@ def _ddgs_search(client, category: str, query: str, backends: tuple[str, ...], m
             if results:
                 return results
         except Exception as exc:
-            logger.warning("[Search] DDGS %s backend %s unavailable: %s", category, backend, exc)
+            logger.warning("[Search] DDGS %s backend %s unavailable (%s)", category, backend, type(exc).__name__)
     return []
 
 
@@ -127,7 +128,7 @@ def _openrouter_grounded_search(query: str) -> str | None:
             )
             data = response.json()
         except (requests.RequestException, ValueError) as exc:
-            logger.warning("[Search] OpenRouter grounded request failed for %s: %s", model, exc)
+            logger.warning("[Search] OpenRouter grounded request failed for %s (%s)", model, type(exc).__name__)
             continue
 
         if response.status_code != 200:
@@ -203,7 +204,7 @@ def search_tool(query: str) -> str:
             output.append(f"Title: {title}\nSnippet: {snippet}\nURL: {url}\n")
         return "\n---\n".join(output)
     except Exception as e:
-        logger.error(f"DEBUG: [Search] Global Failure: {str(e)}")
+        logger.error("DEBUG: [Search] Global Failure (%s)", type(e).__name__)
         return "No reliable results found. The search engine may be temporarily unavailable."
 
 
@@ -427,7 +428,7 @@ def send_or_simulate_email(
             if row:
                 return row[0]
         except sqlite3.Error as exc:
-            logger.warning(f"Email idempotency lookup failed: {exc}")
+            logger.warning("Email idempotency lookup failed (%s)", type(exc).__name__)
 
     sender_email = os.getenv("SENDER_EMAIL")
     sender_pwd = os.getenv("SENDER_PWD")
@@ -465,10 +466,10 @@ def send_or_simulate_email(
                     )
                     conn.commit()
             except sqlite3.Error as exc:
-                logger.warning(f"Email idempotency write failed: {exc}")
+                logger.warning("Email idempotency write failed (%s)", type(exc).__name__)
         return result
     except Exception as exc:
-        logger.error(f"SMTP error: {exc}", exc_info=True)
+        logger.error("SMTP error (%s)", type(exc).__name__)
         return "ERROR: Email delivery failed. Check the server logs and retry."
 
 
@@ -508,7 +509,7 @@ def send_email_tool(
     }
     if normalized:
         draft["attachments"] = normalized
-    raise AgentFastExit(f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}")
+    raise AgentFastExit(f"EMAIL_DRAFT_PAYLOAD:{json.dumps(serialize_full_transient(draft), separators=(',', ':'))}")
 
 
 def resolve_chat_images(reference: str, history: list | None = None, max_images: int = 6):
@@ -601,7 +602,7 @@ def image_generate_tool(description: str) -> str:
         logger.info("[ART ENGINE] Upscale job queued (model=%s, job_id=%s)", POLLINATIONS_IMAGE_MODEL, upscale_id)
         return f"![{clean_desc}]({image_url_with_uid})"
     except Exception as e:
-        logger.error(f"[ART ENGINE] Failed to trigger upscale: {e}")
+        logger.error("[ART ENGINE] Failed to trigger upscale (%s)", type(e).__name__)
         base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
         return f"![{clean_desc}]({base_url})"
 
@@ -620,7 +621,7 @@ def image_search_tool(query: str) -> str:
         img_url = results[0]['image']
         return f"![{query}]({img_url})"
     except Exception as e:
-        logger.error(f"Image Search Error: {str(e)}")
+        logger.error("Image Search Error (%s)", type(e).__name__)
         return "ERROR: Image search is temporarily unavailable."
 
 
@@ -639,7 +640,7 @@ def recall_memory(query: str) -> str:
             output.append(f"--- Memory from {source} ---\n{r['content']}\n")
         return "\n".join(output)
     except Exception as e:
-        logger.error(f"Memory Retrieval Error: {str(e)}")
+        logger.error("Memory Retrieval Error (%s)", type(e).__name__)
         return "ERROR: Memory retrieval is temporarily unavailable."
 
 

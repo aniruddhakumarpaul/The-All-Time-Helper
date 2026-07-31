@@ -21,6 +21,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from crewai import Agent, Task, Crew, Process, LLM
 from typing import List, Optional, Any
 from app.logic import tools
+from app.contracts.email_draft import draft_marker
 from app.logger import logger, log_agent_step
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
@@ -354,13 +355,14 @@ def _email_draft_payload_from_json_result(result: str) -> Optional[str]:
         "tone": email_data.get("tone", "modern"),
         "attachment_content": email_data.get("attachment_content"),
         "attachment_filename": email_data.get("attachment_filename") or "report.txt",
+        "attachments": email_data.get("attachments") or [],
     }
     prefix_text = res_str.split(json_match.group(1), 1)[0].strip()
     prefix_text = re.sub(r'```json\s*$', '', prefix_text).strip()
     prefix_text = re.sub(r'```\s*$', '', prefix_text).strip()
     if prefix_text:
-        return f"{prefix_text}\n\nEMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
-    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
+        return f"{prefix_text}\n\n{draft_marker(draft)}"
+    return draft_marker(draft)
 
 
 # Helper to keep code DRY
@@ -516,7 +518,7 @@ def global_step_callback(step):
         raise # Critical for Fast-Exit
     except Exception as e:
         if "Operation cancelled" in str(e): raise e
-        print(f"DEBUG: Step callback error: {e}")
+        print("DEBUG: Step callback error (%s)" % type(e).__name__)
 
 # --- AGENT DEFINITIONS (created fresh per-request to use current env vars) ---
 
@@ -688,7 +690,7 @@ def process_image_cloud(img_base64: str, api_key: str):
         response = completion(model="groq/llama-3.2-11b-vision-preview", messages=messages, api_key=api_key)
         return response.choices[0].message.content
     except Exception as e:
-        print(f"DEBUG: Cloud Vision fallback: {e}", flush=True)
+        print("DEBUG: Cloud Vision fallback (%s)" % type(e).__name__, flush=True)
         return None
 
 def process_image_local(img_base64: str):
@@ -717,10 +719,10 @@ def save_uploaded_image(img_base64: str) -> str:
         
         # Save image
         cv2.imwrite(filepath, img)
-        logger.debug(f"[Agents] Image successfully saved to {filepath} using OpenCV.")
+        logger.debug("[Agents] Image successfully saved using OpenCV.")
         return f"/static/uploads/{filename}"
     except Exception as e:
-        logger.error(f"[Agents] CRITICAL ERROR saving uploaded image: {e}", exc_info=True)
+        logger.error("[Agents] CRITICAL ERROR saving uploaded image (%s)", type(e).__name__)
         return None
 
 
@@ -811,7 +813,7 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
     if attachment_choice:
         pending_request = _pending_attachment_choice_request(history, clean_p)
         if pending_request:
-            logger.debug(f"[Context] Resolved attachment choice '{clean_p}' against previous request")
+            logger.debug("[Context] Resolved attachment choice")
             return f"{pending_request}\n\nAttachment choice: {_attachment_choice_instruction(attachment_choice)}"
     
     # 1. Numbered selection detection
@@ -832,7 +834,7 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
                 if matches:
                     for num, text in matches:
                         if num == requested_num:
-                            logger.debug(f"[Context] Resolved Numeric '{clean_p}' to '{text.strip()}'")
+                            logger.debug("[Context] Resolved numeric selection")
                             return f"[Selection: {text.strip()}] {user_prompt}"
                 
                 # Strategy B: Bullet points or Line-based options (Header: Description)
@@ -842,7 +844,7 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
                         idx = int(requested_num) - 1
                         if 0 <= idx < len(options):
                             text = options[idx].split(':')[0] # Take the header part
-                            logger.debug(f"[Context] Resolved Option '{clean_p}' to '{text.strip()}'")
+                            logger.debug("[Context] Resolved option selection")
                             return f"[Selection: {text.strip()}] {user_prompt}"
                     except Exception: pass
  
@@ -857,7 +859,7 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
                 words = content.replace("?", "").replace(".", "").split()
                 if words:
                     subject_hint = " ".join(words[-4:])
-                    logger.debug(f"[Context] Pronoun Resolve hint: {subject_hint}")
+                    logger.debug("[Context] Resolved pronoun reference")
                     return f"[Target: {subject_hint}] {user_prompt}"
  
     # 3. Admin Key provision detection (Secure wrapper)
@@ -1113,7 +1115,7 @@ def _resolve_visual_task_continuation(user_prompt: str, history: list) -> Option
         return None
 
     reconstructed = "generate an image of " + ". ".join(prompt_parts)
-    logger.info(f"[Context] Continuing visual generation task from recent history: '{reconstructed[:180]}'")
+    logger.info("[Context] Continuing visual generation task from recent history (chars=%d)", len(reconstructed))
     return reconstructed
 
 def _classify_complexity_via_llm(user_prompt: str, target_model: str) -> str:
@@ -1166,10 +1168,10 @@ def _classify_complexity_via_llm(user_prompt: str, target_model: str) -> str:
         # Parse output
         for choice in ["direct", "single", "swarm"]:
             if choice in raw:
-                logger.info(f"[Intent Classifier] LLM classified complexity as '{choice}' (raw: '{raw}')")
+                logger.info("[Intent Classifier] LLM classified complexity=%s", choice)
                 return choice
     except Exception as e:
-        logger.warning(f"LLM Complexity Classification failed: {e}. Falling back to heuristics.")
+        logger.warning("LLM Complexity Classification failed (%s); falling back to heuristics.", type(e).__name__)
     
     return "heuristic"
 
@@ -1331,7 +1333,7 @@ def _detect_intent(user_prompt: str, target_model: str, history: list = None) ->
     # Try structured LLM Prompt Analyzer first
     analysis = _analyze_prompt_via_llm(clean_p, target_model)
     if analysis:
-        logger.info(f"[Prompt Analyzer] Result: {analysis}")
+        logger.info("[Prompt Analyzer] Structured analysis accepted")
         requires_tools = analysis["requires_tools"] and not is_sensitive
         return {
             "is_sensitive": is_sensitive,
@@ -1532,7 +1534,7 @@ def _extract_image_prompt(user_prompt: str, history: list) -> str:
                 clean_content = re.sub(r'[*_`#\-]', ' ', clean_content)
                 clean_content = _preserve_structured_text(clean_content)
                 if clean_content:
-                    logger.info(f"[Direct Tool] Reconstructed image description from history: '{clean_content[:150]}...'")
+                    logger.info("[Direct Tool] Reconstructed image description from history (chars=%d)", len(clean_content))
                     return clean_content
                     
     return clean_desc or user_prompt
@@ -1942,7 +1944,7 @@ def _try_update_email_draft_from_prompt(clean_prompt: str, history: list, target
     if not draft.get("recipient") and not is_attachment_template_request:
         return "Which recipient should I put in the email template?"
 
-    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(draft)}"
+    return draft_marker(draft)
 
 
 def _extract_generated_image_url(tool_result: str) -> Optional[str]:
@@ -2106,7 +2108,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             "attachment_content": None,
             "attachment_filename": "",
         }
-        return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(blank_draft)}"
+        return draft_marker(blank_draft)
 
     simple_draft = _build_simple_email_draft(clean_prompt, recipient, status_callback=status_callback)
     if simple_draft:
@@ -2175,7 +2177,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 clean_name = re.sub(r'[^\w]', '_', description).strip().lower()
                 filename = f"{clean_name[:20]}_image.png"
             except Exception as e:
-                logger.error(f"[Direct Tool] image_generate_tool failed inside email flow: {e}")
+                logger.error("[Direct Tool] image_generate_tool failed inside email flow (%s)", type(e).__name__)
                 return "ERROR: Image generation failed before the email draft was created."
                 
         # Step B: Resolve current request images or chat history reference if no image generation was requested
@@ -2270,7 +2272,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
             body = data.get("body", body)
             filename = data.get("attachment_filename", filename)
         except Exception as e:
-            logger.warning(f"[Direct Tool] Failed to draft email via native Ollama: {e}")
+            logger.warning("[Direct Tool] Failed to draft email via native Ollama (%s)", type(e).__name__)
             if "house" in p:
                 subject = "House Image and Description"
                 body = "Here is the house image you requested, along with a description of the cozy and beautiful home."
@@ -2312,7 +2314,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 tool_result_bus.set_result(jid, e.result)
             return e.result
         except Exception as e:
-            logger.error(f"[Direct Tool] send_email_tool failed: {e}", exc_info=True)
+            logger.error("[Direct Tool] send_email_tool failed (%s)", type(e).__name__)
             return "ERROR: The email draft could not be created."
     
     # 1. Image Generation Intent
@@ -2332,7 +2334,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 chunk_callback(result)
             return result
         except Exception as e:
-            logger.error(f"[Direct Tool] image_generate_tool failed: {e}", exc_info=True)
+            logger.error("[Direct Tool] image_generate_tool failed (%s)", type(e).__name__)
             return "ERROR: Image generation is temporarily unavailable."
             
     # 2. Image Search Intent
@@ -2360,7 +2362,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 chunk_callback(result)
             return result
         except Exception as e:
-            logger.error(f"[Direct Tool] image_search_tool failed: {e}", exc_info=True)
+            logger.error("[Direct Tool] image_search_tool failed (%s)", type(e).__name__)
             return "ERROR: Image search is temporarily unavailable."
             
     # 3. Web Search Intent
@@ -2393,7 +2395,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 chunk_callback(result)
             return result
         except Exception as e:
-            logger.error(f"[Direct Tool] search_tool failed: {e}", exc_info=True)
+            logger.error("[Direct Tool] search_tool failed (%s)", type(e).__name__)
             return "ERROR: Web search is temporarily unavailable."
 
     return None
@@ -2444,10 +2446,10 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
                     (user_id, time.time() - 600)
                 ).fetchone()
                 if recent:
-                    logger.info(f"[Agents] Idempotency hit for {user_id}. Email already sent at {recent['timestamp']}.")
+                    logger.info("[Agents] Idempotency hit; duplicate email suppressed")
                     return f"ALREADY SENT: Email was dispatched to {recent['recipients']} (Job: {recent['job_id']}). Skipping duplicate."
         except Exception as e:
-            logger.warning(f"[Agents] Idempotency check failed: {e}")
+            logger.warning("[Agents] Idempotency check failed (%s)", type(e).__name__)
 
     # 1. Context Reconstruction (Harden against ambiguous prompts like '1.' or 'it')
     routing_prompt = _reconstruct_contextual_prompt(user_prompt, history)

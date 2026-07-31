@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
         run_startup_diagnostics()
         prune_stale_memories(days=30)
     except Exception as exc:
-        logger.error(f"Diagnostics/pruning failed: {exc}")
+        logger.error("Diagnostics/pruning failed (%s)", type(exc).__name__)
 
     yield
 

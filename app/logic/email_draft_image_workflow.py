@@ -4,6 +4,8 @@ from copy import deepcopy
 from typing import Callable, Optional
 from urllib.parse import unquote
 
+from app.contracts.email_draft import draft_marker
+
 
 _DRAFT_MARKERS = ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:")
 _CONTEXT_BLOCK_RE = re.compile(r'\[Attached Context \d+\]\s*"""[\s\S]*?"""')
@@ -287,7 +289,7 @@ def _body_update_payload_from_draft(draft: dict, prompt: str, *, logger=None) ->
     updated["body"] = _fallback_body_for_draft(updated, prompt)
     if logger:
         logger.info("[EmailWidget] Filled email draft body from targeted draft context.")
-    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
+    return draft_marker(updated)
 
 
 def build_email_draft_body_update_payload(prompt: str, *, logger=None) -> Optional[str]:
@@ -329,12 +331,12 @@ def build_generated_image_email_draft_payload(
     if status_callback:
         status_callback("🎨 Generating image for email widget...")
     if logger:
-        logger.info(f"[EmailWidget] Generating image for draft attachment: '{description}'")
+        logger.info("[EmailWidget] Generating image for draft attachment (prompt_chars=%d)", len(description))
 
     tool_result = image_generate(description=description)
     image_url = extract_generated_image_url(tool_result)
     if not image_url:
-        return f"ERROR: Image generation did not return an attachable URL. Result: {tool_result}"
+        return "ERROR: Image generation did not return an attachable result."
 
     filename = filename_from_description(description)
     updated = deepcopy(draft)
@@ -352,4 +354,4 @@ def build_generated_image_email_draft_payload(
         "type": "image/png",
         "content_type": "image/png",
     }]
-    return f"EMAIL_DRAFT_PAYLOAD:{json.dumps(updated)}"
+    return draft_marker(updated)

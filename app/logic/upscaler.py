@@ -83,7 +83,7 @@ class UpscaleManager:
             
             # --- SUCCESS LOGGER ---
             file_size_kb = os.path.getsize(filepath) / 1024
-            logger.info(f"✨ [UPSCALER SUCCESS] Job {job_id} finished. Optimized JPG saved: {filename} ({file_size_kb:.1f} KB)")
+            logger.info("[UPSCALER SUCCESS] Job %s finished (size_kb=%.1f)", job_id, file_size_kb)
             # ----------------------
 
         except Exception as e:

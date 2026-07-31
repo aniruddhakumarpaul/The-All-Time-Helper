@@ -171,7 +171,7 @@ def execute_cloud(
                 chunk_callback(result)
             return result
         except Exception as exc:
-            runtime.logger.error(f"[Cloud Direct Tool] image_generate_tool failed: {exc}", exc_info=True)
+            runtime.logger.error("[Cloud Direct Tool] image_generate_tool failed (%s)", type(exc).__name__)
             return "ERROR: Image generation is temporarily unavailable."
 
     try:

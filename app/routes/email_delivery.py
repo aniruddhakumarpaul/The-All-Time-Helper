@@ -1,11 +1,12 @@
 import hashlib
 import json
 import re
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from app.contracts.email_draft import EmailDraft, serialize_delivery
 from app.logic.bus import job_id_context
 from app.logic.memory import user_context
 from app.logic.tools import send_or_simulate_email
@@ -18,14 +19,7 @@ MAX_ATTACHMENTS = 10
 VALID_TONES = {"formal", "informal", "modern"}
 
 
-class EmailDraftPayload(BaseModel):
-    recipient: str
-    subject: str = ""
-    body: str = ""
-    tone: str = "modern"
-    attachment_content: Optional[Any] = None
-    attachment_filename: str = "attachment.png"
-    attachments: list[dict[str, Any]] = Field(default_factory=list)
+EmailDraftPayload = EmailDraft
 
 
 class SendDraftRequest(BaseModel):
@@ -65,14 +59,15 @@ def send_approved_email_draft(
     job_token = job_id_context.set(job_id)
     user_token = user_context.set(current_user)
     try:
+        delivery = serialize_delivery(draft)
         result = send_or_simulate_email(
             recipient=draft.recipient,
             subject=str(draft.subject or "")[:998],
             body=draft.body or "",
             tone=tone,
-            attachment_content=draft.attachment_content,
-            attachment_filename=draft.attachment_filename or "attachment.png",
-            attachments=draft.attachments,
+            attachment_content=delivery.get("attachment_content"),
+            attachment_filename=delivery.get("attachment_filename") or "attachment.png",
+            attachments=delivery.get("attachments"),
             owner=current_user,
         )
     finally:

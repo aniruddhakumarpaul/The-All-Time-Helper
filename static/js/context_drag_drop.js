@@ -46,7 +46,7 @@
     function attachedState() {
         const state = window.__helperState;
         if (!state) return null;
-        if (!Array.isArray(state.attachedContexts)) state.attachedContexts = [];
+        if (!Array.isArray(state.attachedContexts)) state.replaceAttachedContexts([]);
         return state;
     }
 
@@ -61,7 +61,7 @@
         const currentTotal = state.attachedContexts.reduce((total, item) => total + String(item.text || '').length, 0);
         const allowed = Math.max(0, Math.min(MAX_CONTEXT_CHARS, MAX_TOTAL_CONTEXT_CHARS - currentTotal));
         if (!allowed) return false;
-        state.attachedContexts.push({ kind: 'retrieved-drag-drop', text: clean.slice(0, allowed) });
+        state.addAttachedContext({ kind: 'retrieved-drag-drop', text: clean.slice(0, allowed) });
         return true;
     }
 

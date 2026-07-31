@@ -85,7 +85,7 @@ function addAttachedContext(text, kind = 'text') {
     const allowed = Math.max(0, Math.min(MAX_CONTEXT_CHARS, MAX_TOTAL_CONTEXT_CHARS - currentTotal));
     if (!allowed) return false;
     const clipped = clean.slice(0, allowed);
-    state.set('attachedContexts', [...state.attachedContexts, { kind, text: clipped }]);
+    state.addAttachedContext({ kind, text: clipped });
     if (clipped.length < clean.length) console.warn('Context truncated to keep this request within the model limit');
     return true;
 }
@@ -98,9 +98,9 @@ function clearPendingComposerDrafts() {
     Object.keys(localStorage).forEach(key => {
         if (key.startsWith('helper_pending_prompt_')) localStorage.removeItem(key);
     });
-    state.set('attachedContexts', []);
-    state.currentImages = [];
-    state.pendingImageUploads = null;
+    state.replaceAttachedContexts([]);
+    state.replaceCurrentImages([]);
+    state.setPendingImageUploads(null);
 }
 
 async function waitForPendingImageUploads() {
@@ -239,7 +239,7 @@ async function loadUserChats() {
         console.error('Cloud fetch failed:', error);
     }
     const mergedChats = mergeChatsByRecency(localChats, remoteChats);
-    state.set('chats', mergedChats);
+    state.replaceChats(mergedChats);
     syncWindowState();
     if (!restoreAllowed || navigationRevision !== restoreRevision) {
         ui.renderHist();
@@ -383,8 +383,7 @@ async function submitEdit(idx, container) {
     if (!newText) return;
     const chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) return;
-    chat.ms = chat.ms.slice(0, idx);
-    state.touch('chats');
+    state.truncateMessages(chat.id, idx);
     await requestChatPersist({ immediate: true });
     loadChat(state.activeId);
     mascot.triggerBotReaction(newText);
@@ -409,8 +408,7 @@ async function send() {
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) {
         chat = { id: state.activeId, title: userText.substring(0, 35) || 'New Chat', ms: [], updated_at: Date.now() };
-        state.chats.push(chat);
-        state.touch('chats');
+        state.appendChat(chat);
     }
     syncWindowState();
 
@@ -429,8 +427,7 @@ async function send() {
     }
 
     ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
-    chat.ms.push({ r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
-    state.touch('chats');
+    state.appendMessage(chat.id, { r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
     chat.updated_at = Date.now();
     requestChatPersist();
     mascot.triggerBotReaction(userText);
@@ -489,8 +486,7 @@ async function send() {
         if (!response.ok) {
             const errorText = `I could not reach the selected helper route (status ${response.status}). Please retry or choose another route.`;
             botText.innerText = errorText;
-            chat.ms.push({ r: 'b', c: errorText, m: modelName });
-            state.touch('chats');
+            state.appendMessage(chat.id, { r: 'b', c: errorText, m: modelName });
             chat.updated_at = Date.now();
             await requestChatPersist({ immediate: true });
             return;
@@ -550,11 +546,9 @@ async function send() {
         }
         if (chat.title && chat.title.trim().length <= 5 && fullText.trim().length > 10) {
             const firstLine = fullText.split('\n')[0];
-            chat.title = firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '');
-            state.touch('chats');
+            state.updateChat(chat.id, { title: firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '') });
         }
-        chat.ms.push({ r: 'b', c: fullText, m: modelName });
-        state.touch('chats');
+        state.appendMessage(chat.id, { r: 'b', c: fullText, m: modelName });
         chat.updated_at = Date.now();
         botText.innerHTML = window.renderMarkdown(fullText);
         window.hydrateRenderedMarkdown?.(botText);
@@ -572,8 +566,7 @@ async function send() {
             ? 'Generation stopped.'
             : 'I could not complete that response. Please retry or choose another route.';
         botText.textContent = failureMessage;
-        chat.ms.push({ r: 'b', c: failureMessage, m: modelName });
-        state.touch('chats');
+        state.appendMessage(chat.id, { r: 'b', c: failureMessage, m: modelName });
         chat.updated_at = Date.now();
         await requestChatPersist({ immediate: true });
         ui.notify(failureMessage, stopped ? 'info' : 'error');
@@ -595,8 +588,8 @@ async function send() {
         document.querySelectorAll('.typing-indicator').forEach(el => el.remove());
         state.abortController = null;
         state.currentImg = null;
-        state.set('attachedContexts', []);
-        state.currentImages = [];
+        state.replaceAttachedContexts([]);
+        state.replaceCurrentImages([]);
         state.activeJobId = null;
         syncWindowState();
         if (state.chats.find(c => c.id === state.activeId)?.ms.length <= 2) ui.renderHist();
@@ -614,7 +607,7 @@ async function deleteSelectedChat() {
     const deletedId = state.chatToDelete;
     const deletedIds = ensureDeletedChatIds();
     if (!deletedIds.includes(deletedId)) deletedIds.push(deletedId);
-    state.set('chats', state.chats.filter(chat => chat.id !== deletedId));
+    state.deleteChat(deletedId);
     if (state.activeId === deletedId) startNewChat();
     ui.closeDeleteConfirm();
     ui.renderHist();
@@ -625,9 +618,7 @@ async function deleteSelectedChat() {
 function togglePin(id) {
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
-    chat.pinned = !chat.pinned;
-    chat.updated_at = Date.now();
-    state.touch('chats');
+    state.updateChat(id, { pinned: !chat.pinned, updated_at: Date.now() });
     ui.renderHist();
     requestChatPersist();
 }
@@ -887,10 +878,10 @@ function bindStaticEvents() {
     on('img-in', 'change', event => {
         const input = event.currentTarget;
         ui.previewImg(input);
-        state.pendingImageUploads = api.uploadAttachments(input.files)
-            .then(items => { state.currentImages = items; })
-            .catch(error => { state.currentImages = []; ui.notify(error.message || 'Attachment upload failed.', 'error'); })
-            .finally(() => { state.pendingImageUploads = null; });
+        state.setPendingImageUploads(api.uploadAttachments(input.files)
+            .then(items => { state.replaceCurrentImages(items); })
+            .catch(error => { state.replaceCurrentImages([]); ui.notify(error.message || 'Attachment upload failed.', 'error'); })
+            .finally(() => { state.setPendingImageUploads(null); });
     });
     on('stop-btn', 'click', stopAI);
     on('export-chat-btn', 'click', exportChat);

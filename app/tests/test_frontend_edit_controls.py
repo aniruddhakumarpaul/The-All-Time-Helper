@@ -14,7 +14,7 @@ class FrontendEditControlTests(unittest.TestCase):
         self.assertIn("window.submitEdit = submitEdit;", app)
         self.assertIn("const textarea = container.querySelector('textarea');", app)
         self.assertIn("const newText = textarea?.value.trim();", app)
-        self.assertIn("chat.ms = chat.ms.slice(0, idx);", app)
+        self.assertIn("state.truncateMessages(chat.id, idx)", app)
         self.assertIn("await send();", app)
         self.assertNotIn("container.querySelector('#", app)
         self.assertNotIn("onclick=\"submitEdit", ui)

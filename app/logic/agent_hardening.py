@@ -121,5 +121,5 @@ def harden_result(
         try:
             return image_generate(description=description)
         except Exception as exc:
-            logger.warning(f"[Agents] Failed to recover image tool plan from final answer: {exc}")
+            logger.warning("[Agents] Failed to recover image tool plan from final answer (%s)", type(exc).__name__)
     return result

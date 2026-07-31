@@ -6,6 +6,7 @@ let lastSavedSnapshot = '';
 let saveTimer = null;
 
 function normalizeDraft(raw) {
+    if (window.helperEmailDraftContract?.normalize) return window.helperEmailDraftContract.normalize(raw);
     if (!raw || typeof raw !== 'object') return null;
     const attachments = Array.isArray(raw.attachments) ? raw.attachments : [];
     const hasAttachmentPayload = Boolean(raw.attachment_content) || Boolean(raw.has_attachment_content) || attachments.length > 0;

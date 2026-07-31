@@ -181,22 +181,15 @@ def execute_local(
     except Exception as exc:
         if abort_event and abort_event.is_set():
             return "Operation cancelled."
-        error_message = str(exc)
-        clean_error = error_message
-        if "model requires more system memory" in error_message:
-            match = re.search(r'"message":\s*"([^"]+)"', error_message) or re.search(r"'message':\s*'([^']+)'", error_message)
-            if match:
-                clean_error = match.group(1)
         if not allow_cloud_fallback:
-            runtime.logger.warning(f"Local Engine Timeout/Error ({clean_error}). Cloud retry disabled for this request.")
+            runtime.logger.warning("Local Engine Timeout/Error (%s). Cloud retry disabled for this request.", type(exc).__name__)
             if status_callback:
                 status_callback("Local assistant could not complete the fallback request.")
-            return f"Local Engine Error: {clean_error}"
+            return "Local Engine Error: The local assistant is temporarily unavailable."
 
-        runtime.logger.warning(f"Local Engine Timeout/Error ({clean_error}). Attempting Cloud Fallback...")
+        runtime.logger.warning("Local Engine Timeout/Error (%s). Attempting Cloud Fallback...", type(exc).__name__)
         warning = (
-            f"⚠️ **System Alert**: Local model `{target_model}` failed to load ({clean_error}). "
-            "Falling back to Cloud engine...\n\n"
+            "The local model could not complete this request. Falling back to Cloud engine...\n\n"
         )
         if chunk_callback:
             chunk_callback(warning)

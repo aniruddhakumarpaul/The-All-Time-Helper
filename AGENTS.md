@@ -12,7 +12,8 @@ The All Time Helper is a FastAPI assistant with a modular ES6 frontend, determin
 - static/js/: frontend orchestrator (app.js), DOM/UI (ui.js), network adapter (api.js), email draft modules, dialogs, palette, and motion.
 - static/css/, templates/: active visual shell and rendered HTML contract.
 - app/tests/: repository-level behavioral and source-contract tests.
-- docs/: architecture, routing, attachment/image, memory, decisions, and improvement records.
+- app/contracts/: versioned boundary models and serializers.
+- docs/: architecture, routing, attachment/image, memory, decisions, improvement, and recovery records.
 
 ## Verified commands
 

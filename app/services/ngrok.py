@@ -45,7 +45,7 @@ def start_ngrok_if_enabled(port: int = 9000) -> NgrokSession:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "ngrok"])
             import ngrok
         except Exception as exc:
-            logger.error(f"Failed to auto-install official ngrok package: {exc}")
+            logger.error("Failed to auto-install official ngrok package (%s)", type(exc).__name__)
             return NgrokSession()
 
     try:
@@ -53,10 +53,10 @@ def start_ngrok_if_enabled(port: int = 9000) -> NgrokSession:
         # Start the tunnel with the auth token
         listener = ngrok.forward(port, authtoken=token)
         public_url = listener.url()
-        logger.info(f"Started Ngrok tunnel: {public_url}")
+        logger.info("Started Ngrok tunnel (url_available=%s)", bool(public_url))
         return NgrokSession(public_url=public_url, started_tunnel=True, listener=listener)
     except Exception as exc:
-        logger.warning(f"Ngrok startup failed; continuing without tunnel: {exc}")
+        logger.warning("Ngrok startup failed; continuing without tunnel (%s)", type(exc).__name__)
         return NgrokSession()
 
 
@@ -68,4 +68,4 @@ def stop_ngrok(session: NgrokSession) -> None:
         import ngrok
         ngrok.disconnect(session.listener.url())
     except Exception as exc:
-        logger.warning(f"Ngrok shutdown failed: {exc}")
+        logger.warning("Ngrok shutdown failed (%s)", type(exc).__name__)

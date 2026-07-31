@@ -269,7 +269,7 @@ def assemble_context(
         try:
             memory_block = memory_future.result()
         except Exception as exc:
-            runtime.logger.error(f"[Memory] Context assembly continuing without neural memory: {exc}", exc_info=True)
+            runtime.logger.error("[Memory] Context assembly continuing without neural memory (%s)", type(exc).__name__)
             memory_block = ""
 
     return {

@@ -2,9 +2,9 @@
 
 ## Baseline
 
-- Repository baseline was 229 passed, 1 failed under python -B -m pytest -q -p no:cacheprovider --basetemp C:\tmp\tah-baseline.
-- The existing failure is app/tests/test_interaction_integrity.py::InteractionIntegrityTests::test_mobile_composer_preserves_touch_targets: the active CSS uses semantically equivalent .pill-bar>.action-btn while the source-contract test expects .pill-bar > .action-btn.
-- .project_brain has local runtime/index changes in the worktree; those files are not part of this improvement work and must not be discarded.
+- Repository baseline before this iteration was 236 passed under python -B -m pytest -q -p no:cacheprovider --basetemp C:\tmp\tah-pytest.
+- The current verification target is the same command with a fresh temporary directory.
+- .project_brain/ is generated Chroma runtime state and is not part of source changes; preserve it during recovery.
 
 ## Current strengths
 
@@ -25,8 +25,29 @@
 
 - Provider/network remediation is not inferred from model-list availability; cloud diagnosis requires a separately reproducible provider request failure.
 - No deployment, push, merge, release, real email, external account mutation, or destructive data cleanup is included.
-## Completed In This Iteration
+## Previously Completed In This Workstream
 
 - Replaced email-context and email-draft-repair one-second persistence polling with state-driven debounced saves and lifecycle flushes.
 - Added queue/chat job and attachment-count telemetry with sanitized categories and timings.
 - Confirmed .project_brain/ is generated Chroma runtime state and moved it out of Git tracking without deleting local files.
+
+## Completed In This Iteration
+
+- Added a versioned email-draft contract with explicit transient, prompt-context, persistable, and delivery serializers.
+- Added multi-attachment and generated-image contract coverage, including byte-free persistence assertions.
+- Added controlled /chat characterization tests for NDJSON ordering, document versus visual routing, sanitized provider failure, and owner-scoped attachment rejection.
+- Added frontend state mutation APIs and migrated active chat/context/image call sites away from direct collection mutation.
+- Added redaction tests for agent and queue telemetry, plus bounded exception categories in provider/tool failure logs.
+- Added active frontend Node syntax checks to CI and a local recovery runbook.
+
+## Remaining Concrete Backlog
+
+- A remote CI run has not been observed from this workspace.
+- Browser automation is not configured; current frontend coverage is source/runtime checks and Node syntax validation.
+- Live OpenRouter, Ollama, SMTP, and Ngrok behavior remains intentionally unexercised by deterministic tests.
+- /chat route extraction remains deferred until characterization coverage is expanded around all legacy direct-tool and cloud/local fallback branches.
+
+## Dependencies and Risks
+
+- Provider availability remains an external dependency and must be diagnosed with a reproducible request, not inferred from model metadata.
+- The remote Git URL must not contain credential material; rotate and replace any credential-bearing remote outside this implementation pass.

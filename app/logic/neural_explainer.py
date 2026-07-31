@@ -1,5 +1,6 @@
 import os
 import litellm
+from app.logger import logger
 
 def explain_neural_context(query_text, snippets):
     """
@@ -26,5 +27,5 @@ def explain_neural_context(query_text, snippets):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Neural Explainer Error: {e}")
+        logger.warning("Neural Explainer Error (%s)", type(e).__name__)
         return "The system retrieved these technical links, but I'm still processing the exact neural connection for you."
