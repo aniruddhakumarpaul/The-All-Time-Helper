@@ -286,11 +286,13 @@
         const toInput = document.createElement('input');
         toInput.className = 'email-draft-input email-draft-recipient';
         toInput.value = current.recipient || '';
+        toInput.setAttribute('value', toInput.value);
         toInput.style.cssText = inputStyle();
 
         const subjectInput = document.createElement('input');
         subjectInput.className = 'email-draft-input email-draft-subject';
         subjectInput.value = current.subject || '';
+        subjectInput.setAttribute('value', subjectInput.value);
         subjectInput.style.cssText = inputStyle();
 
         const toneSelect = document.createElement('select');
@@ -301,6 +303,7 @@
             option.value = tone;
             option.textContent = tone;
             if ((current.tone || 'modern') === tone) option.selected = true;
+                option.setAttribute('selected', '');
             toneSelect.appendChild(option);
         });
 
@@ -319,6 +322,7 @@
         const body = document.createElement('textarea');
         body.className = 'email-draft-body-input';
         body.value = current.body || '';
+        body.textContent = body.value;
         body.rows = Math.max(4, Math.min(12, String(current.body || '').split('\n').length + 2));
         body.style.cssText = inputStyle('resize:vertical;min-height:110px;line-height:1.45;white-space:pre-wrap;');
 

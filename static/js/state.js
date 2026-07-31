@@ -97,6 +97,15 @@ class AppState {
         return chat;
     }
 
+    setActiveChat(chatId) {
+        this.set('activeId', chatId || null);
+        return this.activeId;
+    }
+
+    markChatUpdated(chatId, timestamp = Date.now()) {
+        return this.updateChat(chatId, { updated_at: timestamp });
+    }
+
     deleteChat(chatId) {
         this.replaceChats(this.chats.filter(chat => chat?.id !== chatId));
         return this.chats;

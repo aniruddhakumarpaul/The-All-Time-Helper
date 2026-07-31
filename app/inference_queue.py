@@ -47,6 +47,10 @@ class InferenceQueue:
         fast_workers: int = 2,
         fast_queue_depth: int = 8,
     ):
+        if max_workers < 1 or fast_workers < 1:
+            raise ValueError("InferenceQueue requires at least one worker per lane.")
+        if max_queue_depth < 1 or fast_queue_depth < 1:
+            raise ValueError("InferenceQueue queue depths must be positive.")
         self._queue: Optional[asyncio.Queue] = None  # Initialized lazily in async context
         self._fast_queue: Optional[asyncio.Queue] = None
         self._max_workers = max_workers
@@ -185,12 +189,11 @@ class InferenceQueue:
         work_queue = self._fast_queue if lane == "tool" else self._queue
         max_depth = self._max_fast_queue_depth if lane == "tool" else self._max_queue_depth
 
-        if work_queue.full():
-            raise RuntimeError(
-                "⚠️ **Server Busy.** The inference queue is full. "
-                "Please wait a moment and try again."
-            )
-        
+        if timeout <= 0:
+            raise ValueError("Job timeout must be positive.")
+        if job_id in self._active_jobs:
+            raise RuntimeError("A job with this id is already active.")
+
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         
@@ -209,7 +212,14 @@ class InferenceQueue:
             lane=lane,
         )
         self._active_jobs[job_id] = job
-        await work_queue.put(job)
+        try:
+            work_queue.put_nowait(job)
+        except asyncio.QueueFull:
+            self._active_jobs.pop(job_id, None)
+            raise RuntimeError(
+                "⚠️ **Server Busy.** The inference queue is full. "
+                "Please wait a moment and try again."
+            )
 
         logger.info(
             "[JobTrace] job=%s lane=%s state=queued queue_depth=%d queue_capacity=%d",

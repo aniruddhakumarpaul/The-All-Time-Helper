@@ -3,6 +3,47 @@
     const SCHEMA_VERSION = 1;
     const MIME_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 
+    class EmailDraftVersionError extends Error {
+        constructor(message, code) {
+            super(message);
+            this.name = this.constructor.name;
+            this.code = code;
+        }
+    }
+
+    class InvalidEmailDraftVersion extends EmailDraftVersionError {
+        constructor(message = 'Email draft schema_version must be a non-negative integer.') {
+            super(message, 'invalid_email_draft_version');
+        }
+    }
+
+    class UnsupportedEmailDraftVersion extends EmailDraftVersionError {
+        constructor(message = 'Email draft schema version is newer than supported.') {
+            super(message, 'unsupported_email_draft_version');
+        }
+    }
+
+    function detectEmailDraftVersion(raw) {
+        if (!Object.prototype.hasOwnProperty.call(raw, 'schema_version')) return 0;
+        const version = raw.schema_version;
+        if (typeof version !== 'number' || !Number.isInteger(version) || version < 0) {
+            throw new InvalidEmailDraftVersion();
+        }
+        if (version > SCHEMA_VERSION) throw new UnsupportedEmailDraftVersion();
+        return version;
+    }
+
+    function migrateLegacyEmailDraft(raw) {
+        return { ...raw, schema_version: SCHEMA_VERSION };
+    }
+
+    function migrateEmailDraft(raw) {
+        const version = detectEmailDraftVersion(raw);
+        if (version === 0) return migrateLegacyEmailDraft(raw);
+        if (version === SCHEMA_VERSION) return { ...raw };
+        throw new UnsupportedEmailDraftVersion('Email draft schema version is unsupported.');
+    }
+
     function text(value, fallback = '') {
         return String(value ?? fallback).trim();
     }
@@ -14,38 +55,44 @@
 
     function attachment(raw, index, legacyContent) {
         const item = raw && typeof raw === 'object' ? raw : { content: raw };
-        const content = item.content ?? item.data ?? (index === 0 ? legacyContent : null);
+        const content = item.content || item.data || (index === 0 ? legacyContent : null);
         const id = text(item.id) || null;
         const mimeType = text(item.mime_type || item.content_type || item.type, 'application/octet-stream').toLowerCase();
-        const available = item.available ?? Boolean(id || content);
-        const source = ['upload', 'generated', 'legacy', 'remote', 'unknown'].includes(text(item.source))
-            ? text(item.source) : (content && !id ? 'generated' : id ? 'upload' : 'unknown');
+        const available = item.available == null ? ((id || content) ? true : undefined) : Boolean(item.available);
+        const rawSource = item.source == null ? null : text(item.source);
+        const derivedSource = content && !id ? 'generated' : id ? 'upload' : 'unknown';
+        const source = rawSource == null
+            ? derivedSource
+            : ['upload', 'generated', 'legacy', 'remote', 'unknown'].includes(rawSource)
+                ? rawSource : 'unknown';
         const result = {
-            id,
+
             filename: filename(item.filename || item.name, `attachment-${index + 1}.bin`),
             name: filename(item.filename || item.name, `attachment-${index + 1}.bin`),
             mime_type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
             type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
             content_type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
-            size: Number.isFinite(Number(item.size)) && Number(item.size) >= 0 ? Number(item.size) : undefined,
+            size: Number.isInteger(Number(item.size)) && Number(item.size) >= 0 ? Number(item.size) : undefined,
             sha256: /^[0-9a-f]{64}$/i.test(text(item.sha256 || item.sha_256)) ? text(item.sha256 || item.sha_256).toLowerCase() : undefined,
             available: available == null ? undefined : Boolean(available),
             source,
         };
+        if (id != null) result.id = id;
         if (content != null) result.content = String(content);
         return result;
     }
 
     function normalize(raw) {
-        if (!raw || typeof raw !== 'object') return null;
-        const rawAttachments = Array.isArray(raw.attachments) ? raw.attachments : [];
-        const legacyContent = raw.attachment_content ?? null;
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        const source = migrateEmailDraft(raw);
+        const rawAttachments = Array.isArray(source.attachments) ? source.attachments : [];
+        const legacyContent = source.attachment_content ?? null;
         const attachments = rawAttachments.map((item, index) => attachment(item, index, legacyContent));
-        if (!attachments.length && (legacyContent != null || raw.attachment_filename)) {
+        if (!attachments.length && (legacyContent != null || source.attachment_filename)) {
             attachments.push(attachment({
                 content: legacyContent,
-                filename: raw.attachment_filename,
-                type: raw.attachment_type || raw.content_type || raw.type,
+                filename: source.attachment_filename,
+                type: source.attachment_type || source.content_type || source.type,
                 source: 'legacy',
             }, 0, legacyContent));
         }
@@ -53,16 +100,16 @@
         const primary = attachments[0] || {};
         return {
             schema_version: SCHEMA_VERSION,
-            recipient: text(raw.recipient || raw.to),
-            subject: text(raw.subject),
-            body: String(raw.body || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim(),
-            tone: ['formal', 'informal', 'modern'].includes(text(raw.tone, 'modern')) ? text(raw.tone, 'modern') : 'modern',
+            recipient: text(source.recipient || source.to),
+            subject: text(source.subject),
+            body: String(source.body || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n'),
+            tone: ['formal', 'informal', 'modern'].includes(text(source.tone, 'modern')) ? text(source.tone, 'modern') : 'modern',
             attachment_content: primary.content ?? null,
             attachment_filename: attachments.length ? primary.filename : '',
-            attachment_type: attachments.length ? primary.mime_type : undefined,
-            attachment_description: raw.attachment_description ? text(raw.attachment_description) : undefined,
+            attachment_type: attachments.length ? primary.mime_type : null,
+            attachment_description: source.attachment_description ? text(source.attachment_description) : null,
             attachments,
-            has_attachment_content: Boolean(primary.content || raw.has_attachment_content),
+            has_attachment_content: Boolean(primary.content || attachments.some(item => item.content)),
         };
     }
 
@@ -84,7 +131,8 @@
     function serializePromptContext(raw) {
         const draft = normalize(raw);
         if (!draft) return null;
-        const result = { ...draft, attachment_content: null, attachments: draft.attachments.map(stripContent) };
+        const result = { ...draft, attachments: draft.attachments.map(stripContent) };
+        delete result.attachment_content;
         delete result.has_attachment_content;
         return result;
     }
@@ -98,11 +146,21 @@
         return result;
     }
 
+    function serializeDelivery(raw) {
+        return serializeFullTransient(raw);
+    }
+
     window.helperEmailDraftContract = {
         SCHEMA_VERSION,
+        EmailDraftVersionError,
+        InvalidEmailDraftVersion,
+        UnsupportedEmailDraftVersion,
+        detectEmailDraftVersion,
+        migrateEmailDraft,
         normalize,
         serializeFullTransient,
         serializePromptContext,
         serializePersistable,
+        serializeDelivery,
     };
 })();

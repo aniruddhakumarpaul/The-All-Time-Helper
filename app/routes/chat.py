@@ -265,18 +265,16 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             async def invalid_key_stream():
                 yield json.dumps({"message": {"content": "ERROR: AUTH_REQUIRED. Incorrect admin key."}, "done": True}).encode() + b'\n'
                 yield json.dumps({"done": True}).encode() + b'\n'
-            admin_auth_context.set(None)
             return StreamingResponse(invalid_key_stream(), media_type="application/x-ndjson")
 
         admin_key_value = candidate_key
-        admin_auth_context.set(admin_key_value)
         pending_request = _find_pending_sensitive_request(history)
         if pending_request:
             prompt = "APPROVAL_CONFIRMED. Continue this pending sensitive request:\n\n" + pending_request
         else:
             prompt = "APPROVAL_CONFIRMED, but no pending sensitive request was found. Ask the user to repeat the action request."
     else:
-        admin_auth_context.set(None)
+        admin_key_value = None
 
     use_tool_lane = bool(
         not req.isMasked

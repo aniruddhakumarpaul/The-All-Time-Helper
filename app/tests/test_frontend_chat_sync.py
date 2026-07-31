@@ -48,7 +48,7 @@ class FrontendChatSyncTests(unittest.TestCase):
         particles_js = (root / "static" / "js" / "particles.js").read_text(encoding="utf-8")
 
         self.assertIn("if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId)", app_js)
-        self.assertIn("chat.updated_at = Date.now();\n    requestChatPersist();", app_js)
+        self.assertIn("state.markChatUpdated(chat.id);\n    requestChatPersist();", app_js)
         self.assertIn("const mergedChats = mergeChatsByRecency(localChats, remoteChats);", app_js)
         self.assertIn("function chooseActiveChatId(chats, preferredId)", app_js)
         self.assertIn("const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);", app_js)

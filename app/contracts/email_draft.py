@@ -19,8 +19,53 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 EMAIL_DRAFT_SCHEMA_VERSION = 1
 EMAIL_DRAFT_MARKER = "EMAIL_DRAFT_PAYLOAD:"
 EMAIL_DRAFT_CONTEXT_MARKER = "EMAIL_DRAFT_CONTEXT:"
+
+
+class EmailDraftVersionError(ValueError):
+    """Base error for controlled email-draft version failures."""
+
+
+class InvalidEmailDraftVersion(EmailDraftVersionError):
+    """The payload contains a malformed or invalid schema version."""
+
+    code = "invalid_email_draft_version"
+
+
+class UnsupportedEmailDraftVersion(EmailDraftVersionError):
+    """The payload uses a future schema version this runtime cannot process."""
+
+    code = "unsupported_email_draft_version"
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _MIME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*$", re.I)
+
+
+def detect_email_draft_version(raw: Mapping[str, Any]) -> int:
+    """Return 0 for legacy payloads and reject malformed/future versions."""
+    if "schema_version" not in raw:
+        return 0
+    version = raw.get("schema_version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise InvalidEmailDraftVersion("Email draft schema_version must be an integer.")
+    if version < 0:
+        raise InvalidEmailDraftVersion("Email draft schema_version cannot be negative.")
+    if version > EMAIL_DRAFT_SCHEMA_VERSION:
+        raise UnsupportedEmailDraftVersion("Email draft schema version is newer than supported.")
+    return version
+
+
+def migrate_legacy_email_draft(raw: Mapping[str, Any]) -> dict[str, Any]:
+    migrated = dict(raw)
+    migrated["schema_version"] = EMAIL_DRAFT_SCHEMA_VERSION
+    return migrated
+
+
+def migrate_email_draft(raw: Mapping[str, Any]) -> dict[str, Any]:
+    version = detect_email_draft_version(raw)
+    if version == 0:
+        return migrate_legacy_email_draft(raw)
+    if version == 1:
+        return dict(raw)
+    raise UnsupportedEmailDraftVersion("Email draft schema version is unsupported.")
 
 
 def _text(value: Any, default: str = "") -> str:
@@ -39,11 +84,15 @@ def _safe_mime(value: Any, fallback: str = "application/octet-stream") -> str:
 
 
 def _safe_size(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
-        size = int(value)
+        numeric = float(value)
     except (TypeError, ValueError):
         return None
-    return size if size >= 0 else None
+    if not numeric.is_integer() or numeric < 0:
+        return None
+    return int(numeric)
 
 
 def _safe_sha256(value: Any) -> str | None:
@@ -124,12 +173,12 @@ def _canonical_draft(raw: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": EMAIL_DRAFT_SCHEMA_VERSION,
         "recipient": _text(raw.get("recipient") or raw.get("to")),
         "subject": _text(raw.get("subject")),
-        "body": str(raw.get("body") or ""),
+        "body": str(raw.get("body") or "").replace("\r\n", "\n").replace("\r", "\n"),
         "tone": _text(raw.get("tone"), "modern") if _text(raw.get("tone"), "modern") in {"formal", "informal", "modern"} else "modern",
         "attachment_description": _text(raw.get("attachment_description")) or None,
         "attachment_content": primary.get("content"),
-        "attachment_filename": primary.get("filename", "attachment.bin"),
-        "attachment_type": primary.get("mime_type", "application/octet-stream"),
+        "attachment_filename": primary.get("filename", ""),
+        "attachment_type": primary.get("mime_type") or None,
         "attachments": attachments,
     }
 
@@ -144,29 +193,31 @@ class EmailDraft(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    schema_version: int = EMAIL_DRAFT_SCHEMA_VERSION
+    schema_version: Literal[1] = EMAIL_DRAFT_SCHEMA_VERSION
     recipient: str = ""
     subject: str = ""
     body: str = ""
     tone: Literal["formal", "informal", "modern"] = "modern"
     attachment_description: str | None = None
     attachment_content: str | None = None
-    attachment_filename: str = "attachment.bin"
-    attachment_type: str = "application/octet-stream"
+    attachment_filename: str = ""
+    attachment_type: str | None = None
     attachments: list[EmailAttachment] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
     def normalize_legacy_input(cls, value: Any) -> Any:
         if isinstance(value, Mapping):
-            return _canonical_draft(value)
+            return _canonical_draft(migrate_email_draft(value))
         return value
 
 
 def normalize_email_draft(raw: EmailDraft | Mapping[str, Any]) -> EmailDraft:
-    """Normalize a legacy or versioned mapping into the canonical model."""
+    """Normalize a legacy or versioned mapping through the compatibility gate."""
 
-    return raw if isinstance(raw, EmailDraft) else EmailDraft.model_validate(raw)
+    if isinstance(raw, EmailDraft):
+        return raw
+    return EmailDraft.model_validate(migrate_email_draft(raw))
 
 
 def _attachment_output(item: EmailAttachment, *, include_content: bool) -> dict[str, Any]:
@@ -205,6 +256,7 @@ def serialize_full_transient(raw: EmailDraft | Mapping[str, Any]) -> dict[str, A
     result = _base_output(draft)
     result.update({
         "attachment_content": draft.attachment_content,
+        "has_attachment_content": bool(draft.attachment_content or any(item.content for item in draft.attachments)),
         "attachment_filename": draft.attachment_filename,
         "attachment_type": draft.attachment_type,
         "attachments": [_attachment_output(item, include_content=True) for item in draft.attachments],

@@ -163,7 +163,7 @@ function handleChatKey(event) {
 
 function startNewChat() {
     navigationRevision += 1;
-    state.set('activeId', Date.now().toString());
+    state.setActiveChat(Date.now().toString());
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
     if (chatArea) { chatArea.innerHTML = ''; chatArea.style.display = 'none'; }
@@ -190,7 +190,7 @@ function loadChat(id, options = {}) {
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
     if (trackNavigation) navigationRevision += 1;
-    if (setActiveId) state.set('activeId', id);
+    if (setActiveId) state.setActiveChat(id);
     if (persistActiveId) localStorage.setItem('helper_active_chat_v2', id);
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
@@ -249,7 +249,7 @@ async function loadUserChats() {
     const savedActiveChatId = localStorage.getItem('helper_active_chat_v2');
     const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);
     if (!activeChatId) {
-        state.set('activeId', null);
+        state.setActiveChat(null);
         localStorage.removeItem('helper_active_chat_v2');
         persistLocalChatCache();
         ui.renderHist();
@@ -258,7 +258,7 @@ async function loadUserChats() {
         return;
     }
 
-    state.set('activeId', activeChatId);
+    state.setActiveChat(activeChatId);
     persistLocalChatCache();
     ui.renderHist();
     loadChat(activeChatId, {
@@ -403,7 +403,7 @@ async function send() {
     const apiPrompt = [contextText, userText].filter(Boolean).join('\n\n');
     if (!apiPrompt && !currentAttachments.length) return;
     navigationRevision += 1;
-    if (!state.activeId) state.set('activeId', Date.now().toString());
+    if (!state.activeId) state.setActiveChat(Date.now().toString());
 
     let chat = state.chats.find(c => c.id === state.activeId);
     if (!chat) {
@@ -428,7 +428,7 @@ async function send() {
 
     ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
     state.appendMessage(chat.id, { r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
-    chat.updated_at = Date.now();
+    state.markChatUpdated(chat.id);
     requestChatPersist();
     mascot.triggerBotReaction(userText);
     ui.clearImgPreview();
@@ -487,7 +487,7 @@ async function send() {
             const errorText = `I could not reach the selected helper route (status ${response.status}). Please retry or choose another route.`;
             botText.innerText = errorText;
             state.appendMessage(chat.id, { r: 'b', c: errorText, m: modelName });
-            chat.updated_at = Date.now();
+            state.markChatUpdated(chat.id);
             await requestChatPersist({ immediate: true });
             return;
         }
@@ -549,7 +549,7 @@ async function send() {
             state.updateChat(chat.id, { title: firstLine.substring(0, 35).trim() + (firstLine.length > 35 ? '...' : '') });
         }
         state.appendMessage(chat.id, { r: 'b', c: fullText, m: modelName });
-        chat.updated_at = Date.now();
+        state.markChatUpdated(chat.id);
         botText.innerHTML = window.renderMarkdown(fullText);
         window.hydrateRenderedMarkdown?.(botText);
         botText.querySelectorAll('img').forEach(img => {
@@ -567,7 +567,7 @@ async function send() {
             : 'I could not complete that response. Please retry or choose another route.';
         botText.textContent = failureMessage;
         state.appendMessage(chat.id, { r: 'b', c: failureMessage, m: modelName });
-        chat.updated_at = Date.now();
+        state.markChatUpdated(chat.id);
         await requestChatPersist({ immediate: true });
         ui.notify(failureMessage, stopped ? 'info' : 'error');
     } finally {

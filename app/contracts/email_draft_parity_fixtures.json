@@ -1,0 +1,70 @@
+{
+  "valid": {
+    "legacy_empty": {},
+    "legacy_single": {
+      "to": " person@example.com ",
+      "subject": "  Notes  ",
+      "body": "  Hello\\r\\nworld  ",
+      "attachment_content": "legacy-content",
+      "attachment_filename": "docs/notes.txt",
+      "attachment_type": "TEXT/PLAIN"
+    },
+    "legacy_zero": {
+      "schema_version": 0,
+      "recipient": "legacy@example.com",
+      "body": "legacy"
+    },
+    "v1_single": {
+      "schema_version": 1,
+      "recipient": "person@example.com",
+      "subject": "Photo",
+      "body": "See attached.",
+      "tone": "formal",
+      "attachments": [
+        {
+          "id": "upload-1",
+          "filename": "photo.png",
+          "mime_type": "image/png",
+          "size": 12,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "available": true,
+          "source": "upload",
+          "content": "transient-image"
+        }
+      ]
+    },
+    "v1_multiple": {
+      "schema_version": 1,
+      "recipient": "team@example.com",
+      "subject": "Files",
+      "body": "Two files",
+      "attachments": [
+        {"id": "one", "name": "one.txt", "type": "text/plain", "size": 0, "source": "upload"},
+        {"name": "generated.pdf", "content_type": "application/pdf", "source": "generated", "content": "generated-pdf"}
+      ]
+    },
+    "invalid_metadata_is_sanitized": {
+      "schema_version": 1,
+      "recipient": "safe@example.com",
+      "attachment_filename": "../private/unsafe.bin",
+      "attachment_type": "not a mime",
+      "attachments": [
+        {"name": "../photo.png", "mime_type": "IMAGE/PNG", "size": 1.5, "sha256": "bad", "source": "not-real"}
+      ]
+    },
+    "unknown_fields_are_ignored": {
+      "schema_version": 1,
+      "recipient": "safe@example.com",
+      "unknown": {"private": "not persisted"},
+      "attachments": [{"filename": "safe.txt", "unknown": "ignored"}]
+    }
+  },
+  "invalid": {
+    "future_2": {"schema_version": 2},
+    "future_99": {"schema_version": 99},
+    "string_version": {"schema_version": "1"},
+    "negative_version": {"schema_version": -1},
+    "boolean_version": {"schema_version": true},
+    "fractional_version": {"schema_version": 1.5}
+  }
+}

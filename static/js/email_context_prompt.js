@@ -118,8 +118,7 @@ function renderTray() {
         remove.setAttribute('aria-label', 'Remove attached email draft context');
         remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
         remove.addEventListener('click', () => {
-            const pos = state.attachedContexts.indexOf(ctx);
-            if (pos >= 0) state.set('attachedContexts', state.attachedContexts.filter((_, index) => index !== pos));
+            state.removeAttachedContext(ctx);
             renderTray();
         });
         chip.append(label, remove);
@@ -130,10 +129,10 @@ function renderTray() {
 function attachEmailDraftToPrompt(rawDraft) {
     const draft = compactDraft(rawDraft);
     if (!draft) return false;
-    if (!Array.isArray(state.attachedContexts)) state.set('attachedContexts', []);
+    if (!Array.isArray(state.attachedContexts)) state.replaceAttachedContexts([]);
     const text = makeContextText(draft);
     const exists = state.attachedContexts.some(ctx => ctx.kind === 'email_draft' && ctx.text === text);
-    if (!exists) state.set('attachedContexts', [...state.attachedContexts, { kind: 'email_draft', text, draft }]);
+    if (!exists) state.addAttachedContext({ kind: 'email_draft', text, draft });
     renderTray();
     const prompt = document.getElementById('prompt');
     if (prompt) prompt.focus();
