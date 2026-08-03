@@ -184,6 +184,42 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual(result["hidden"], [True, False])
         self.assertEqual(result["subjects"], ["First", "Updated"])
 
+    def test_empty_attachment_placeholder_renders_as_no_attachment(self):
+        self.load_state_and_email_surface()
+        self.page.evaluate("""() => {
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'No image', body: 'Draft body',
+                attachment_content: null, attachment_filename: 'attachment.bin',
+                attachment_type: 'application/octet-stream', attachments: []
+            }));
+            window.hydrateEmailDraftCards(root);
+        }""")
+        self.assertEqual(self.page.locator('.email-draft-attachment-label').inner_text(), 'None')
+
+    def test_failed_image_response_keeps_existing_card_visible_without_marker(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => {
+            const root = document.getElementById('chat-area');
+            const existing = document.createElement('section');
+            existing.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'Existing', body: 'Keep this draft'
+            }));
+            root.appendChild(existing);
+            window.hydrateEmailDraftCards(existing);
+            const failure = document.createElement('section');
+            failure.innerHTML = window.renderMarkdown('I could not generate the image, so the existing email draft was not changed. Please retry.');
+            root.appendChild(failure);
+            window.hydrateEmailDraftCards(failure);
+            return {
+                cards: root.querySelectorAll('.email-draft-card').length,
+                hidden: root.querySelector('.email-draft-card')?.hidden,
+                text: root.innerText
+            };
+        }""")
+        self.assertEqual(result['cards'], 1)
+        self.assertFalse(result['hidden'])
+        self.assertIn('draft was not changed', result['text'])
     def test_context_panel_draft_does_not_hide_chat_draft(self):
         self.load_state_and_email_surface()
         hidden = self.page.evaluate("""() => {

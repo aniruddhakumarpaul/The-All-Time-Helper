@@ -14,6 +14,16 @@
       "recipient": "legacy@example.com",
       "body": "legacy"
     },
+    "empty_attachment_placeholder": {
+      "schema_version": 1,
+      "recipient": "owner@example.com",
+      "subject": "Placeholder",
+      "body": "No attachment was produced.",
+      "attachment_content": null,
+      "attachment_filename": "attachment.bin",
+      "attachment_type": "application/octet-stream",
+      "attachments": []
+    },
     "v1_single": {
       "schema_version": 1,
       "recipient": "person@example.com",

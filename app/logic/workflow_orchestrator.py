@@ -71,6 +71,7 @@ class WorkflowApprovalState(str, Enum):
 class WorkflowActionState(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
+    BLOCKED = "blocked"
     CANCELLED = "cancelled"
     PAUSED = "paused"
 
@@ -80,6 +81,7 @@ class WorkflowAction(BaseModel):
     action_type: WorkflowActionType
     arguments: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    optional_depends_on: list[str] = Field(default_factory=list)
     can_run_parallel: bool = False
     sensitive: bool = False
     terminal: bool = False
@@ -473,10 +475,36 @@ def _image_query(topic: str) -> str:
     return f"{normalized} official reference image" if normalized else ""
 
 
-def _image_description(prompt: str, topic: str) -> str:
-    clean = _strip_draft_context(prompt)
-    clean = re.sub(r"(?i)\b(?:and\s+)?attach\b.*$", "", clean).strip()
-    return clean[:800] or f"A polished symbolic illustration about {topic or 'the email topic'}"
+def _clean_image_context(value: Any, limit: int) -> str:
+    clean = _strip_draft_context(str(value or ""))
+    clean = re.sub(r"[\x00-\x1f\x7f]", " ", clean)
+    clean = re.sub(r"(?i)\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", "[recipient omitted]", clean)
+    clean = re.sub(r"(?i)\b(?:admin|api|secret|access|authorization)\s*key\b\s*[:=]?\s*\S*", "[secret omitted]", clean)
+    return re.sub(r"\s+", " ", clean).strip()[:limit]
+
+
+def _image_description(prompt: str, topic: str, draft: EmailDraft | None = None, latest_user_request: str = "") -> str:
+    direction = _clean_image_context(prompt, 500)
+    direction = re.sub(r"(?i)\b(?:and\s+)?(?:attach|add|include)\b.*$", "", direction).strip(" .,:;-_")
+    parts = [f"Topic: {_clean_image_context(topic, 180)}"] if topic else []
+    if draft:
+        if draft.subject:
+            parts.append(f"Draft subject: {_clean_image_context(draft.subject, 240)}")
+        if draft.body:
+            parts.append(f"Draft body context: {_clean_image_context(draft.body, 800)}")
+        if draft.attachment_description:
+            parts.append(f"Attachment description: {_clean_image_context(draft.attachment_description, 300)}")
+    latest = _clean_image_context(latest_user_request, 500)
+    if latest and latest != direction:
+        parts.append(f"Latest user request: {latest}")
+    if direction:
+        parts.append(f"Explicit visual direction: {direction}")
+    context = "; ".join(parts) or "the email topic"
+    return (
+        "Create a professional editorial-style image for an email attachment. "
+        f"Use this bounded context: {context}. "
+        "Keep the composition clear and respectful, and do not embed private data, recipient details, or instructions as text in the image."
+    )
 
 
 class WorkflowPlanner:
@@ -575,7 +603,7 @@ class WorkflowPlanner:
         if image_attachment:
             action_type = WorkflowActionType.IMAGE_GENERATE if generated_image else WorkflowActionType.IMAGE_SEARCH
             image_arguments = (
-                {"description": _image_description(clean, topic)}
+                {"description": _image_description(clean, topic, active, context.latest_user_request)}
                 if generated_image
                 else {"query": _image_query(topic)}
             )
@@ -594,16 +622,19 @@ class WorkflowPlanner:
                 id=draft_node,
                 action_type=WorkflowActionType.BUILD_EMAIL_DRAFT,
                 arguments={"recipient": recipient, "topic": topic, "request": clean[:2000]},
-                depends_on=list(external_ids),
+                depends_on=[node for node in external_ids if node == "image"],
+                optional_depends_on=["web_search"] if research else [],
             ))
         elif active and (update or research):
             draft_node = "update_draft"
-            dependencies = list(external_ids) if research and image_attachment else (["web_search"] if research else [])
+            dependencies = []
+            optional_dependencies = ["web_search"] if research else []
             actions.append(WorkflowAction(
                 id=draft_node,
                 action_type=WorkflowActionType.UPDATE_EMAIL_DRAFT,
                 arguments={"request": clean[:2000], "recipient": recipient},
                 depends_on=dependencies,
+                optional_depends_on=optional_dependencies,
             ))
 
         attachment_node = ""
@@ -658,6 +689,12 @@ def _safe_filename(value: str, fallback: str) -> str:
     return name or fallback
 
 
+def _generated_filename(query: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", str(query or ""))
+    slug = "-".join(words[:6]).lower() or "generated-image"
+    return f"{slug[:72]}.png"
+
+
 def normalize_image_tool_result(raw: Any, *, source: str, query: str = "") -> ImageToolResult | None:
     if isinstance(raw, ImageToolResult):
         return raw
@@ -687,7 +724,11 @@ def normalize_image_tool_result(raw: Any, *, source: str, query: str = "") -> Im
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return None
-        guessed_name = os.path.basename(parsed.path) or ("generated-image.png" if source == "generated" else "reference-image.jpg")
+        guessed_name = os.path.basename(parsed.path) or (
+            _generated_filename(query) if source == "generated" else "reference-image.jpg"
+        )
+        if source == "generated" and not filename:
+            guessed_name = _generated_filename(query)
         filename = _safe_filename(filename or guessed_name, "image.png")
         guessed_mime = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -772,7 +813,7 @@ def _update_draft(draft: EmailDraft, arguments: dict[str, Any], results: dict[st
 
 def _attach_image(draft: EmailDraft, image: ImageToolResult | None) -> EmailDraft:
     if image is None:
-        return draft
+        raise RuntimeError("image_attachment_blocked")
     raw = serialize_full_transient(draft)
     candidate = {
         "id": image.attachment_id,
@@ -783,20 +824,24 @@ def _attach_image(draft: EmailDraft, image: ImageToolResult | None) -> EmailDraf
         "available": True,
     }
     attachments = list(raw.get("attachments") or [])
-    duplicate = any(
-        (candidate.get("id") and item.get("id") == candidate.get("id"))
-        or (candidate.get("content") and item.get("content") == candidate.get("content"))
-        or (
-            item.get("filename") == candidate.get("filename")
-            and item.get("sha256")
-            and item.get("sha256") == candidate.get("sha256")
-        )
-        for item in attachments
+    existing = next(
+        (
+            item for item in attachments
+            if (candidate.get("id") and item.get("id") == candidate.get("id"))
+            or (candidate.get("content") and item.get("content") == candidate.get("content"))
+            or (
+                item.get("filename") == candidate.get("filename")
+                and item.get("sha256")
+                and item.get("sha256") == candidate.get("sha256")
+            )
+        ),
+        None,
     )
-    if not duplicate:
+    if existing is None:
         attachments.append({key: value for key, value in candidate.items() if value is not None})
+        existing = attachments[-1]
     raw["attachments"] = attachments
-    primary = attachments[0] if attachments else {}
+    primary = existing if image.source == "generated" else (attachments[0] if attachments else {})
     raw["attachment_content"] = primary.get("content")
     raw["attachment_filename"] = primary.get("filename", "")
     raw["attachment_type"] = primary.get("mime_type") or primary.get("type")
@@ -881,9 +926,11 @@ class WorkflowExecutor:
                     raise RuntimeError("invalid_tool_result")
             elif action.action_type == WorkflowActionType.IMAGE_GENERATE:
                 raw = image_generate(action.arguments.get("description", ""))
+                if str(raw).lower().startswith("error"):
+                    raise RuntimeError("image_generation_unavailable")
                 output = normalize_image_tool_result(raw, source="generated", query=action.arguments.get("description", ""))
                 if output is None:
-                    raise RuntimeError("invalid_tool_result")
+                    raise RuntimeError("invalid_image_result")
             elif action.action_type == WorkflowActionType.BUILD_EMAIL_DRAFT:
                 output = _build_draft(plan, action.arguments, results)
             elif action.action_type == WorkflowActionType.UPDATE_EMAIL_DRAFT:
@@ -894,7 +941,9 @@ class WorkflowExecutor:
                 if draft is None:
                     raise RuntimeError("missing_draft")
                 image_result = results.get("image")
-                normalized = image_result.output if image_result and image_result.state == WorkflowActionState.COMPLETED else None
+                if not image_result or image_result.state != WorkflowActionState.COMPLETED:
+                    raise RuntimeError("image_attachment_blocked")
+                normalized = image_result.output
                 output = _attach_image(draft, normalized)
             elif action.action_type == WorkflowActionType.DELIVER_EMAIL:
                 if draft is None:
@@ -920,7 +969,7 @@ class WorkflowExecutor:
             error_category = "validation_error"
         except Exception as exc:
             state = WorkflowActionState.FAILED
-            category = str(exc) if str(exc) in {"tool_unavailable", "invalid_tool_result", "missing_draft"} else type(exc).__name__
+            category = str(exc) if str(exc) in {"tool_unavailable", "invalid_tool_result", "invalid_image_result", "image_generation_unavailable", "image_attachment_blocked", "missing_draft"} else type(exc).__name__
             error_category = category[:80]
         duration_ms = int((time.monotonic() - started) * 1000)
         logger.info(
@@ -949,10 +998,35 @@ class WorkflowExecutor:
     ) -> WorkflowExecutionResult:
         current = plan.model_copy(deep=True)
         results: dict[str, WorkflowActionResult] = {}
-        completed: set[str] = set(current.completed_action_ids)
-        pending = {action.id: action for action in current.actions if action.id not in completed}
+        successful: set[str] = set(current.completed_action_ids)
+        settled: set[str] = set(successful)
+        failed: set[str] = set()
+        blocked: set[str] = set()
+        cancelled: set[str] = set()
+        paused: set[str] = set()
+        pending = {action.id: action for action in current.actions if action.id not in successful}
         draft = current.active_draft
         claimed = False
+
+        def block_dependents() -> bool:
+            blocking = failed | blocked | cancelled | paused
+            blocked_any = False
+            for action in list(pending.values()):
+                if not any(dependency in blocking for dependency in action.depends_on):
+                    continue
+                result = WorkflowActionResult(
+                    action_id=action.id,
+                    action_type=action.action_type,
+                    state=WorkflowActionState.BLOCKED,
+                    error_category="required_dependency_failed",
+                )
+                results[action.id] = result
+                pending.pop(action.id, None)
+                settled.add(action.id)
+                blocked.add(action.id)
+                blocked_any = True
+                logger.info("[Workflow] action=%s state=blocked failure=required_dependency_failed", action.action_type.value)
+            return blocked_any
 
         while pending:
             if abort_event and abort_event.is_set():
@@ -961,7 +1035,14 @@ class WorkflowExecutor:
                 return WorkflowExecutionResult(
                     message="Request cancelled.", plan=current, actions=results, cancelled=True,
                 )
-            ready = [action for action in pending.values() if set(action.depends_on).issubset(completed)]
+            if block_dependents():
+                current.completed_action_ids = sorted(successful)
+                continue
+            ready = [
+                action for action in pending.values()
+                if set(action.depends_on).issubset(successful)
+                and set(action.optional_depends_on).issubset(settled)
+            ]
             if not ready:
                 return WorkflowExecutionResult(
                     message="I could not complete the workflow because its dependencies are invalid.",
@@ -972,7 +1053,7 @@ class WorkflowExecutor:
             sensitive = next((action for action in ready if action.sensitive), None)
             if sensitive and not admin_key:
                 current.active_draft = draft
-                current.completed_action_ids = sorted(completed)
+                current.completed_action_ids = sorted(successful)
                 current.approval_state = WorkflowApprovalState.REQUIRED
                 self.pending_store.put(current)
                 if status_callback:
@@ -999,9 +1080,18 @@ class WorkflowExecutor:
                     )
                 current = claimed_plan
                 draft = current.active_draft
-                completed = set(current.completed_action_ids)
-                pending = {action.id: action for action in current.actions if action.id not in completed}
-                ready = [action for action in pending.values() if set(action.depends_on).issubset(completed)]
+                successful = set(current.completed_action_ids)
+                settled = set(successful)
+                failed = set()
+                blocked = set()
+                cancelled = set()
+                paused = set()
+                pending = {action.id: action for action in current.actions if action.id not in successful}
+                ready = [
+                    action for action in pending.values()
+                    if set(action.depends_on).issubset(successful)
+                    and set(action.optional_depends_on).issubset(settled)
+                ]
                 sensitive = next((action for action in ready if action.sensitive), sensitive)
                 claimed = True
 
@@ -1031,11 +1121,21 @@ class WorkflowExecutor:
 
             for result in action_results:
                 results[result.action_id] = result
-                completed.add(result.action_id)
-                current.completed_action_ids = sorted(completed)
                 pending.pop(result.action_id, None)
-                if result.state == WorkflowActionState.COMPLETED and isinstance(result.output, EmailDraft):
-                    draft = result.output
+                settled.add(result.action_id)
+                if result.state == WorkflowActionState.COMPLETED:
+                    successful.add(result.action_id)
+                    if isinstance(result.output, EmailDraft):
+                        draft = result.output
+                elif result.state == WorkflowActionState.FAILED:
+                    failed.add(result.action_id)
+                elif result.state == WorkflowActionState.BLOCKED:
+                    blocked.add(result.action_id)
+                elif result.state == WorkflowActionState.CANCELLED:
+                    cancelled.add(result.action_id)
+                elif result.state == WorkflowActionState.PAUSED:
+                    paused.add(result.action_id)
+                current.completed_action_ids = sorted(successful)
                 if result.state == WorkflowActionState.CANCELLED:
                     if claimed:
                         self.pending_store.release(current.owner, current.workflow_id)
@@ -1074,6 +1174,17 @@ class WorkflowExecutor:
         )
         if general:
             return WorkflowExecutionResult(message=str(general), plan=current, actions=results)
+        generated_failure = any(
+            item.action_type == WorkflowActionType.IMAGE_GENERATE
+            and item.state in {WorkflowActionState.FAILED, WorkflowActionState.BLOCKED}
+            for item in results.values()
+        )
+        if generated_failure:
+            return WorkflowExecutionResult(
+                message="I could not generate the image, so the existing email draft was not changed. Please retry.",
+                plan=current,
+                actions=results,
+            )
         if draft:
             failed_media = any(
                 item.state == WorkflowActionState.FAILED
@@ -1085,7 +1196,6 @@ class WorkflowExecutor:
         return WorkflowExecutionResult(
             message="I could not complete that email workflow safely.", plan=current, actions=results,
         )
-
 
 pending_workflow_store = PendingWorkflowStore()
 workflow_planner = WorkflowPlanner(pending_store=pending_workflow_store)

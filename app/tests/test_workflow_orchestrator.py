@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from app.contracts.email_draft import draft_marker, normalize_email_draft
 from app.logic.workflow_orchestrator import (
@@ -287,7 +288,7 @@ class WorkflowExecutorTests(unittest.TestCase):
         self.assertEqual(result.actions["image"].state, WorkflowActionState.COMPLETED)
         self.assertEqual(payload["attachments"][0]["content"], "https://images.example/modi.jpg")
 
-    def test_image_generation_failure_does_not_fabricate_attachment(self):
+    def test_image_generation_failure_blocks_attachment_and_emits_no_marker(self):
         plan = self.planner.plan(
             "generate a symbolic digital india image and attach it to this draft",
             history_with_draft(),
@@ -297,10 +298,77 @@ class WorkflowExecutorTests(unittest.TestCase):
             pending_store=self.store,
             image_generate=lambda _q: "ERROR: unavailable",
         ).execute(plan)
-        payload = payload_from_message(result.message)
         self.assertEqual(result.actions["image"].state, WorkflowActionState.FAILED)
-        self.assertEqual(payload["attachments"], [])
-        self.assertNotIn("generated-image", result.message)
+        self.assertEqual(result.actions["image"].error_category, "image_generation_unavailable")
+        self.assertEqual(result.actions["attach_image"].state, WorkflowActionState.BLOCKED)
+        self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result.message)
+        self.assertIn("draft was not changed", result.message)
+
+    def test_invalid_image_generation_output_blocks_attachment(self):
+        plan = self.planner.plan(
+            "generate a symbolic digital india image and attach it to this draft",
+            history_with_draft(),
+            OWNER,
+        )
+        result = WorkflowExecutor(
+            pending_store=self.store,
+            image_generate=lambda _q: "Done",
+        ).execute(plan)
+        self.assertEqual(result.actions["image"].state, WorkflowActionState.FAILED)
+        self.assertEqual(result.actions["image"].error_category, "invalid_image_result")
+        self.assertEqual(result.actions["attach_image"].state, WorkflowActionState.BLOCKED)
+        self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result.message)
+
+    def test_generated_image_description_uses_draft_context_and_attaches_once(self):
+        draft = normalize_email_draft({
+            "recipient": OWNER,
+            "subject": "Regarding PM Modi",
+            "body": "Leadership, infrastructure, digital innovation, and national development are the core themes.",
+            "attachment_description": "A respectful public-service illustration.",
+            "attachment_content": None,
+            "attachment_filename": "attachment.bin",
+            "attachment_type": "application/octet-stream",
+            "attachments": [],
+        })
+        prompts = []
+        plan = self.planner.plan(
+            "generate an image based on the topics content and attach it to the email widget",
+            history_with_draft(draft),
+            OWNER,
+        )
+        result = WorkflowExecutor(
+            pending_store=self.store,
+            image_generate=lambda description: prompts.append(description) or "![Generated](https://image.pollinations.ai/prompt/pm-modi?model=flux&width=1024&height=1024&seed=1&uid=job-1)",
+        ).execute(plan)
+        payload = payload_from_message(result.message)
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Prime Minister Narendra Modi", prompts[0])
+        for term in ("leadership", "infrastructure", "digital innovation", "national development"):
+            self.assertIn(term, prompts[0].lower())
+        self.assertNotIn(OWNER, prompts[0])
+        self.assertNotIn("Admin Key", prompts[0])
+        self.assertEqual(len(payload["attachments"]), 1)
+        self.assertEqual(payload["attachments"][0]["source"], "generated")
+        self.assertNotEqual(payload["attachments"][0]["filename"], "attachment.bin")
+        self.assertEqual(payload["attachment_filename"], payload["attachments"][0]["filename"])
+        self.assertEqual(payload["attachment_content"], payload["attachments"][0]["content"])
+
+    def test_real_image_generate_tool_output_is_normalized(self):
+        from app.logic import tools
+
+        with patch.object(tools.UpscaleManager, "start_upscale", return_value="job-42") as start:
+            raw = tools.image_generate_tool.func("A respectful PM Modi infrastructure illustration")
+        start.assert_called_once()
+        result = normalize_image_tool_result(raw, source="generated", query="A respectful PM Modi infrastructure illustration")
+        self.assertIsNotNone(result)
+        self.assertTrue(result.url.startswith("https://"))
+        self.assertEqual(result.mime_type, "image/png")
+        self.assertTrue(result.filename.endswith(".png"))
+        self.assertNotIn("?", result.filename)
+        self.assertIn("model=flux", result.url)
+        self.assertIn("width=1024", result.url)
+        self.assertIn("height=1024", result.url)
+        self.assertIn("uid=job-42", result.url)
 
     def test_multiple_attachments_are_preserved_and_duplicate_is_suppressed(self):
         existing = [
@@ -319,6 +387,26 @@ class WorkflowExecutorTests(unittest.TestCase):
         payload = payload_from_message(result.message)
         self.assertEqual(len(payload["attachments"]), 2)
         self.assertEqual(payload["attachments"][0]["id"], "upload-1")
+    def test_generated_attachment_preserves_real_attachments_and_uses_generated_primary(self):
+        existing = [
+            {"id": "upload-1", "filename": "notes.pdf", "mime_type": "application/pdf", "source": "upload"},
+            {"content": "https://images.example/modi.jpg", "filename": "modi.jpg", "mime_type": "image/jpeg", "source": "remote"},
+        ]
+        plan = self.planner.plan(
+            "generate an image about this draft and attach it to the email widget",
+            history_with_draft(modi_draft(existing)),
+            OWNER,
+        )
+        result = WorkflowExecutor(
+            pending_store=self.store,
+            image_generate=lambda _q: "![Generated](https://image.pollinations.ai/prompt/modi?model=flux&width=1024&height=1024&seed=2&uid=job-2)",
+        ).execute(plan)
+        payload = payload_from_message(result.message)
+        self.assertEqual(len(payload["attachments"]), 3)
+        self.assertEqual(payload["attachments"][0]["id"], "upload-1")
+        generated = next(item for item in payload["attachments"] if item["source"] == "generated")
+        self.assertEqual(payload["attachment_content"], generated["content"])
+        self.assertEqual(payload["attachment_filename"], generated["filename"])
 
     def test_workflow_cancellation_stops_before_tools(self):
         abort = threading.Event()

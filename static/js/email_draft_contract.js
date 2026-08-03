@@ -82,22 +82,41 @@
         return result;
     }
 
+    function meaningfulAttachment(item) {
+        if (item.id || item.content || item.available != null || item.size != null || item.sha256) return true;
+        if (item.mime_type !== 'application/octet-stream') return true;
+        const name = text(item.filename).toLowerCase();
+        return Boolean(name && !['attachment.bin', 'attachment-1.bin'].includes(name));
+    }
+
     function normalize(raw) {
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
         const source = migrateEmailDraft(raw);
         const rawAttachments = Array.isArray(source.attachments) ? source.attachments : [];
         const legacyContent = source.attachment_content ?? null;
-        const attachments = rawAttachments.map((item, index) => attachment(item, index, legacyContent));
+        const attachments = rawAttachments
+            .map((item, index) => attachment(item, index, source.attachment_filename ? null : legacyContent))
+            .filter(meaningfulAttachment);
         if (!attachments.length && (legacyContent != null || source.attachment_filename)) {
-            attachments.push(attachment({
+            const legacyAttachment = attachment({
                 content: legacyContent,
                 filename: source.attachment_filename,
                 type: source.attachment_type || source.content_type || source.type,
                 source: 'legacy',
-            }, 0, legacyContent));
+            }, 0, legacyContent);
+            if (meaningfulAttachment(legacyAttachment)) attachments.push(legacyAttachment);
         }
-        if (attachments[0] && legacyContent != null && !attachments[0].content) attachments[0].content = String(legacyContent);
-        const primary = attachments[0] || {};
+        if (attachments.length && legacyContent != null) {
+            const legacyTarget = attachments.find(item => source.attachment_filename && item.filename === filename(source.attachment_filename, "")) || attachments[0];
+            if (!legacyTarget.content) legacyTarget.content = String(legacyContent);
+        }
+        let primary = attachments[0] || {};
+        if (attachments.length && (legacyContent != null || source.attachment_filename)) {
+            primary = attachments.find(item => (
+                (legacyContent != null && item.content === String(legacyContent))
+                || (source.attachment_filename && item.filename === filename(source.attachment_filename, ""))
+            )) || primary;
+        }
         return {
             schema_version: SCHEMA_VERSION,
             recipient: text(source.recipient || source.to),

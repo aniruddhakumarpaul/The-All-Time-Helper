@@ -137,3 +137,10 @@ This file records the current high-level architectural decisions.
 - Independent web and image searches may overlap inside one existing tool-lane job with at most two workers. Dependent updates and attachments wait for completed prerequisites; no action resubmits into the inference queue.
 - The browser keeps the live draft transient, emits metadata-only follow-up context, supersedes older cards, redacts masked messages before persistence, and clears active draft state before changing conversations so one chat cannot inherit another chat's draft.
 - Delivery results and workflow telemetry are sanitized. They may expose action type, state, duration, failure category, mode, and request ID, but not recipients, keys, prompts, tool arguments, raw provider errors, or attachment content.
+## 2026-08-03 Image Attachment Failure Decisions
+
+- Workflow action outcomes are distinct: only `COMPLETED` satisfies required dependencies; `FAILED`, `BLOCKED`, `CANCELLED`, and `PAUSED` are settled outcomes but never successful prerequisites. Optional dependencies may be settled with failure without blocking the dependent action.
+- A failed or invalid generated-image action blocks `attach_image`, emits controlled failure prose without a new `EMAIL_DRAFT_PAYLOAD:`, and leaves the existing widget unchanged. The executor never calls the attachment step with a missing image result.
+- The Python and browser email contracts discard the exact empty placeholder (`attachment_content=null`, `attachment.bin`, `application/octet-stream`, and no attachment entries) while preserving meaningful ID, URL, MIME, filename, availability, size, and checksum metadata.
+- Generated image descriptions are assembled from bounded, sanitized visual direction, topic, draft subject/body/attachment description, and the latest user request. Recipient addresses, keys, binary data, and full tool arguments are excluded from logs and user-facing status.
+- Generated attachments retain existing PDFs and images, suppress duplicates, and populate the legacy primary fields with the generated image without reordering the attachment collection.

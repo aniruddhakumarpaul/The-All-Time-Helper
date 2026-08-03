@@ -149,26 +149,53 @@ def _canonical_attachment(raw: Any, index: int = 0, legacy_content: Any = None) 
     return result
 
 
+def _is_meaningful_attachment(item: Mapping[str, Any]) -> bool:
+    """Reject the empty legacy placeholder while preserving real metadata."""
+    if item.get("id") or item.get("content"):
+        return True
+    if item.get("available") is not None or item.get("size") is not None or item.get("sha256"):
+        return True
+    if item.get("mime_type") != "application/octet-stream":
+        return True
+    filename = str(item.get("filename") or "").strip().lower()
+    return bool(filename and filename not in {"attachment.bin", "attachment-1.bin"})
+
 def _canonical_draft(raw: Mapping[str, Any]) -> dict[str, Any]:
     attachments_raw = raw.get("attachments")
     if not isinstance(attachments_raw, list):
         attachments_raw = []
     legacy_content = raw.get("attachment_content")
     attachments = [
-        _canonical_attachment(item, index, legacy_content if index == 0 else None)
+        _canonical_attachment(item, index, legacy_content if index == 0 and not raw.get("attachment_filename") else None)
         for index, item in enumerate(attachments_raw)
     ]
+    attachments = [item for item in attachments if _is_meaningful_attachment(item)]
     if not attachments and (legacy_content is not None or raw.get("attachment_filename")):
-        attachments.append(_canonical_attachment({
+        legacy_attachment = _canonical_attachment({
             "content": legacy_content,
             "filename": raw.get("attachment_filename"),
             "type": raw.get("attachment_type"),
             "source": "legacy",
-        }))
-    if attachments and legacy_content is not None and not attachments[0].get("content"):
-        attachments[0]["content"] = str(legacy_content)
+        })
+        if _is_meaningful_attachment(legacy_attachment):
+            attachments.append(legacy_attachment)
+    if attachments and legacy_content is not None:
+        legacy_target = next(
+            (item for item in attachments if raw.get("attachment_filename") and item.get("filename") == _safe_filename(raw.get("attachment_filename"), "")),
+            attachments[0],
+        )
+        if not legacy_target.get("content"):
+            legacy_target["content"] = str(legacy_content)
 
     primary = attachments[0] if attachments else {}
+    if attachments and (legacy_content is not None or raw.get("attachment_filename")):
+        primary = next(
+            (item for item in attachments if (
+                (legacy_content is not None and item.get("content") == str(legacy_content))
+                or (raw.get("attachment_filename") and item.get("filename") == _safe_filename(raw.get("attachment_filename"), ""))
+            )),
+            primary,
+        )
     return {
         "schema_version": EMAIL_DRAFT_SCHEMA_VERSION,
         "recipient": _text(raw.get("recipient") or raw.get("to")),
