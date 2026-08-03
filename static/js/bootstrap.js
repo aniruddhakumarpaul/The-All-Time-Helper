@@ -59,13 +59,13 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('dialog_manager', '1', 'dialog-manager');
         injectScript('busy_states', '1', 'busy-states');
         injectScript('email_draft_contract', '1', 'email-draft-contract');
-        injectScript('email_draft', '4', 'email-draft-core');
+        injectScript('email_draft', '5', 'email-draft-core');
         injectScript('email_approval', '4', 'draft-send');
         injectScript('admin_dashboard', '4', 'admin-dashboard');
         injectScript('job_center', '4', 'job-center');
         injectScript('chat_context_reuse', '1', 'chat-context-reuse');
         injectScript('motion_enhancements', '3', 'premium-motion');
-        injectScript('composer_context_tray', '7', 'composer-context-tray');
+        injectScript('composer_context_tray', '8', 'composer-context-tray');
     }
 
     if (document.readyState === 'loading') {

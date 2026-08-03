@@ -24,7 +24,9 @@ class FrontendEmailDraftTests(unittest.TestCase):
         self.assertIn('EMAIL_DRAFT_PAYLOAD:', helper_js)
         self.assertIn('application/x-helper-email-draft', helper_js)
         self.assertIn('card.__emailDraft = current', helper_js)
-        self.assertIn("event.dataTransfer.setData('text/plain', `EMAIL_DRAFT_CONTEXT:${JSON.stringify(transferDraft)}`)", helper_js)
+        self.assertIn("setAttribute('draggable', 'false')", helper_js)
+        self.assertIn("data-context-drag-handle", helper_js)
+        self.assertNotIn("card.addEventListener('dragstart'", helper_js)
         self.assertIn("iframe.setAttribute('sandbox', '')", helper_js)
         self.assertNotIn('allow-scripts', helper_js)
 

@@ -12,7 +12,7 @@ The All Time Helper is a FastAPI assistant with a modular ES6 frontend, determin
 - app/logic/workflow_orchestrator.py: typed deterministic plans for compound email, research, image, attachment, approval, and delivery workflows above the cloud/local split.
 - app/services/email_delivery_service.py: shared protected delivery boundary used by HTTP and workflow callers; internal code must not call its own HTTP route.
 - static/js/: frontend orchestrator (app.js), DOM/UI (ui.js), network adapter (api.js), email draft modules, dialogs, palette, and motion.
-- static/css/, templates/: active visual shell and rendered HTML contract.
+- static/css/, templates/: active visual shell and rendered HTML contract; email_draft.css owns the responsive draft-widget presentation.
 - app/tests/: repository-level behavioral and source-contract tests.
 - app/contracts/: versioned boundary models and serializers.
 - docs/: architecture, routing, attachment/image, memory, decisions, improvement, and recovery records.
@@ -36,7 +36,7 @@ Do not claim lint, type-check, browser, or cloud-provider verification unless th
 - Email drafting is a widget payload contract. Draft creation, updates, research, image lookup/generation, and attachment preparation never require an Admin Key or send mail; only the delivery node requires explicit request-scoped approval, owner-scoped attachments, and idempotency.
 - Known compound email workflows use a typed dependency graph above model selection. Run only independent actions concurrently, wait for declared dependencies, preserve cancellation, and never submit nested work back into the active queue lane.
 - Pending delivery workflows are owner-scoped and TTL-bounded. Never persist, log, reconstruct from history, or pass an Admin Key to a model.
-- Preserve the blue/red logo assets, active brand gradient, keyboard/Escape dismissal, text selection, reduced-motion behavior, and stable accessible control semantics.
+- Preserve the blue/red logo assets, active brand gradient, keyboard/Escape dismissal, text selection, reduced-motion behavior, and stable accessible control semantics. Email cards are not draggable as a whole; only their explicit handle may initiate metadata-only composer context transfer.
 - Never expose secrets, raw provider errors, attachment paths, recipient addresses, or raw tool arguments in user-facing status or telemetry.
 
 ## Required workflow

@@ -6,7 +6,7 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=7", template)
+        self.assertIn("composer_context_tray.js?v=8", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 
@@ -14,6 +14,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("composer_context_tray.css?v=4", template)
+        self.assertIn("email_draft.css?v=1", template)
 
     def test_drag_sources_include_handles_images_and_widgets(self):
         root = Path(__file__).resolve().parents[2]
@@ -102,17 +103,16 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("#composer-context-tray", script)
         self.assertIn("if (renderingTray) return", script)
 
-    def test_email_draft_cards_exclude_interactive_controls_from_drag_capture(self):
+    def test_email_draft_cards_use_an_explicit_handle_only(self):
         root = Path(__file__).resolve().parents[2]
         tray = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
         draft = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
         self.assertIn("function isInteractiveDraftControl(target)", tray)
-        self.assertIn("function isInteractiveDraftControl(target)", draft)
-        self.assertIn(".email-draft-card button, .email-draft-card input, .email-draft-card textarea", tray)
-        self.assertIn(".email-draft-card button, .email-draft-card input, .email-draft-card textarea", draft)
-        self.assertIn("if (isInteractiveDraftControl(target)) return null;", tray)
-        self.assertIn("if (isInteractiveDraftControl(event.target)) return;", draft)
-
+        self.assertIn("setAttribute('draggable', 'false')", draft)
+        self.assertIn("data-context-drag-handle", draft)
+        self.assertIn("if (target?.closest?.('.email-draft-card')) return null;", tray)
+        self.assertIn("if (emailCard) return emailDraftContextFromCard(emailCard);", tray)
+        self.assertNotIn("card.addEventListener('dragstart'", draft)
 
 if __name__ == "__main__":
     unittest.main()

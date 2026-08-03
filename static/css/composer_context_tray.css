@@ -343,3 +343,44 @@ body.composer-context-dragging .pill-bar {
         height: 40px;
     }
 }
+
+.composer-context-chip.is-pulsing {
+    animation: context-widget-pulse 560ms ease-out both;
+}
+
+body.composer-context-dragging #prompt,
+body.composer-context-dragging .pill-bar,
+body.composer-context-dragging .pill-bar-container,
+body.composer-context-dragging #input-wrap,
+body.composer-context-dragging #composer-context-tray,
+#prompt.composer-drop-active,
+.pill-bar.composer-drop-active,
+.pill-bar-container.composer-drop-active,
+#input-wrap.composer-drop-active,
+#composer-context-tray.composer-drop-active {
+    outline: 1px dashed rgba(125, 156, 255, .72);
+    outline-offset: 4px;
+}
+
+.email-draft-context-chip {
+    border-color: rgba(255, 202, 75, .38);
+}
+
+@keyframes context-widget-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(125,156,255,.5), 0 12px 30px rgba(0,0,0,.2); }
+    100% { box-shadow: 0 0 0 10px rgba(125,156,255,0), 0 12px 30px rgba(0,0,0,.2); }
+}
+
+@media (max-width: 850px) {
+    .email-draft-drag-handle,
+    .composer-context-remove { min-width: 42px; min-height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .composer-context-chip,
+    .chat-context-card,
+    .composer-context-chip.is-pulsing,
+    #composer-context-tray.is-loading::after,
+    #composer-context-tray.is-attaching::after,
+    #composer-context-tray.is-sending::after { animation: none; }
+}

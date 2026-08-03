@@ -90,16 +90,32 @@
         const subject = card.querySelector('.email-draft-subject');
         const body = card.querySelector('.email-draft-body-input');
         const tone = card.querySelector('.email-draft-tone');
-        const attachmentLabel = card.querySelector('.email-draft-attachment-label');
+        const attachmentLabel = card.querySelector('.email-draft-attachments');
         const preview = card.querySelector('.email-draft-preview');
         if (to && !to.value.trim()) to.value = draft.recipient || '';
         if (subject && !subject.value.trim()) subject.value = draft.subject || '';
         if (body && body.value.trim() !== draft.body) body.value = draft.body || '';
         if (tone && draft.tone) tone.value = draft.tone;
-        if (attachmentLabel && !draft.attachment_filename && !(draft.attachments || []).length) attachmentLabel.textContent = 'None';
+        if (attachmentLabel && typeof window.renderAttachmentSummary === 'function') window.renderAttachmentSummary(attachmentLabel, draft);
         if (preview) preview.srcdoc = safePreview(draft.body || '');
         card.__emailDraft = draft;
-        card.dataset.emailDraft = JSON.stringify(draft);
+        const compact = window.compactEmailDraftForPrompt?.(draft) || {
+            recipient: draft.recipient || '',
+            subject: draft.subject || '',
+            body: draft.body || '',
+            tone: draft.tone || 'modern',
+            attachment_filename: draft.attachment_filename || '',
+            attachments: (draft.attachments || []).map(item => {
+                const safe = { ...item };
+                delete safe.content;
+                delete safe.data;
+                delete safe.bytes;
+                delete safe.attachment_content;
+                return safe;
+            }),
+            has_attachment_content: Boolean(draft.attachment_content || draft.has_attachment_content),
+        };
+        card.dataset.emailDraft = JSON.stringify(compact);
     }
 
     function safePreview(body) {
@@ -120,12 +136,13 @@
         if (!prompt) return null;
         tray = document.createElement('div');
         tray.id = 'prompt-context-tray';
-        tray.style.cssText = 'display:none;gap:8px;flex-wrap:wrap;margin:0 8px 8px;align-items:center;';
+        tray.className = 'legacy-prompt-context-tray';
         prompt.parentElement?.insertBefore(tray, prompt);
         return tray;
     }
 
     function renderTray() {
+        if (window.__helperComposerDragOwner) return;
         if (!appState) return;
         const tray = ensureTray();
         if (!tray) return;
@@ -133,35 +150,37 @@
         tray.textContent = '';
         tray.style.display = drafts.length ? 'flex' : 'none';
         drafts.forEach(ctx => {
-            let draft = ctx.draft;
-            if (!draft) {
-                try { draft = normalizeDraft(JSON.parse(String(ctx.text || '').replace(CONTEXT_MARKER, '') || '{}')); } catch (_) { draft = null; }
-            }
             const chip = document.createElement('div');
             chip.className = 'prompt-context-chip email-draft-context-chip';
-            chip.style.cssText = 'display:flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--glass-border);background:rgba(255,255,255,.07);border-radius:999px;padding:7px 10px;color:var(--text-main);font-size:.78rem;';
             const label = document.createElement('span');
-            label.textContent = 'Email draft → ' + (draft?.recipient || 'recipient') + ' / ' + (draft?.subject || 'no subject');
-            label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px;';
+            label.textContent = 'Email draft -> attached context';
             const remove = document.createElement('button');
             remove.type = 'button';
-            remove.textContent = '×';
+            remove.textContent = 'x';
             remove.setAttribute('aria-label', 'Remove attached email draft context');
-            remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
             remove.addEventListener('click', function () {
-                const pos = appState.attachedContexts.indexOf(ctx);
-                if (pos >= 0) appState.set('attachedContexts', appState.attachedContexts.filter((_, index) => index !== pos));
-                renderTray();
+                const next = (appState.attachedContexts || []).filter(item => item !== ctx);
+                appState.set('attachedContexts', next);
             });
             chip.append(label, remove);
             tray.appendChild(chip);
         });
     }
 
-    function attachDraft(draft) {
-        if (!appState) return false;
+    function attachDraft(draft, sourceId = '') {
         const normalized = normalizeDraft(draft);
         if (!normalized) return false;
+        if (typeof window.addComposerContext === 'function') {
+            const compact = window.compactEmailDraftForPrompt?.(normalized) || normalized;
+            return window.addComposerContext({
+                kind: 'email',
+                sourceId: String(sourceId || ''),
+                title: 'Email Draft',
+                subtitle: compact.subject || 'Email Draft',
+                text: CONTEXT_MARKER + JSON.stringify(compact),
+            });
+        }
+        if (!appState) return false;
         if (!Array.isArray(appState.attachedContexts)) appState.set('attachedContexts', []);
         const text = CONTEXT_MARKER + JSON.stringify(normalized);
         const exists = appState.attachedContexts.some(ctx => ctx.kind === 'email_draft' && ctx.text === text);
@@ -172,6 +191,7 @@
     }
 
     function installDrop() {
+        if (window.__helperComposerDragOwner) return;
         const prompt = document.getElementById('prompt');
         if (!prompt || prompt.dataset.emailDraftRepairDrop === 'true') return;
         prompt.dataset.emailDraftRepairDrop = 'true';

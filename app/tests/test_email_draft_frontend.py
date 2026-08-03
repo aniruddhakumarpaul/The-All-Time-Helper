@@ -15,14 +15,16 @@ class EmailDraftFrontendTests(unittest.TestCase):
         self.assertIn("window.syncEmailDraftFromCard = syncDraftFromCard", script)
         self.assertIn("window.hydrateEmailDraftCards = hydrateEmailDraftCards", script)
 
-    def test_collector_reads_current_fields_before_drag_or_send(self):
+    def test_collector_reads_current_fields_before_context_attachment(self):
         root = Path(__file__).resolve().parents[2]
         script = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
         self.assertIn("const fromCard = syncDraftFromCard(card)", script)
         self.assertIn("return normalizeDraft(fromCard)", script)
-        self.assertIn("const transferDraft = compactEmailDraftForPrompt(emailDraft) || emailDraft", script)
-        self.assertIn("event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(transferDraft))", script)
-        self.assertIn("EMAIL_DRAFT_CONTEXT:${JSON.stringify(transferDraft)}", script)
+        self.assertIn("setAttribute('draggable', 'false')", script)
+        self.assertIn("data-context-drag-handle", script)
+        self.assertIn("window.collectEmailDraftForDrag", script)
+        self.assertNotIn("card.addEventListener('dragstart'", script)
+
 
     def test_large_attachment_payloads_are_registry_backed_not_dom_attributes(self):
         root = Path(__file__).resolve().parents[2]
@@ -49,17 +51,18 @@ class EmailDraftFrontendTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         helper_js = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
-        self.assertIn('/static/js/email_draft.js?v=4', template)
+        self.assertIn('/static/js/email_draft.js?v=5', template)
         self.assertIn('data-helper-extension="email-draft-core"', template)
         self.assertNotIn('/static/js/email_draft.js?v=1', template)
         self.assertNotIn('/static/js/email_draft.js?v=1', bootstrap)
-        self.assertIn("injectScript('email_draft', '4', 'email-draft-core')", bootstrap)
+        self.assertIn("injectScript('email_draft', '5', 'email-draft-core')", bootstrap)
         self.assertIn("injectScript('email_approval', '4', 'draft-send')", bootstrap)
         self.assertIn('document.querySelector(`script[data-helper-extension="${marker}"]`)', bootstrap)
         self.assertIn("function isInteractiveDraftControl(target)", helper_js)
-        self.assertIn("if (isInteractiveDraftControl(event.target)) return;", helper_js)
+        self.assertIn("setAttribute('draggable', 'false')", helper_js)
+        self.assertIn("data-context-drag-handle", helper_js)
         self.assertLess(
-            bootstrap.index("injectScript('email_draft', '4', 'email-draft-core')"),
+            bootstrap.index("injectScript('email_draft', '5', 'email-draft-core')"),
             bootstrap.index("injectScript('email_approval', '4', 'draft-send')"),
         )
 

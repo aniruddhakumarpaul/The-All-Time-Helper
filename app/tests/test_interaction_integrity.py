@@ -18,7 +18,7 @@ class InteractionIntegrityTests(unittest.TestCase):
         self.assertIn('class="txt" draggable="false"', self.ui)
         self.assertIn("data-context-drag-handle", self.ui)
         self.assertIn("Boolean(window.isGDown)", self.tray)
-        self.assertIn("if (textBubble && !explicitHandle && !window.isGDown)", self.tray)
+        self.assertIn("if (textBubble && !explicitHandle && !window.isGDown && !event.target?.closest?.('.chat-context-reusable'))", self.tray)
         self.assertIn("user-select: text !important", self.style)
         self.assertIn(".context-drag-handle", self.style)
 
@@ -57,7 +57,7 @@ class InteractionIntegrityTests(unittest.TestCase):
 
     def test_interaction_assets_are_cache_busted(self):
         self.assertIn("/static/css/style_v3.css?v=146", self.template)
-        self.assertIn("/static/js/composer_context_tray.js?v=7", self.template)
+        self.assertIn("/static/js/composer_context_tray.js?v=8", self.template)
         self.assertIn("/static/js/palette.js?v=212", self.template)
         self.assertIn("/static/js/app.js?v=222", self.template)
 

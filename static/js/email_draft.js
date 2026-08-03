@@ -156,7 +156,7 @@
         if (globalDraft) return globalDraft;
         const contexts = window.__helperState?.attachedContexts || [];
         for (const context of contexts.slice().reverse()) {
-            if (context?.kind !== 'email_draft') continue;
+            if (context?.kind !== 'email_draft' && context?.kind !== 'email') continue;
             const draft = context.draft || parseEmailDraftContext(context.text)?.draft;
             const normalized = normalizeDraft(draft);
             if (normalized) return normalized;
@@ -279,14 +279,53 @@
         return names.join(', ');
     }
 
-    function inputStyle(extra = '') {
-        return `width:100%;box-sizing:border-box;border:1px solid var(--glass-border);border-radius:10px;background:rgba(0,0,0,.18);color:var(--text-main);padding:8px 10px;font:inherit;font-size:.84rem;${extra}`;
+    function renderAttachmentSummary(container, draft) {
+        if (!container) return;
+        container.textContent = '';
+        const attachments = [];
+        if (draft?.attachment_filename) attachments.push({
+            name: draft.attachment_filename,
+            type: draft.attachment_type || 'Attachment',
+            description: draft.attachment_description || ''
+        });
+        for (const item of draft?.attachments || []) {
+            const name = item?.filename || item?.name;
+            if (name && !attachments.some(entry => entry.name === name)) {
+                attachments.push({
+                    name,
+                    type: item.content_type || item.mime_type || item.type || 'Attachment',
+                    description: item.description || ''
+                });
+            }
+        }
+        if (!attachments.length && (draft?.has_attachment_content || draft?.attachment_content)) {
+            attachments.push({ name: 'Attached file', type: draft?.attachment_type || 'Attachment', description: '' });
+        }
+        if (!attachments.length) {
+            const empty = document.createElement('span');
+            empty.className = 'email-draft-attachment-empty';
+            empty.textContent = 'No attachments';
+            container.appendChild(empty);
+            return;
+        }
+        for (const item of attachments) {
+            const chip = document.createElement('span');
+            chip.className = 'email-draft-attachment-chip';
+            const name = document.createElement('strong');
+            name.textContent = item.name;
+            const type = document.createElement('small');
+            type.textContent = item.type;
+            chip.append(name, type);
+            if (item.description) chip.title = item.description;
+            container.appendChild(chip);
+        }
     }
 
     function field(labelText, control) {
         const label = document.createElement('label');
+        label.className = 'email-draft-field-label';
         label.textContent = labelText;
-        label.style.cssText = 'font-size:0.68rem;color:var(--text-sub);font-weight:800;letter-spacing:.08em;align-self:center;';
+        if (control.id) label.htmlFor = control.id;
         return [label, control];
     }
 
@@ -300,7 +339,7 @@
         const subjectInput = card.querySelector('.email-draft-subject');
         const toneSelect = card.querySelector('.email-draft-tone');
         const bodyInput = card.querySelector('.email-draft-body-input');
-        const attachmentValue = card.querySelector('.email-draft-attachment-label');
+        const attachmentValue = card.querySelector('.email-draft-attachments');
         const preview = card.querySelector('.email-draft-preview');
 
         if (toInput) current.recipient = toInput.value.trim();
@@ -310,7 +349,7 @@
         if (!current.attachment_content && !current.has_attachment_content && !(current.attachments || []).length) current.attachment_filename = '';
 
         current = storeDraftOnCard(card, current) || current;
-        if (attachmentValue) attachmentValue.textContent = attachmentLabel(current) || 'None';
+        if (attachmentValue) renderAttachmentSummary(attachmentValue, current);
         if (preview) preview.srcdoc = renderSafeBodyHtml(current.body || '');
         return current;
     }
@@ -318,87 +357,115 @@
     function buildEmailDraftCard(draft) {
         const card = document.createElement('div');
         card.className = 'email-draft-card';
-        card.setAttribute('draggable', 'true');
-        card.style.cssText = 'margin:14px 0;padding:16px;border:1px solid var(--glass-border);border-radius:16px;background:rgba(255,255,255,0.045);box-shadow:0 12px 30px rgba(0,0,0,0.18);cursor:grab;max-width:100%;';
+        card.setAttribute('draggable', 'false');
 
         const current = normalizeDraft(draft) || draft;
         storeDraftOnCard(card, current);
+        const idPrefix = card.dataset.emailDraftRef || nextDraftRef();
 
         const header = document.createElement('div');
         header.className = 'email-draft-header';
-        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;';
+
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'email-draft-title-wrap';
         const title = document.createElement('strong');
         title.textContent = 'Email Draft';
-        title.style.cssText = 'font-size:0.95rem;color:var(--text-main);letter-spacing:.02em;';
+        const status = document.createElement('span');
+        status.className = 'email-draft-status';
+        status.textContent = 'Editable draft';
+        titleWrap.append(title, status);
+
+        const headerTools = document.createElement('div');
+        headerTools.className = 'email-draft-header-tools';
         const hint = document.createElement('span');
-        hint.textContent = 'Editable â€¢ drag or attach to prompt';
-        hint.style.cssText = 'font-size:0.72rem;color:var(--text-sub);';
-        header.append(title, hint);
+        hint.className = 'email-draft-hint';
+        hint.textContent = 'Drag the handle or use the prompt button';
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'email-draft-drag-handle';
+        handle.setAttribute('draggable', 'true');
+        handle.setAttribute('data-context-drag-handle', 'true');
+        handle.setAttribute('aria-label', 'Drag this email draft into the prompt');
+        handle.title = 'Drag this email draft into the prompt';
+        handle.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h2v2H8V5Zm6 0h2v2h-2V5ZM8 11h2v2H8v-2Zm6 0h2v2h-2v-2ZM8 17h2v2H8v-2Zm6 0h2v2h-2v-2Z"></path></svg>';
+        headerTools.append(hint, handle);
+        header.append(titleWrap, headerTools);
 
         const grid = document.createElement('div');
         grid.className = 'email-draft-grid';
-        grid.style.cssText = 'display:grid;grid-template-columns:minmax(90px,auto) 1fr;gap:8px 12px;margin-bottom:12px;';
 
         const toInput = document.createElement('input');
+        toInput.id = idPrefix + '-recipient';
         toInput.className = 'email-draft-input email-draft-recipient';
+        toInput.type = 'email';
+        toInput.autocomplete = 'off';
+        toInput.placeholder = 'name@example.com';
         toInput.value = current.recipient || '';
         toInput.setAttribute('value', toInput.value);
-        toInput.style.cssText = inputStyle();
 
         const subjectInput = document.createElement('input');
+        subjectInput.id = idPrefix + '-subject';
         subjectInput.className = 'email-draft-input email-draft-subject';
+        subjectInput.type = 'text';
+        subjectInput.autocomplete = 'off';
+        subjectInput.placeholder = 'Subject';
         subjectInput.value = current.subject || '';
         subjectInput.setAttribute('value', subjectInput.value);
-        subjectInput.style.cssText = inputStyle();
 
         const toneSelect = document.createElement('select');
+        toneSelect.id = idPrefix + '-tone';
         toneSelect.className = 'email-draft-input email-draft-tone';
-        toneSelect.style.cssText = inputStyle();
         ['formal', 'modern', 'informal'].forEach(tone => {
             const option = document.createElement('option');
             option.value = tone;
             option.textContent = tone;
-            if ((current.tone || 'modern') === tone) option.selected = true;
-                option.setAttribute('selected', '');
+            option.selected = (current.tone || 'modern') === tone;
             toneSelect.appendChild(option);
         });
 
         const attachmentValue = document.createElement('div');
-        attachmentValue.className = 'email-draft-attachment-label';
-        attachmentValue.textContent = attachmentLabel(current) || 'None';
-        attachmentValue.style.cssText = 'font-size:0.84rem;color:var(--text-main);word-break:break-word;';
+        attachmentValue.id = idPrefix + '-attachments';
+        attachmentValue.className = 'email-draft-attachments';
+        renderAttachmentSummary(attachmentValue, current);
 
-        for (const pair of [field('TO', toInput), field('SUBJECT', subjectInput), field('EMAIL TONE', toneSelect), field('ATTACHMENTS', attachmentValue)]) {
+        for (const pair of [
+            field('TO', toInput),
+            field('SUBJECT', subjectInput),
+            field('EMAIL TONE', toneSelect),
+            field('ATTACHMENTS', attachmentValue)
+        ]) {
             grid.append(pair[0], pair[1]);
         }
 
         const bodyLabel = document.createElement('label');
+        bodyLabel.className = 'email-draft-section-label';
         bodyLabel.textContent = 'BODY';
-        bodyLabel.style.cssText = 'display:block;margin-top:8px;margin-bottom:6px;font-size:0.68rem;color:var(--text-sub);font-weight:800;letter-spacing:.08em;';
+        bodyLabel.htmlFor = idPrefix + '-body';
         const body = document.createElement('textarea');
+        body.id = idPrefix + '-body';
         body.className = 'email-draft-body-input';
+        body.placeholder = 'Write the message body...';
         body.value = current.body || '';
-        body.textContent = body.value;
         body.rows = Math.max(4, Math.min(12, String(current.body || '').split('\n').length + 2));
-        body.style.cssText = inputStyle('resize:vertical;min-height:110px;line-height:1.45;white-space:pre-wrap;');
 
         const previewLabel = document.createElement('label');
+        previewLabel.className = 'email-draft-section-label';
         previewLabel.textContent = 'LIVE HTML PREVIEW';
-        previewLabel.style.cssText = bodyLabel.style.cssText;
+        previewLabel.htmlFor = idPrefix + '-preview';
         const iframe = document.createElement('iframe');
+        iframe.id = idPrefix + '-preview';
         iframe.className = 'email-draft-preview';
+        iframe.title = 'Live email body preview';
         iframe.setAttribute('sandbox', '');
         iframe.srcdoc = renderSafeBodyHtml(current.body || '');
-        iframe.style.cssText = 'width:100%;min-height:160px;border:0;border-radius:12px;background:#fff;';
 
         const actions = document.createElement('div');
         actions.className = 'email-draft-actions';
-        actions.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;';
         const useBtn = document.createElement('button');
         useBtn.type = 'button';
         useBtn.className = 'email-draft-use-context-btn';
         useBtn.textContent = 'Use in prompt';
-        useBtn.style.cssText = 'border:1px solid var(--glass-border);border-radius:999px;padding:9px 15px;background:rgba(255,255,255,.08);color:var(--text-main);font-weight:800;cursor:pointer;';
+        useBtn.setAttribute('aria-label', 'Use this email draft in the next prompt');
         actions.appendChild(useBtn);
 
         card.append(header, grid, bodyLabel, body, previewLabel, iframe, actions);
@@ -485,16 +552,9 @@
                 event.preventDefault();
                 event.stopPropagation();
                 const latest = syncDraftFromCard(card);
-                if (latest && typeof window.attachEmailDraftToPrompt === 'function') window.attachEmailDraftToPrompt(latest);
-            });
-            card.addEventListener('dragstart', event => {
-                if (isInteractiveDraftControl(event.target)) return;
-                const emailDraft = syncDraftFromCard(card);
-                if (!emailDraft || !event.dataTransfer) return;
-                const transferDraft = compactEmailDraftForPrompt(emailDraft) || emailDraft;
-                event.dataTransfer.setData(DRAFT_MIME, JSON.stringify(transferDraft));
-                event.dataTransfer.setData('text/plain', `EMAIL_DRAFT_CONTEXT:${JSON.stringify(transferDraft)}`);
-                event.dataTransfer.effectAllowed = 'copy';
+                if (latest && typeof window.attachEmailDraftToPrompt === 'function') {
+                    window.attachEmailDraftToPrompt(latest, card.dataset.emailDraftRef || '');
+                }
             });
         });
         window.hydrateEmailDraftApprovalButtons?.(rootEl);
@@ -548,6 +608,7 @@
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
     window.compactEmailDraftForPrompt = compactEmailDraftForPrompt;
+    window.renderAttachmentSummary = renderAttachmentSummary;
     window.getActiveEmailDraftPromptContext = getActiveEmailDraftPromptContext;
     window.resolveActiveEmailDraft = resolveActiveEmailDraft;
     window.isCompoundEmailMediaRequest = isCompoundEmailMediaRequest;

@@ -66,6 +66,7 @@
     }
 
     function installDragCapture() {
+        if (window.__helperComposerDragOwner) return;
         window.addEventListener('dragstart', event => {
             const card = event.target?.closest?.('.chat-context-card');
             if (!card || !event.dataTransfer) return;

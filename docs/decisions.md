@@ -144,3 +144,11 @@ This file records the current high-level architectural decisions.
 - The Python and browser email contracts discard the exact empty placeholder (`attachment_content=null`, `attachment.bin`, `application/octet-stream`, and no attachment entries) while preserving meaningful ID, URL, MIME, filename, availability, size, and checksum metadata.
 - Generated image descriptions are assembled from bounded, sanitized visual direction, topic, draft subject/body/attachment description, and the latest user request. Recipient addresses, keys, binary data, and full tool arguments are excluded from logs and user-facing status.
 - Generated attachments retain existing PDFs and images, suppress duplicates, and populate the legacy primary fields with the generated image without reordering the attachment collection.
+
+## 2026-08-03 Composer Context Decisions
+
+- The composer context tray is the single frontend drag/drop owner. Legacy email context and repair modules remain compatibility/cache layers and delegate to window.addComposerContext when the owner is installed.
+- Email draft widgets are deliberately non-draggable containers. The handle is a keyboard-labelled button with draggable=true; fields, the preview iframe, actions, and normal text selection remain independent controls.
+- Prompt context transfer is normalized to bounded metadata, uses a stable source-aware fingerprint, and updates an existing email chip when the same live card changes. Duplicate drops pulse the existing chip without duplicating state.
+- The context tray stays in normal composer flow and advertises all valid targets with copy semantics. Escape, dragend, invalid drops, leave depth, blur, and successful drops clear transient target state.
+- Widget presentation is separated into static/css/email_draft.css for responsive, touch-sized, reduced-motion, forced-colors, labelled-field, attachment-chip, and sandbox-preview behavior.

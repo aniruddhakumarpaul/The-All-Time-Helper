@@ -78,13 +78,14 @@ function draftFromTransfer(event) {
 }
 
 function ensureTray() {
+    if (window.__helperComposerDragOwner) return null;
     let tray = document.getElementById('prompt-context-tray');
     if (tray) return tray;
     const prompt = document.getElementById('prompt');
     if (!prompt) return null;
     tray = document.createElement('div');
     tray.id = 'prompt-context-tray';
-    tray.style.cssText = 'display:none;gap:8px;flex-wrap:wrap;margin:0 8px 8px;align-items:center;';
+    tray.className = 'legacy-prompt-context-tray';
     prompt.parentElement?.insertBefore(tray, prompt);
     return tray;
 }
@@ -95,6 +96,7 @@ function makeContextText(draft) {
 }
 
 function renderTray() {
+    if (window.__helperComposerDragOwner) return;
     const tray = ensureTray();
     if (!tray) return;
     const drafts = (state.attachedContexts || []).filter(ctx => ctx.kind === 'email_draft');
@@ -107,16 +109,13 @@ function renderTray() {
         }
         const chip = document.createElement('div');
         chip.className = 'prompt-context-chip email-draft-context-chip';
-        chip.style.cssText = 'display:flex;align-items:center;gap:8px;max-width:100%;border:1px solid var(--glass-border);background:rgba(255,255,255,.07);border-radius:999px;padding:7px 10px;color:var(--text-main);font-size:.78rem;';
         const label = document.createElement('span');
-        label.textContent = `Email draft → ${draft?.recipient || 'recipient'} / ${draft?.subject || 'no subject'}`;
-        label.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px;';
+        label.textContent = 'Email draft -> ' + (draft?.recipient || 'recipient') + ' / ' + (draft?.subject || 'no subject');
         const remove = document.createElement('button');
         remove.type = 'button';
-        remove.textContent = '×';
+        remove.textContent = 'x';
         remove.title = 'Remove attached email draft context';
         remove.setAttribute('aria-label', 'Remove attached email draft context');
-        remove.style.cssText = 'border:0;background:transparent;color:var(--text-sub);font-size:1rem;cursor:pointer;line-height:1;';
         remove.addEventListener('click', () => {
             state.removeAttachedContext(ctx);
             renderTray();
@@ -126,9 +125,25 @@ function renderTray() {
     });
 }
 
-function attachEmailDraftToPrompt(rawDraft) {
+function composerContextForDraft(draft, sourceId = '') {
+    const compact = compactDraft(draft);
+    if (!compact) return null;
+    const subject = compact.subject || 'Email Draft';
+    return {
+        kind: 'email',
+        sourceId: String(sourceId || ''),
+        title: 'Email Draft',
+        subtitle: subject,
+        text: makeContextText(compact),
+    };
+}
+
+function attachEmailDraftToPrompt(rawDraft, sourceId = '') {
     const draft = compactDraft(rawDraft);
     if (!draft) return false;
+    if (typeof window.addComposerContext === 'function') {
+        return window.addComposerContext(composerContextForDraft(draft, sourceId));
+    }
     if (!Array.isArray(state.attachedContexts)) state.replaceAttachedContexts([]);
     const text = makeContextText(draft);
     const exists = state.attachedContexts.some(ctx => ctx.kind === 'email_draft' && ctx.text === text);
@@ -140,6 +155,7 @@ function attachEmailDraftToPrompt(rawDraft) {
 }
 
 function installPromptDrop() {
+    if (window.__helperComposerDragOwner) return;
     const prompt = document.getElementById('prompt');
     if (!prompt || prompt.dataset.emailDraftDrop === 'true') return;
     prompt.dataset.emailDraftDrop = 'true';

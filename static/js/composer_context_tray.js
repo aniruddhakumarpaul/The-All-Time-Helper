@@ -11,6 +11,7 @@
 
     if (window[EXTENSION_MARKER]) return;
     window[EXTENSION_MARKER] = true;
+    window.__helperComposerDragOwner = true;
 
     let renderQueued = false;
     let renderingTray = false;
@@ -107,14 +108,29 @@
 
     function normalizeContext(item) {
         if (!item || !item.text) return null;
+        const kind = ['text', 'image', 'email', 'widget'].includes(item.kind) ? item.kind : 'text';
+        const text = clip(item.text, MAX_ITEM_CHARS);
+        if (!text) return null;
         return {
-            kind: item.kind || 'text',
-            title: clip(item.title || labelForKind(item.kind), 80),
+            kind,
+            title: clip(item.title || labelForKind(kind), 80),
             subtitle: clip(item.subtitle || '', 140),
-            text: clip(item.text || '', MAX_ITEM_CHARS),
-            preview: item.preview || '',
+            text,
+            preview: typeof item.preview === 'string' && !item.preview.startsWith('data:') ? item.preview : '',
+            sourceId: clip(item.sourceId || '', 120),
+            fingerprint: clip(item.fingerprint || fingerprintFor({ kind, text, sourceId: item.sourceId }), 120),
             status: item.status || 'ready',
         };
+    }
+
+    function fingerprintFor(item) {
+        const source = (item.kind || 'text') + '\u0000' + (item.sourceId || '') + '\u0000' + (item.text || '');
+        let hash = 2166136261;
+        for (let index = 0; index < source.length; index += 1) {
+            hash ^= source.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+        }
+        return (item.kind || 'text') + ':' + (hash >>> 0).toString(16) + ':' + source.length;
     }
 
     function cloneContextItems(items) {
@@ -140,10 +156,10 @@
     }
 
     function iconForKind(kind) {
-        if (kind === 'image') return '▧';
-        if (kind === 'email') return '✉';
-        if (kind === 'widget') return '◈';
-        return '¶';
+        if (kind === 'image') return 'IMG';
+        if (kind === 'email') return '@';
+        if (kind === 'widget') return 'W';
+        return 'T';
     }
 
     function contextCardHtml(item, mode = 'composer') {
@@ -207,18 +223,21 @@
         const items = contextItems();
         renderingTray = true;
         try {
-            tray.innerHTML = '';
+            tray.textContent = '';
             tray.classList.toggle('has-context', items.length > 0);
             if (!items.length) return;
             for (const [index, item] of items.entries()) {
                 const kind = item.kind || 'text';
                 const status = item.status || 'ready';
                 const chip = document.createElement('div');
-                chip.className = `composer-context-chip composer-context-${kind} is-${status}`;
+                chip.className = 'composer-context-chip composer-context-' + kind + ' is-' + status + (kind === 'email' ? ' email-draft-context-chip' : '');
                 chip.dataset.index = String(index);
-                chip.innerHTML = `${contextCardHtml(item)}<button type="button" class="composer-context-remove" aria-label="Remove context">×</button><span class="composer-context-progress" aria-hidden="true"></span>`;
+                chip.dataset.fingerprint = item.fingerprint || fingerprintFor(item);
+                chip.setAttribute('role', 'listitem');
+                chip.innerHTML = contextCardHtml(item) + '<button type="button" class="composer-context-remove" aria-label="Remove ' + escapeHtml(item.title || 'context') + '">×</button><span class="composer-context-progress" aria-hidden="true"></span>';
                 chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
-                    const st = state(); st?.set('attachedContexts', contextItems().filter((_, itemIndex) => itemIndex !== index));
+                    const st = state();
+                    st?.set('attachedContexts', contextItems().filter((_, itemIndex) => itemIndex !== index));
                     scheduleRender();
                 });
                 tray.appendChild(chip);
@@ -248,38 +267,65 @@
         scheduleRender();
     }
 
-    function markLastContextReady() {
+    function markContextReady(target) {
         const items = contextItems();
-        const last = items[items.length - 1];
-        if (last && last.status === 'attaching') {
-            last.status = 'ready';
+        const item = items.find(candidate => candidate === target);
+        if (item && item.status === 'attaching') {
+            item.status = 'ready';
             state()?.touch('attachedContexts');
             scheduleRender();
         }
     }
 
+    function pulseExistingContext(index) {
+        const tray = ensureTray();
+        const chip = tray?.querySelector('[data-index="' + index + '"]');
+        if (!chip) return;
+        chip.classList.remove('is-pulsing');
+        void chip.offsetWidth;
+        chip.classList.add('is-pulsing');
+        window.setTimeout(() => chip.classList.remove('is-pulsing'), 560);
+    }
+
     function addContext(item) {
+        const st = state();
         const items = contextItems();
         const normalized = normalizeContext(item);
-        if (!normalized || items.length >= MAX_ITEMS) return false;
+        if (!st || !normalized) return false;
+        const existingBySource = normalized.sourceId
+            ? items.findIndex(candidate => candidate.kind === normalized.kind && candidate.sourceId === normalized.sourceId)
+            : -1;
+        const existingByFingerprint = items.findIndex(candidate => (candidate.fingerprint || fingerprintFor(candidate)) === normalized.fingerprint);
+        const targetIndex = existingBySource >= 0 ? existingBySource : existingByFingerprint;
+        if (targetIndex >= 0) {
+            const current = items[targetIndex];
+            if (current.text === normalized.text && current.subtitle === normalized.subtitle) {
+                pulseExistingContext(targetIndex);
+                return true;
+            }
+            const updated = {
+                ...current,
+                ...normalized,
+                status: 'attaching',
+                fingerprint: normalized.fingerprint,
+            };
+            items.splice(targetIndex, 1, updated);
+            st.touch('attachedContexts');
+            pulseTrayLoading('is-attaching', 520);
+            scheduleRender();
+            window.setTimeout(() => markContextReady(updated), 420);
+            return true;
+        }
+        if (items.length >= MAX_ITEMS) return false;
         const remaining = Math.max(0, MAX_TOTAL_CHARS - totalChars(items));
-        if (!remaining) return false;
-        const text = normalized.kind === 'email'
-            ? normalized.text
-            : clip(normalized.text, Math.min(MAX_ITEM_CHARS, remaining));
+        const text = clip(normalized.text, Math.min(MAX_ITEM_CHARS, remaining));
         if (!text) return false;
+        const stored = { ...normalized, text, fingerprint: fingerprintFor({ ...normalized, text }), status: 'attaching' };
         pulseTrayLoading('is-attaching', 700);
-        items.push({
-            kind: normalized.kind,
-            title: normalized.title,
-            subtitle: normalized.subtitle,
-            text,
-            preview: normalized.preview || '',
-            status: 'attaching',
-        });
-        state()?.touch('attachedContexts');
+        items.push(stored);
+        st.touch('attachedContexts');
         scheduleRender();
-        window.setTimeout(markLastContextReady, 420);
+        window.setTimeout(() => markContextReady(stored), 420);
         return true;
     }
 
@@ -341,8 +387,9 @@
         const attachment = decodeAttachmentName(compactDraft.attachment_filename || (Array.isArray(compactDraft.attachments) && compactDraft.attachments[0]?.filename) || '');
         return {
             kind: 'email',
+            sourceId: String(card.dataset.emailDraftRef || ''),
             title: 'Email Draft',
-            subtitle: attachment ? `${subject} • ${attachment}` : subject,
+            subtitle: attachment ? subject + ' • ' + attachment : subject,
             text: emailContextTextFromDraft(compactDraft),
         };
     }
@@ -352,15 +399,17 @@
         const src = img.currentSrc || img.src || img.getAttribute('src') || '';
         if (!src) return null;
         const alt = img.getAttribute('alt') || img.closest('.msg')?.querySelector('[id^="msg-text-"]')?.innerText || 'chat image';
+        const safeSource = src.startsWith('data:') ? '' : src.slice(0, 2000);
         return {
             kind: 'image',
             title: 'Image Target',
             subtitle: compactText(alt, 96),
-            preview: src,
-            text: `[Target Image]\nUse this image as explicit context for the next request.\nImage source: ${src}\nImage description/context: ${alt}`,
+            preview: safeSource,
+            text: safeSource
+                ? '[Target Image]\nUse this image as explicit context for the next request.\nImage source: ' + safeSource + '\nImage description/context: ' + alt
+                : '[Target Image]\nUse the selected image as explicit context for the next request.\nImage description/context: ' + alt,
         };
     }
-
     function textContextFromElement(el) {
         if (!el) return null;
         const textNode = el.querySelector('[id^="msg-text-"]') || el;
@@ -378,6 +427,10 @@
     }
 
     function widgetContextFromElement(el) {
+        const reusable = el?.closest?.('.chat-context-reusable[data-context-json]');
+        if (reusable) {
+            try { return normalizeContext(JSON.parse(reusable.dataset.contextJson)); } catch (_) { return null; }
+        }
         const emailCard = el?.closest?.('.email-draft-card');
         if (emailCard) return emailDraftContextFromCard(emailCard);
         const widget = el?.closest?.('.neural-insight-box, .context-snippet, .ops-item, .job-item');
@@ -388,7 +441,7 @@
             kind: 'widget',
             title: 'Widget Target',
             subtitle: compactText(text, 120),
-            text: `[Target Widget]\n${text}`,
+            text: '[Target Widget]\n' + text,
         };
     }
 
@@ -397,6 +450,18 @@
     }
 
     function contextFromDragTarget(target) {
+        const explicitHandle = target?.closest?.('[data-context-drag-handle]');
+        if (explicitHandle) {
+            const emailCard = explicitHandle.closest('.email-draft-card');
+            if (emailCard) return emailDraftContextFromCard(emailCard);
+            const textBubble = explicitHandle.closest('.msg .txt');
+            if (textBubble) return textContextFromElement(textBubble);
+            const reusable = explicitHandle.closest('.chat-context-reusable[data-context-json]');
+            if (reusable) {
+                try { return normalizeContext(JSON.parse(reusable.dataset.contextJson)); } catch (_) { return null; }
+            }
+        }
+        if (target?.closest?.('.email-draft-card')) return null;
         if (isInteractiveDraftControl(target)) return null;
         const widget = widgetContextFromElement(target);
         if (widget) return widget;
@@ -413,17 +478,34 @@
             el.setAttribute('draggable', grabMode ? 'true' : 'false');
             el.classList.toggle('composer-draggable-context', grabMode);
         });
-        root.querySelectorAll?.('[data-context-drag-handle], img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .email-draft-card').forEach(el => {
+        root.querySelectorAll?.('.email-draft-card').forEach(card => {
+            card.setAttribute('draggable', 'false');
+            card.classList.remove('composer-draggable-context');
+        });
+        root.querySelectorAll?.('[data-context-drag-handle], img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img, .chat-context-reusable').forEach(el => {
             el.setAttribute('draggable', 'true');
             el.classList.add('composer-draggable-context');
         });
     }
 
+    function clearDragState() {
+        document.body.classList.remove('composer-context-dragging');
+        document.querySelectorAll('.composer-drop-active, .email-draft-drop-active').forEach(el => {
+            el.classList.remove('composer-drop-active', 'email-draft-drop-active');
+        });
+        ensureTray()?.classList.remove('composer-drop-active', 'is-loading');
+    }
+
     function installDragSource() {
         document.addEventListener('dragstart', event => {
-            const textBubble = event.target?.closest?.('.msg .txt');
             const explicitHandle = event.target?.closest?.('[data-context-drag-handle]');
-            if (textBubble && !explicitHandle && !window.isGDown) {
+            const emailCard = event.target?.closest?.('.email-draft-card');
+            const textBubble = event.target?.closest?.('.msg .txt');
+            if (emailCard && !explicitHandle) {
+                event.preventDefault();
+                return;
+            }
+            if (textBubble && !explicitHandle && !window.isGDown && !event.target?.closest?.('.chat-context-reusable')) {
                 event.preventDefault();
                 return;
             }
@@ -435,60 +517,98 @@
             event.dataTransfer.effectAllowed = 'copy';
             document.body.classList.add('composer-context-dragging');
         }, true);
-        document.addEventListener('dragend', () => {
-            document.body.classList.remove('composer-context-dragging');
-            document.querySelectorAll('.composer-drop-active').forEach(el => el.classList.remove('composer-drop-active'));
-        }, true);
+        document.addEventListener('dragend', clearDragState, true);
+        window.addEventListener('blur', clearDragState);
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape') clearDragState();
+        });
     }
 
     function parseDrop(event) {
         const rawContext = event.dataTransfer?.getData(CONTEXT_MIME) || '';
-        if (rawContext) {
+        if (rawContext && rawContext.length <= MAX_TOTAL_CHARS + 2048) {
             try { return normalizeContext(JSON.parse(rawContext)); } catch (_) { return null; }
         }
         const rawDraft = event.dataTransfer?.getData(EMAIL_DRAFT_MIME) || '';
-        if (rawDraft) {
+        if (rawDraft && rawDraft.length <= MAX_TOTAL_CHARS + 2048) {
             try {
                 const draft = JSON.parse(rawDraft);
                 const compactDraft = compactDraftForPrompt(draft);
                 const subject = compactDraft.subject || 'Email Draft';
                 const attachment = decodeAttachmentName(compactDraft.attachment_filename || '');
-                return { kind: 'email', title: 'Email Draft', subtitle: attachment ? `${subject} • ${attachment}` : subject, text: emailContextTextFromDraft(compactDraft) };
+                return {
+                    kind: 'email',
+                    title: 'Email Draft',
+                    subtitle: attachment ? subject + ' • ' + attachment : subject,
+                    text: emailContextTextFromDraft(compactDraft),
+                };
             } catch (_) { return null; }
         }
-        const text = event.dataTransfer?.getData('text/plain') || '';
-        if (!text.trim()) return null;
-        return { kind: 'text', title: 'Dropped Text', subtitle: compactText(text, 120), text: `[Target Text]\n${text}` };
+        const text = clip(event.dataTransfer?.getData('text/plain') || '', MAX_ITEM_CHARS);
+        if (!text) return null;
+        return { kind: 'text', title: 'Dropped Text', subtitle: compactText(text, 120), text: '[Target Text]\n' + text };
     }
 
     function installDropTarget() {
-        const dropSelectors = ['#prompt', '.pill-bar', '.pill-bar-container', '#input-wrap'];
+        const dropSelectors = ['#prompt', '.pill-bar', '.pill-bar-container', '#input-wrap', '#composer-context-tray'];
+        let activeTarget = null;
+        let dragDepth = 0;
+
         function targetFromEvent(event) {
-            return dropSelectors.map(sel => event.target.closest?.(sel)).find(Boolean);
+            return dropSelectors.map(selector => event.target?.closest?.(selector)).find(Boolean) || null;
         }
+
+        function supported(event) {
+            const types = Array.from(event.dataTransfer?.types || []);
+            return types.includes(CONTEXT_MIME) || types.includes(EMAIL_DRAFT_MIME) || types.includes('text/plain');
+        }
+
+        function activate(target) {
+            if (!target) return;
+            activeTarget = target;
+            target.classList.add('composer-drop-active');
+            ensureTray()?.classList.add('composer-drop-active', 'is-loading');
+        }
+
+        function clearTarget() {
+            if (activeTarget) activeTarget.classList.remove('composer-drop-active');
+            activeTarget = null;
+            dragDepth = 0;
+            ensureTray()?.classList.remove('composer-drop-active', 'is-loading');
+        }
+
+        document.addEventListener('dragenter', event => {
+            const target = targetFromEvent(event);
+            if (!target || !supported(event)) return;
+            event.preventDefault();
+            dragDepth += 1;
+            activate(target);
+        }, true);
         document.addEventListener('dragover', event => {
             const target = targetFromEvent(event);
-            if (!target) return;
+            if (!target || !supported(event)) return;
             event.preventDefault();
-            if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
-            ensureTray()?.classList.add('composer-drop-active', 'is-loading');
+            event.dataTransfer.dropEffect = 'copy';
+            activate(target);
         }, true);
         document.addEventListener('dragleave', event => {
-            if (!event.relatedTarget || !document.querySelector('#input-wrap')?.contains(event.relatedTarget)) {
-                ensureTray()?.classList.remove('composer-drop-active', 'is-loading');
-            }
+            if (!activeTarget || activeTarget.contains(event.relatedTarget)) return;
+            dragDepth = Math.max(0, dragDepth - 1);
+            if (!dragDepth) clearTarget();
         }, true);
         document.addEventListener('drop', event => {
             const target = targetFromEvent(event);
             if (!target) return;
             const context = parseDrop(event);
-            if (!context) return;
+            if (!context) {
+                clearTarget();
+                return;
+            }
             event.preventDefault();
             event.stopImmediatePropagation();
+            clearTarget();
             addContext(context);
-            ensureTray()?.classList.remove('composer-drop-active');
-            window.setTimeout(() => ensureTray()?.classList.remove('is-loading'), 260);
-            document.getElementById('prompt')?.focus();
+            document.getElementById('prompt')?.focus({ preventScroll: true });
         }, true);
     }
 
@@ -567,6 +687,7 @@
         installSourceObserver();
         window.syncComposerDragSources = () => markDraggable(document);
         window.addComposerContext = addContext;
+        window.getComposerContextFromEmailCard = emailDraftContextFromCard;
         window.clearComposerContextTray = clearContexts;
         window.renderComposerContextTray = scheduleRender;
         window.renderChatContextWidgets = renderChatContextWidgets;

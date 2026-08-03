@@ -1,0 +1,247 @@
+/* Email draft widget: presentation stays here so generated cards remain inspectable and responsive. */
+.email-draft-card {
+    width: min(100%, 760px);
+    margin: 14px 0;
+    padding: 18px;
+    box-sizing: border-box;
+    border: 1px solid var(--glass-border);
+    border-radius: 22px;
+    background:
+        linear-gradient(135deg, rgba(255,255,255,.09), rgba(255,255,255,.035) 46%, rgba(66,133,244,.06)),
+        rgba(255,255,255,.035);
+    box-shadow: 0 18px 42px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.08);
+    overflow: hidden;
+}
+
+.email-draft-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+.email-draft-title-wrap,
+.email-draft-header-tools {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.email-draft-title-wrap { gap: 9px; }
+.email-draft-header-tools { gap: 10px; }
+
+.email-draft-title-wrap strong {
+    color: var(--text-main);
+    font-size: .98rem;
+    letter-spacing: .02em;
+}
+
+.email-draft-status {
+    padding: 4px 8px;
+    border: 1px solid rgba(61,220,151,.32);
+    border-radius: 999px;
+    color: #54d89a;
+    background: rgba(61,220,151,.09);
+    font-size: .62rem;
+    font-weight: 800;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.email-draft-hint {
+    color: var(--text-sub);
+    font-size: .7rem;
+    text-align: right;
+}
+
+.email-draft-drag-handle {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid rgba(125,156,255,.38);
+    border-radius: 13px;
+    color: var(--text-main);
+    background: rgba(125,156,255,.12);
+    cursor: grab;
+    touch-action: none;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.email-draft-drag-handle svg {
+    width: 20px;
+    height: 20px;
+    fill: currentColor;
+}
+
+.email-draft-drag-handle:hover,
+.email-draft-drag-handle:focus-visible {
+    border-color: rgba(125,156,255,.76);
+    background: rgba(125,156,255,.22);
+    transform: translateY(-1px);
+}
+
+.email-draft-drag-handle:active { cursor: grabbing; }
+
+.email-draft-grid {
+    display: grid;
+    grid-template-columns: minmax(92px, auto) minmax(0, 1fr);
+    gap: 9px 13px;
+    align-items: center;
+    margin-bottom: 14px;
+}
+
+.email-draft-field-label,
+.email-draft-section-label {
+    color: var(--text-sub);
+    font-size: .66rem;
+    font-weight: 800;
+    letter-spacing: .08em;
+}
+
+.email-draft-section-label {
+    display: block;
+    margin: 12px 0 7px;
+}
+
+.email-draft-input,
+.email-draft-body-input {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    color: var(--text-main);
+    background: rgba(0,0,0,.16);
+    font: inherit;
+    font-size: .84rem;
+    outline: none;
+    transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+}
+
+.email-draft-input {
+    min-height: 38px;
+    padding: 8px 10px;
+}
+
+.email-draft-body-input {
+    min-height: 132px;
+    padding: 11px 12px;
+    line-height: 1.5;
+    resize: vertical;
+    white-space: pre-wrap;
+}
+
+.email-draft-input:focus,
+.email-draft-body-input:focus {
+    border-color: var(--accent-blue);
+    background: rgba(0,0,0,.23);
+    box-shadow: 0 0 0 3px rgba(66,133,244,.13);
+}
+
+.email-draft-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+
+.email-draft-attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 100%;
+    padding: 7px 9px;
+    border: 1px solid rgba(255,202,75,.32);
+    border-radius: 11px;
+    background: rgba(255,202,75,.09);
+}
+
+.email-draft-attachment-chip strong {
+    max-width: 230px;
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: .74rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.email-draft-attachment-chip small {
+    color: var(--text-sub);
+    font-size: .64rem;
+    white-space: nowrap;
+}
+
+.email-draft-attachment-empty {
+    color: var(--text-sub);
+    font-size: .78rem;
+}
+
+.email-draft-preview {
+    display: block;
+    width: 100%;
+    min-height: 160px;
+    border: 0;
+    border-radius: 14px;
+    background: #fff;
+}
+
+.email-draft-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.email-draft-use-context-btn {
+    min-height: 40px;
+    padding: 9px 15px;
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    color: var(--text-main);
+    background: rgba(255,255,255,.08);
+    font: inherit;
+    font-size: .78rem;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.email-draft-use-context-btn:hover,
+.email-draft-use-context-btn:focus-visible {
+    border-color: var(--accent-blue);
+    background: rgba(66,133,244,.17);
+    transform: translateY(-1px);
+}
+
+@media (max-width: 620px) {
+    .email-draft-card { padding: 14px; border-radius: 18px; }
+    .email-draft-header { align-items: flex-start; }
+    .email-draft-header-tools { flex-direction: column-reverse; align-items: flex-end; gap: 6px; }
+    .email-draft-hint { max-width: 150px; font-size: .64rem; }
+    .email-draft-grid { grid-template-columns: 1fr; gap: 5px; }
+    .email-draft-field-label { margin-top: 6px; }
+    .email-draft-input { min-height: 42px; }
+    .email-draft-body-input { min-height: 150px; }
+    .email-draft-attachment-chip strong { max-width: 155px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .email-draft-drag-handle,
+    .email-draft-use-context-btn,
+    .email-draft-input,
+    .email-draft-body-input { transition: none; }
+}
+
+@media (forced-colors: active) {
+    .email-draft-card,
+    .email-draft-drag-handle,
+    .email-draft-use-context-btn,
+    .email-draft-input,
+    .email-draft-body-input { border: 1px solid CanvasText; }
+}

@@ -58,3 +58,10 @@ Routing is designed to prefer the smallest reliable execution path.
 
 ## Chat Sync Diagnostics
 - `/sync_chats` rolls back on all failures and retries only `database_locked`. It returns generic user-facing errors while logs retain only bounded categories such as `database_corrupt`, `database_schema_error`, `database_disk_full`, and `database_unknown`.
+## Composer Context Routing
+
+- Composer context drag/drop is a frontend routing boundary, not a second chat request: composer_context_tray.js owns dragstart, dragenter/over/leave, drop, dragend, invalid-payload cleanup, and Escape cancellation.
+- Email drafts enter the composer only from the explicit context-drag-handle or the Use in prompt fallback. Whole-card dragging, field dragging, preview dragging, and interactive control drags are rejected.
+- Transfers use the application/x-helper-composer-context MIME with bounded metadata and text/plain compatibility text. Attachment content, bytes, data URIs, and internal admin fields are removed before persistence or transfer.
+- Context fingerprints suppress duplicate drops. An email card identity updates its existing chip when its subject/body/tone or attachment metadata changes rather than creating a second chip.
+- Valid drop surfaces are the prompt, pill bar, input wrapper, and context tray. All surfaces use copy semantics, stable drag-depth cleanup, prompt focus after acceptance, and no state mutation for invalid payloads.

@@ -29,7 +29,14 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             <!doctype html>
             <html><head></head><body>
               <main id="chat-area"></main>
-              <section id="prompt-shell"><div id="prompt-context-tray"></div><textarea id="prompt"></textarea></section>
+              <section id="input-wrap">
+                <div class="pill-bar-container">
+                  <div class="pill-bar">
+                    <button id="main-send-btn" type="button">Send</button>
+                    <textarea id="prompt" aria-label="Message"></textarea>
+                  </div>
+                </div>
+              </section>
             </body></html>
         """)
 
@@ -50,8 +57,13 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.add_script("static/js/email_draft_contract.js")
         self.add_script("static/js/state.js", module=True)
         self.page.wait_for_function("() => window.__helperState")
+        self.add_script("static/js/composer_context_tray.js")
+        self.page.wait_for_function("() => window.addComposerContext && document.querySelector('#composer-context-tray')")
+        self.page.add_style_tag(content=(ROOT / "static/css/email_draft.css").read_text(encoding="utf-8"))
+        self.page.add_style_tag(content=(ROOT / "static/css/composer_context_tray.css").read_text(encoding="utf-8"))
         self.add_script("static/js/email_draft.js")
-        self.page.wait_for_function("() => window.parseEmailDraftContext && window.hydrateEmailDraftCards")
+        self.add_script("static/js/email_context_prompt.js", replacements=[("import { state } from './state.js?v=210';", "const state = window.__helperState;")])
+        self.page.wait_for_function("() => window.parseEmailDraftContext && window.hydrateEmailDraftCards && window.attachEmailDraftToPrompt")
 
     def test_draft_card_renders_and_editing_preserves_metadata(self):
         self.load_state_and_email_surface()
@@ -76,7 +88,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
 
         self.assertEqual(self.page.locator(".email-draft-card").count(), 1)
         self.assertEqual(self.page.locator(".email-draft-recipient").input_value(), "person@example.com")
-        self.assertEqual(self.page.locator(".email-draft-attachment-label").inner_text(), "notes.pdf")
+        self.assertEqual(self.page.locator(".email-draft-attachment-chip strong").inner_text(), "notes.pdf")
         self.assertNotIn("transient-secret", self.page.locator("#chat-area").inner_text())
 
         self.page.locator(".email-draft-body-input").fill("Edited body")
@@ -106,20 +118,24 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             });
             return {
                 contexts: window.__helperState.attachedContexts,
-                trayDisplay: document.getElementById('prompt-context-tray').style.display,
+                trayHasContext: window.__helperState.attachedContexts.length > 0,
                 chipCount: document.querySelectorAll('.email-draft-context-chip').length,
-                visibleText: document.getElementById('prompt-context-tray').innerText,
+                visibleText: document.getElementById('composer-context-tray').innerText,
             };
         }""")
+        self.page.wait_for_function("() => document.querySelector('#composer-context-tray').classList.contains('has-context')")
+        result["visibleText"] = self.page.locator("#composer-context-tray").inner_text()
+        result["chipCount"] = self.page.locator(".email-draft-context-chip").count()
         serialized = str(result["contexts"])
         self.assertNotIn("transient-secret", serialized)
-        self.assertEqual(result["trayDisplay"], "flex")
+        self.assertTrue(result["trayHasContext"])
         self.assertEqual(result["chipCount"], 1)
         self.assertIn("Context draft", result["visibleText"])
 
         self.page.locator(".email-draft-context-chip button").click()
+        self.page.wait_for_function("() => document.querySelectorAll('.email-draft-context-chip').length === 0")
         self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 0)
-        self.assertEqual(self.page.locator("#prompt-context-tray").get_attribute("style"), "display: none;")
+        self.assertFalse(self.page.locator("#composer-context-tray").get_attribute("class").find("has-context") >= 0)
 
 
     def test_live_edits_become_metadata_only_followup_context(self):
@@ -195,7 +211,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             }));
             window.hydrateEmailDraftCards(root);
         }""")
-        self.assertEqual(self.page.locator('.email-draft-attachment-label').inner_text(), 'None')
+        self.assertEqual(self.page.locator('.email-draft-attachment-empty').inner_text(), 'No attachments')
 
     def test_failed_image_response_keeps_existing_card_visible_without_marker(self):
         self.load_state_and_email_surface()
@@ -277,6 +293,115 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             return window.getActiveEmailDraftPromptContext('generate an image and attach it to this email widget');
         }""")
         self.assertEqual(result, '')
+
+    def _render_email_card(self, subject="Drag subject", body="Drag body"):
+        draft = {
+            "recipient": "person@example.com",
+            "subject": subject,
+            "body": body,
+            "tone": "modern",
+            "attachments": [{
+                "filename": "notes.pdf",
+                "mime_type": "application/pdf",
+                "size": 42,
+                "content": "do-not-transfer",
+            }],
+        }
+        self.page.evaluate("""draft => {
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify(draft));
+            window.hydrateEmailDraftCards(root);
+        }""", draft)
+        self.page.wait_for_selector(".email-draft-drag-handle")
+
+    def _drag_handle_to(self, target_selector):
+        self.page.locator(".email-draft-drag-handle").hover()
+        self.page.evaluate("""targetSelector => {
+            const handle = document.querySelector('.email-draft-drag-handle');
+            const target = document.querySelector(targetSelector);
+            const dataTransfer = new DataTransfer();
+            const options = { bubbles: true, cancelable: true, dataTransfer };
+            handle.dispatchEvent(new DragEvent('dragstart', options));
+            target.dispatchEvent(new DragEvent('dragenter', options));
+            target.dispatchEvent(new DragEvent('dragover', options));
+            target.dispatchEvent(new DragEvent('drop', options));
+            handle.dispatchEvent(new DragEvent('dragend', options));
+        }""", target_selector)
+    def _clear_composer_context(self):
+        self.page.evaluate("() => window.clearComposerContextTray()")
+        self.page.wait_for_function("() => !document.querySelector('#composer-context-tray').classList.contains('has-context')")
+
+    def test_email_handle_is_only_drag_source_and_reaches_all_composer_surfaces(self):
+        self.load_state_and_email_surface()
+        self._render_email_card()
+        card = self.page.locator(".email-draft-card")
+        handle = self.page.locator(".email-draft-drag-handle")
+        self.assertEqual(card.get_attribute("draggable"), "false")
+        self.assertEqual(handle.get_attribute("draggable"), "true")
+        self.assertEqual(handle.get_attribute("aria-label"), "Drag this email draft into the prompt")
+
+        self._drag_handle_to("#prompt")
+        self.page.wait_for_selector(".email-draft-context-chip")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+
+        self._drag_handle_to(".pill-bar")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+
+        self._drag_handle_to("#composer-context-tray")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+        context = self.page.evaluate("() => window.__helperState.attachedContexts[0]")
+        self.assertIn("person@example.com", context["text"])
+        self.assertIn("notes.pdf", context["text"])
+        self.assertNotIn("do-not-transfer", str(context))
+
+        self.assertNotIn("composer-context-dragging", self.page.locator("body").get_attribute("class") or "")
+        self.assertNotIn("composer-drop-active", self.page.locator("#prompt").get_attribute("class") or "")
+
+    def test_duplicate_drops_pulse_and_changed_subject_updates_one_chip(self):
+        self.load_state_and_email_surface()
+        self._render_email_card()
+        handle = self.page.locator(".email-draft-drag-handle")
+        self._drag_handle_to("#prompt")
+        self.page.wait_for_selector(".email-draft-context-chip")
+
+        self._drag_handle_to("#prompt")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+
+        subject = self.page.locator(".email-draft-subject")
+        subject.fill("Changed subject")
+        subject.dispatch_event("input")
+        self._drag_handle_to("#prompt")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+        context = self.page.evaluate("() => window.__helperState.attachedContexts[0]")
+        self.assertIn("Changed subject", context["text"])
+
+        self.page.locator(".email-draft-use-context-btn").click()
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+
+    def test_editable_fields_and_preview_are_not_drag_sources(self):
+        self.load_state_and_email_surface()
+        self._render_email_card()
+        prompt = self.page.locator("#prompt")
+        self.page.locator(".email-draft-subject").drag_to(prompt)
+        self.page.locator(".email-draft-body-input").drag_to(prompt)
+        self.page.evaluate('() => { const frame = document.querySelector(".email-draft-preview"); const event = new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }); frame.dispatchEvent(event); return event.defaultPrevented; }')
+        self.page.wait_for_timeout(120)
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 0)
+        self.assertEqual(self.page.locator(".email-draft-subject").input_value(), "Drag subject")
+
+    def test_mobile_use_in_prompt_fallback_keeps_target_reachable(self):
+        self.load_state_and_email_surface()
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self._render_email_card()
+        handle_box = self.page.locator(".email-draft-drag-handle").bounding_box()
+        self.assertIsNotNone(handle_box)
+        self.assertGreaterEqual(handle_box["width"], 40)
+        self.assertGreaterEqual(handle_box["height"], 40)
+
+        self.page.locator(".email-draft-use-context-btn").click()
+        self.page.wait_for_selector(".email-draft-context-chip")
+        self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
+        self.assertIn("Use this email draft", self.page.locator(".email-draft-use-context-btn").get_attribute("aria-label"))
 
 if __name__ == "__main__":
     unittest.main()

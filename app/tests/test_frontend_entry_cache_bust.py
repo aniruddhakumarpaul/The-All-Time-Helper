@@ -8,8 +8,8 @@ class FrontendEntryCacheBustTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn('/static/css/animations.css?v=209', template)
         self.assertIn('/static/js/bootstrap.js?v=214', template)
-        self.assertIn('/static/js/composer_context_tray.js?v=7', template)
-        self.assertIn('/static/js/email_draft.js?v=4', template)
+        self.assertIn('/static/js/composer_context_tray.js?v=8', template)
+        self.assertIn('/static/js/email_draft.js?v=5', template)
         self.assertNotIn('href="/static/css/animations.css"', template)
         self.assertNotIn('src="/static/js/bootstrap.js"', template)
 

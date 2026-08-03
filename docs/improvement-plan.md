@@ -61,3 +61,9 @@
 - Added a pre-direct-tool compound email-media guard, authoritative live-draft context resolution, route diagnostics, and controlled missing/malformed/unsupported draft behavior.
 - Hardened independent new-draft image generation and draft construction, explicit attachment-stage failure handling, and no-replacement semantics for existing widgets.
 - Added rollback/retry classification for chat synchronization and a non-destructive SQLite health CLI. Live provider, SMTP, and production database behavior remain unverified by design.
+## Completed In This Iteration: Composer Context UX
+
+- Replaced whole-card email dragging and competing legacy drop listeners with a single central composer owner and explicit handle/fallback interaction.
+- Added source-aware context fingerprints, bounded metadata-only transfer, duplicate pulse, material email-draft updates, invalid/leave/dragend/Escape cleanup, and all composer drop surfaces.
+- Added a dedicated responsive email widget stylesheet with attachment chips, accessible labels, preview presentation, mobile touch targets, reduced-motion, and forced-colors support.
+- Expanded installed-Chromium coverage to 14 browser tests for handle routing, duplicate/update behavior, non-draggable controls/iframe, metadata redaction, cleanup, and mobile fallback.

@@ -26,10 +26,10 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `app/services/email_delivery_service.py`: protected request-scoped Admin Key verification, draft/recipient validation, owner-scoped attachment delivery, idempotency receipts, and sanitized results shared by the HTTP route and workflow executor.
 - `app/logic/memory.py`: ChromaDB-backed semantic memory with lock-guarded operations and a recoverable transient-failure circuit.
 - `static/js/app.js`: frontend orchestrator and chat state persistence; masked approval input is request-only and active draft context is reset on chat changes before structured cards are replayed. Local-first cache writes remain intact when `/sync_chats` fails, with one visible warning per failure window.
-- `static/js/email_draft.js`: editable draft cards, live metadata-only workflow context, multiple attachments, and superseding older cards when an updated draft is rendered.
+- static/js/email_draft.js: editable draft cards, live metadata-only workflow context, multiple attachment chips, sandboxed preview, explicit handle/fallback actions, and superseding older cards when an updated draft is rendered.
 - `static/js/ui.js`: DOM rendering, persisted response preferences, non-blocking user feedback, and explicit per-message context-drag handles. The rename control temporarily becomes a fixed, animated popover so long titles are not clipped by the sidebar.
 - `static/css/product_controls.css`: final prompt sizing contract and control overrides applied after density styles.
-- `static/js/composer_context_tray.js`: bounded prompt context, explicit drag sources, and composer drop handling; message text remains selectable unless hold-`G` grab mode is active.
+- static/js/composer_context_tray.js: the single owner of bounded prompt context, explicit drag sources, MIME transfer, deduplication, and composer drop handling; message text remains selectable unless hold-G grab mode is active. Email cards expose only a dedicated drag handle.
 - `static/js/palette.js`: Ctrl+K command/search listbox, route switching, workspace shortcuts, and keyboard selection.
 - `static/js/api.js`: normalized JSON/HTTP/network error contract for active frontend requests.
 - `static/js/dialog_manager.js`: top-modal focus trapping, background isolation with `inert`, and invoking-control focus restoration.
