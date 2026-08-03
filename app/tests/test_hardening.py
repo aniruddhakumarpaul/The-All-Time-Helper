@@ -34,24 +34,20 @@ class HardeningTests(unittest.TestCase):
         self.assertEqual(payload["subject"], "New email")
         self.assertEqual(payload["body"], "")
 
-    def test_local_email_execution_ignores_persistent_admin_state(self):
-        from app.logic import agents
-        from app.logic.memory import admin_auth_context
+    def test_local_email_draft_does_not_require_admin_state(self):
+        from app.logic.workflow_orchestrator import PendingWorkflowStore, WorkflowExecutor, WorkflowPlanner
 
-        token = admin_auth_context.set(None)
-        try:
-            result = agents._execute_local(
-                {"requires_tools": True},
-                {"final_prompt": "send an email"},
-                "gemma2:2b",
-                {},
-                [],
-            )
-        finally:
-            admin_auth_context.reset(token)
+        store = PendingWorkflowStore()
+        plan = WorkflowPlanner(pending_store=store).plan(
+            "write a mail to me about project status",
+            [],
+            "owner@example.com",
+        )
+        result = WorkflowExecutor(pending_store=store).execute(plan)
 
-        self.assertIn("AUTH_REQUIRED", result)
-
+        self.assertFalse(any(action.sensitive for action in plan.actions))
+        self.assertTrue(result.message.startswith("EMAIL_DRAFT_PAYLOAD:"))
+        self.assertNotIn("AUTH_REQUIRED", result.message)
     def test_inference_queue_cancel_marks_job_cancelled(self):
         from app.inference_queue import InferenceJob, InferenceQueue
         import threading
@@ -321,8 +317,9 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("SIMULATE SUCCESS", result)
         written = "".join(call.args[0] for call in opened().write.call_args_list)
-        self.assertIn("one.png", written)
-        self.assertIn("two.png", written)
+        self.assertIn("ATTACHMENT_COUNT: 2", written)
+        self.assertNotIn("one.png", written)
+        self.assertNotIn("two.png", written)
 
     def test_attach_above_asks_when_image_and_text_are_both_recent(self):
         from app.logic import agents
@@ -758,9 +755,8 @@ class HardeningTests(unittest.TestCase):
         self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
         payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:")[1])
         self.assertEqual(payload["recipient"], "aniruddha24680kumarpaul@gmail.com")
-        self.assertNotIn(image_url, payload["attachment_content"])
-        self.assertEqual(base64.b64decode(payload["attachment_content"]), image_bytes)
-        self.assertGreater(len(payload["attachment_content"]), len(image_url))
+        self.assertEqual(payload["attachment_content"], image_url)
+        self.assertEqual(payload["attachments"][0]["source"], "remote")
 
     def test_openrouter_429_returns_friendly_message(self):
         from app.logic import agents
@@ -1053,19 +1049,19 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("SIMULATE SUCCESS", result)
         mocked_open.assert_any_call("simulated_emails.log", "a", encoding="utf-8")
+        receipt_text = "".join(call.args[0] for call in mocked_open().write.call_args_list)
+        self.assertNotIn("friend@example.com", receipt_text)
+        self.assertNotIn("Hello from the test suite.", receipt_text)
 
-    def test_send_email_tool_downloads_url_attachment_bytes(self):
+    def test_build_email_draft_tool_preserves_remote_url_without_downloading(self):
         from app.logic import tools
         from app.logic.exceptions import AgentFastExit
-        import base64
         import json
 
-        image_bytes = self._png_bytes()
         image_url = "https://example.com/generated.png?uid=abc"
-
-        with patch("app.logic.tools.requests.get", return_value=self._image_response(image_bytes)):
+        with patch("app.logic.tools.requests.get", side_effect=AssertionError("drafting must not download URLs")):
             with self.assertRaises(AgentFastExit) as ctx:
-                tools.send_email_tool.func(
+                tools.build_email_draft_tool.func(
                     recipient="friend@example.com",
                     subject="Image",
                     body="Attached.",
@@ -1074,29 +1070,40 @@ class HardeningTests(unittest.TestCase):
                 )
 
         payload = json.loads(ctx.exception.result.split("EMAIL_DRAFT_PAYLOAD:")[1])
-        self.assertEqual(base64.b64decode(payload["attachment_content"]), image_bytes)
-        self.assertNotIn(image_url, payload["attachment_content"])
-        self.assertGreater(len(payload["attachment_content"]), len(image_url))
+        self.assertEqual(payload["attachment_content"], image_url)
+        self.assertEqual(payload["attachments"][0]["source"], "remote")
 
-    def test_send_email_tool_url_download_failure_fails_closed(self):
+    def test_build_email_draft_tool_normalizes_markdown_image_to_remote_url(self):
         from app.logic import tools
         from app.logic.exceptions import AgentFastExit
+        import json
 
-        image_url = "https://example.com/generated.png"
+        with self.assertRaises(AgentFastExit) as ctx:
+            tools.build_email_draft_tool.func(
+                recipient="friend@example.com",
+                subject="Image",
+                body="Attached.",
+                attachment_content="![Generated](https://example.com/generated.png)",
+                attachment_filename="generated.png",
+            )
+        payload = json.loads(ctx.exception.result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["attachment_content"], "https://example.com/generated.png")
+        self.assertEqual(payload["attachments"][0]["source"], "remote")
 
-        with patch("app.logic.tools.requests.get", side_effect=TimeoutError("timed out")):
-            with self.assertRaises(AgentFastExit) as ctx:
-                tools.send_email_tool.func(
-                    recipient="friend@example.com",
-                    subject="Image",
-                    body="Attached.",
-                    attachment_content=image_url,
-                    attachment_filename="generated.png",
-                )
+    def test_build_email_draft_tool_allows_blank_recipient_widget(self):
+        from app.logic import tools
+        from app.logic.exceptions import AgentFastExit
+        import json
 
-        self.assertTrue(ctx.exception.result.startswith("ERROR:"))
-        self.assertNotIn(image_url, ctx.exception.result)
-
+        with self.assertRaises(AgentFastExit) as ctx:
+            tools.build_email_draft_tool.func(
+                recipient="",
+                subject="Editable",
+                body="Draft body",
+            )
+        payload = json.loads(ctx.exception.result.split("EMAIL_DRAFT_PAYLOAD:", 1)[1])
+        self.assertEqual(payload["recipient"], "")
+        self.assertEqual(payload["subject"], "Editable")
     def test_send_or_simulate_email_downloads_url_before_logging(self):
         from app.logic.tools import send_or_simulate_email
 
@@ -1117,7 +1124,9 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("SIMULATE SUCCESS", result)
         written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
-        self.assertIn(f"Attachment: generated.png ({len(image_bytes)} bytes)", written)
+        self.assertIn("ATTACHMENT_COUNT: 1", written)
+        self.assertIn(f"ATTACHMENT_BYTES: {len(image_bytes)}", written)
+        self.assertNotIn("friend@example.com", written)
 
     def test_safe_fetch_blocks_localhost_and_private_ips(self):
         from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
@@ -1230,8 +1239,9 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("SIMULATE SUCCESS", result)
         written = "".join(call.args[0] for call in mocked_open().write.call_args_list)
-        self.assertIn("Please find the detailed content attached.", written)
-        self.assertIn("Attachment: email-body.txt", written)
+        self.assertIn("ATTACHMENT_COUNT: 1", written)
+        self.assertIn(f"ATTACHMENT_BYTES: {len(long_body.encode('utf-8'))}", written)
+        self.assertNotIn(long_body, written)
 
     def test_send_or_simulate_email_offloads_long_technical_body_to_md_attachment(self):
         import tempfile
@@ -1905,8 +1915,9 @@ class HardeningTests(unittest.TestCase):
                     os.chdir(cwd)
 
         self.assertIn("SIMULATE SUCCESS", result)
-        self.assertIn("one.png", written)
-        self.assertIn(str(len(self._png_bytes())), written)
+        self.assertIn("ATTACHMENT_COUNT: 1", written)
+        self.assertIn(f"ATTACHMENT_BYTES: {len(self._png_bytes())}", written)
+        self.assertNotIn("one.png", written)
 
     def test_live_email_uses_mixed_root_and_alternative_body(self):
         import tempfile

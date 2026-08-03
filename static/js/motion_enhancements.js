@@ -48,10 +48,11 @@
             scheduled = false;
             const hasText = Boolean(String(prompt.value || '').trim());
             document.body.classList.toggle('prompt-has-text', hasText);
-            const previous = prompt.style.height;
             prompt.style.height = 'auto';
             const next = `${Math.min(Math.max(prompt.scrollHeight, 36), 180)}px`;
-            if (previous !== next) prompt.style.height = next;
+            // Restore the measured height even when it matches the previous value.
+            // Leaving the inline height at auto collapses the flex composer back to one row.
+            prompt.style.height = next;
         }
         function schedule() {
             if (scheduled) return;

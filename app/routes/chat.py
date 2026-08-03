@@ -23,10 +23,11 @@ from app.logic.attachment_store import (
     save_attachment_bytes,
 )
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
-from app.logic.memory import admin_auth_context, query_memory, user_context
+from app.logic.memory import query_memory, user_context
 from app.logic.neural_explainer import explain_neural_context
+from app.logic.workflow_orchestrator import execute_workflow_for_chat, plan_known_workflow
 from app.repository import ChatRepository
-from app.security import get_current_user, verify_admin_key
+from app.security import get_current_user
 from app.services.email_widget_intercept import (
     _email_widget_message,
     _email_widget_ndjson,
@@ -130,27 +131,6 @@ def _message_content(message: dict) -> str:
     return str(message.get("content") or message.get("c") or "")
 
 
-def _looks_like_auth_error(text: str) -> bool:
-    lowered = str(text or "").lower()
-    return "auth_required" in lowered or "admin key" in lowered or "incorrect admin key" in lowered
-
-
-def _find_pending_sensitive_request(history: list[dict]) -> str:
-    for message in reversed(history or []):
-        role = _message_role(message)
-        content = _message_content(message).strip()
-        if not content:
-            continue
-        if message.get("masked"):
-            continue
-        if role in {"assistant", "a", "bot", "b"}:
-            continue
-        if _looks_like_auth_error(content):
-            continue
-        if len(content) < 25 and (content.isalnum() or "admin" in content.lower()):
-            continue
-        return content
-    return ""
 
 
 @router.get("/get_chats")
@@ -243,44 +223,52 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     has_visual_input = any(_is_visual_attachment(item) for item in image_items)
     sys_config = req.sys
 
-    if not req.isMasked:
-        body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)
-        if body_update:
-            logger.info("[EmailWidget] Routed targeted body update inside chat endpoint before image shortcut.")
-            return Response(content=_email_widget_ndjson(body_update), media_type="application/x-ndjson")
+    workflow_admin_key = req.prompt.strip() if req.isMasked else None
+    workflow_plan = (
+        plan_known_workflow(
+            "" if req.isMasked else prompt,
+            history,
+            current_user,
+            is_masked=req.isMasked,
+        )
+        if req.isMasked or (not document_blocks and not has_visual_input)
+        else None
+    )
+    if req.isMasked and workflow_plan is None:
+        async def no_pending_workflow_stream():
+            yield json.dumps({
+                "message": {
+                    "content": "No pending email delivery was found. Reopen the draft and request delivery again."
+                },
+                "done": True,
+            }).encode() + b'\n'
+            yield json.dumps({"done": True}).encode() + b'\n'
+        return StreamingResponse(no_pending_workflow_stream(), media_type="application/x-ndjson")
 
-    if not req.isMasked and _is_email_widget_attachment_request(prompt):
-        try:
-            draft = _latest_image_email_draft(history)
-            message = _email_widget_message(draft)
-            logger.info("[EmailWidget] Routed latest image attachment request inside chat endpoint.")
-            return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
-        except Exception as exc:
-            logger.warning("[EmailWidget] Route shortcut failed, continuing normal chat flow (%s)", type(exc).__name__)
+    if workflow_plan is None:
+        if not req.isMasked:
+            body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)
+            if body_update:
+                logger.info("[EmailWidget] Routed targeted body update inside chat endpoint before image shortcut.")
+                return Response(content=_email_widget_ndjson(body_update), media_type="application/x-ndjson")
 
-    admin_key_value = None
-    if req.isMasked:
-        candidate_key = req.prompt.strip()
-        if not verify_admin_key(candidate_key):
-            async def invalid_key_stream():
-                yield json.dumps({"message": {"content": "ERROR: AUTH_REQUIRED. Incorrect admin key."}, "done": True}).encode() + b'\n'
-                yield json.dumps({"done": True}).encode() + b'\n'
-            return StreamingResponse(invalid_key_stream(), media_type="application/x-ndjson")
-
-        admin_key_value = candidate_key
-        pending_request = _find_pending_sensitive_request(history)
-        if pending_request:
-            prompt = "APPROVAL_CONFIRMED. Continue this pending sensitive request:\n\n" + pending_request
-        else:
-            prompt = "APPROVAL_CONFIRMED, but no pending sensitive request was found. Ask the user to repeat the action request."
-    else:
-        admin_key_value = None
+        if not req.isMasked and _is_email_widget_attachment_request(prompt):
+            try:
+                draft = _latest_image_email_draft(history)
+                message = _email_widget_message(draft)
+                logger.info("[EmailWidget] Routed latest image attachment request inside chat endpoint.")
+                return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
+            except Exception as exc:
+                logger.warning("[EmailWidget] Route shortcut failed, continuing normal chat flow (%s)", type(exc).__name__)
 
     use_tool_lane = bool(
-        not req.isMasked
-        and not req.persona
-        and not has_visual_input
-        and is_deterministic_tool_lane_request(prompt, history)
+        workflow_plan is not None
+        or (
+            not req.isMasked
+            and not req.persona
+            and not has_visual_input
+            and is_deterministic_tool_lane_request(prompt, history)
+        )
     )
     execution_lane = "tool" if use_tool_lane else "inference"
     direct_tool_intent = (
@@ -291,7 +279,7 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             "is_local": False,
             "force_direct_tool": True,
         }
-        if use_tool_lane
+        if use_tool_lane and workflow_plan is None
         else None
     )
     attachment_items = image_items if isinstance(image_items, list) else []
@@ -324,9 +312,6 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
         async def agent_stream():
             token = user_context.set(current_user)
-            admin_token = None
-            if admin_key_value:
-                admin_token = admin_auth_context.set(admin_key_value)
             listener_task = asyncio.create_task(listen_for_disconnect())
             try:
                 yield json.dumps({"job_id": job_id}).encode() + b'\n'
@@ -350,15 +335,21 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                     streaming_occurred.append(True)
                     status_queue.put({"type": "chunk", "data": token})
 
-                _admin_key_for_thread = admin_key_value
+                _workflow_key_for_thread = workflow_admin_key
+                _workflow_plan_for_thread = workflow_plan
                 from app.logic.bus import job_id_context
                 _job_id_for_thread = job_id
 
                 def thread_target():
                     user_context.set(current_user)
                     job_id_context.set(_job_id_for_thread)
-                    if _admin_key_for_thread:
-                        admin_auth_context.set(_admin_key_for_thread)
+                    if _workflow_plan_for_thread is not None:
+                        return execute_workflow_for_chat(
+                            _workflow_plan_for_thread,
+                            admin_key=_workflow_key_for_thread,
+                            abort_event=abort_event,
+                            status_callback=status_callback,
+                        )
                     return ask_the_helper(
                         prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
                         status_callback=status_callback,
@@ -429,11 +420,6 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             finally:
                 abort_event.set()
                 listener_task.cancel()
-                if admin_token is not None:
-                    try:
-                        admin_auth_context.reset(admin_token)
-                    except ValueError:
-                        logger.debug("[Chat] Admin context reset skipped after stream context switch.")
                 try:
                     user_context.reset(token)
                 except ValueError:

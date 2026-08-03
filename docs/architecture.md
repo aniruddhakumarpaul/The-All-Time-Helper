@@ -21,9 +21,12 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `app/logic/agent_cloud.py`: cloud tool/chat execution and provider fallback handling.
 - `app/logic/agent_local.py`: local tool/chat execution and cloud fallback handling.
 - `app/logic/agent_hardening.py`: result sanitization and deterministic payload recovery.
-- `app/logic/tools.py`: image, email, search, and memory-facing tools with argument-free outcome/latency telemetry; DDGS and process-level HTTPS clients use the bundled `certifi` CA path on Windows while keeping TLS verification enabled. When anonymous search providers all fail, a configured OpenRouter key can invoke the cited web-search server tool with a three-result cap.
+- `app/logic/workflow_orchestrator.py`: typed intent classification, dependency-aware plans, latest structured-draft resolution, normalized image results, bounded independent-action execution, cancellation, and owner-scoped approval pause/resume above cloud/local model selection.
+- `app/logic/tools.py`: image, draft, search, and memory-facing tools with argument-free outcome/latency telemetry. `build_email_draft_tool` is the non-delivering draft tool; `send_email_tool` remains a compatibility alias only. DDGS and process-level HTTPS clients use the bundled `certifi` CA path on Windows while keeping TLS verification enabled. When anonymous search providers all fail, a configured OpenRouter key can invoke the cited web-search server tool with a three-result cap.
+- `app/services/email_delivery_service.py`: protected request-scoped Admin Key verification, draft/recipient validation, owner-scoped attachment delivery, idempotency receipts, and sanitized results shared by the HTTP route and workflow executor.
 - `app/logic/memory.py`: ChromaDB-backed semantic memory with lock-guarded operations and a recoverable transient-failure circuit.
-- `static/js/app.js`: frontend orchestrator and chat state persistence.
+- `static/js/app.js`: frontend orchestrator and chat state persistence; masked approval input is request-only and active draft context is reset on chat changes before structured cards are replayed.
+- `static/js/email_draft.js`: editable draft cards, live metadata-only workflow context, multiple attachments, and superseding older cards when an updated draft is rendered.
 - `static/js/ui.js`: DOM rendering, persisted response preferences, non-blocking user feedback, and explicit per-message context-drag handles. The rename control temporarily becomes a fixed, animated popover so long titles are not clipped by the sidebar.
 - `static/css/product_controls.css`: final prompt sizing contract and control overrides applied after density styles.
 - `static/js/composer_context_tray.js`: bounded prompt context, explicit drag sources, and composer drop handling; message text remains selectable unless hold-`G` grab mode is active.
@@ -40,6 +43,10 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 
 ## Design Rules
 - Prefer deterministic direct tool paths for obvious workflows; explicit search and image actions must not initialize a CrewAI specialist merely because a larger local or cloud model is selected.
+- Plan known compound email workflows before the cloud/local split. Execute the plan once inside the existing bounded tool lane: independent search actions may overlap, dependent update/attach/delivery actions wait, and no workflow action resubmits into the queue.
+- Treat draft building as terminal only after all plan dependencies finish. Research, image search/generation, and attachment preparation are non-sensitive; only actual delivery may pause for owner-scoped request authorization.
+- Reference, actual, real, and existing images use image search. Explicit generate/create/draw/paint/render requests use image generation unless real/reference wording makes search authoritative.
+- On cancellation, stop scheduling new workflow actions and return the existing controlled NDJSON cancellation shape. Blocking third-party calls are best-effort cancellation boundaries and must not trigger delivery afterward.
 - Pass validated images natively to capable cloud/local models. Use cached Moondream perception only for simple local questions or text-only model routes, and never place base64 in textual prompts or logs.
 - Keep `main_v3.js` archived as rollback only.
 - Use `InferenceQueue` for execution instead of raw thread offload: model work remains serialized on one GPU-safe lane, while strictly classified model-free tools use two bounded workers with the same ownership, timeout, cancellation, and backpressure controls.

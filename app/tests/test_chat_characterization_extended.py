@@ -1,7 +1,7 @@
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from app.logic.memory import admin_auth_context
 from app.routes import chat
@@ -32,10 +32,14 @@ class BlockingQueue:
 
 
 class ImmediateQueue:
+    def __init__(self):
+        self.lanes = []
+
     def cancel(self, job_id, owner):
         return True
 
     async def submit(self, job_id, fn, abort_event, timeout, owner, lane):
+        self.lanes.append(lane)
         return fn()
 
 async def response_lines(response):
@@ -63,9 +67,42 @@ class ExtendedChatCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             await response_lines(response)
         self.assertEqual(queue.lanes, ["tool"])
 
-    async def test_invalid_admin_key_is_streamed_without_echoing_candidate(self):
+    async def test_known_workflow_has_auto_cloud_and_local_route_parity(self):
+        for model in ("helper-auto", "agentic-pro", "gemma4:e2b"):
+            with self.subTest(model=model):
+                queue = ImmediateQueue()
+                pending_plan = object()
+                with (
+                    patch.object(chat, "plan_known_workflow", return_value=pending_plan),
+                    patch.object(chat, "execute_workflow_for_chat", return_value="EMAIL_DRAFT_PAYLOAD:{}") as execute,
+                    patch.object(chat, "ask_the_helper", side_effect=AssertionError("known workflows must bypass model routing")),
+                    patch.object(chat, "inference_queue", queue),
+                ):
+                    response = await chat.chat_endpoint(
+                        chat.ChatRequest(prompt="attach a reference image to this draft", model=model),
+                        ImmediateRequest(),
+                        current_user="owner@example.com",
+                    )
+                    lines = await response_lines(response)
+                self.assertEqual(queue.lanes, ["tool"])
+                self.assertIn("EMAIL_DRAFT_PAYLOAD", json.dumps(lines))
+                execute.assert_called_once_with(
+                    pending_plan,
+                    admin_key=None,
+                    abort_event=ANY,
+                    status_callback=ANY,
+                )
+
+    async def test_masked_key_is_sent_only_to_pending_workflow_executor(self):
         candidate = "wrong-secret-admin-key"
-        with patch.object(chat, "verify_admin_key", return_value=False):
+        queue = ImmediateQueue()
+        pending_plan = object()
+        with (
+            patch.object(chat, "plan_known_workflow", return_value=pending_plan),
+            patch.object(chat, "execute_workflow_for_chat", return_value="ERROR: AUTH_REQUIRED. Incorrect Admin Key.") as execute,
+            patch.object(chat, "ask_the_helper", side_effect=AssertionError("masked keys must not reach a model")),
+            patch.object(chat, "inference_queue", queue),
+        ):
             response = await chat.chat_endpoint(
                 chat.ChatRequest(prompt=candidate, model="helper-auto", isMasked=True),
                 ImmediateRequest(),
@@ -75,19 +112,24 @@ class ExtendedChatCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         joined = json.dumps(lines)
         self.assertIn("AUTH_REQUIRED", joined)
         self.assertNotIn(candidate, joined)
+        self.assertEqual(execute.call_args.kwargs["admin_key"], candidate)
         self.assertIsNone(admin_auth_context.get())
 
-    async def test_valid_admin_key_is_request_scoped(self):
-        queue = ImmediateQueue()
-        with patch.object(chat, "verify_admin_key", return_value=True), patch.object(chat, "ask_the_helper", return_value="approved"), patch.object(chat, "inference_queue", queue):
-
+    async def test_masked_input_without_pending_workflow_is_controlled(self):
+        candidate = "admin-key-value"
+        with (
+            patch.object(chat, "plan_known_workflow", return_value=None),
+            patch.object(chat, "ask_the_helper", side_effect=AssertionError("masked keys must not reach a model")),
+        ):
             response = await chat.chat_endpoint(
-                chat.ChatRequest(prompt="admin-key-value", model="helper-auto", isMasked=True, history=[{"r": "u", "c": "Please perform the sensitive operation now."}]),
+                chat.ChatRequest(prompt=candidate, model="helper-auto", isMasked=True),
                 ImmediateRequest(),
                 current_user="owner@example.com",
             )
-            self.assertIsNone(admin_auth_context.get())
             lines = await response_lines(response)
+        joined = json.dumps(lines)
+        self.assertIn("No pending email delivery", joined)
+        self.assertNotIn(candidate, joined)
         self.assertEqual(lines[-1], {"done": True})
 
     async def test_client_disconnect_emits_cancellation_and_preserves_stream_shape(self):

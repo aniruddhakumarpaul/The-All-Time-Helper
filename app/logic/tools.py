@@ -17,11 +17,10 @@ import requests
 import certifi
 from crewai.tools import tool
 from dotenv import load_dotenv
-from app.logic.memory import query_memory, log_insight, admin_auth_context
+from app.logic.memory import query_memory, log_insight
 from app.logger import logger
 from app.logic.upscaler import UpscaleManager
-from app.security import verify_admin_key
-from app.contracts.email_draft import serialize_full_transient
+from app.contracts.email_draft import draft_marker, normalize_email_draft, serialize_full_transient
 from app.logic.attachment_store import detect_file_type, resolve_attachment_reference
 from app.logic.exceptions import AgentFastExit
 from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
@@ -260,9 +259,6 @@ def _build_html_body(personalized_body: str, tone: str) -> str:
     """
 
 
-def _authorized_for_sensitive_tool() -> bool:
-    return verify_admin_key(admin_auth_context.get())
-
 
 def _download_image_attachment(url: str):
     try:
@@ -406,10 +402,15 @@ def send_or_simulate_email(
     mode = os.getenv("EMAIL_MODE", "SIMULATE").upper()
     if mode == "SIMULATE":
         with open("simulated_emails.log", "a", encoding="utf-8") as stream:
-            stream.write(f"TO: {', '.join(recipients)}\nSUBJECT: {subject}\nBODY: {body}\n")
-            for item in resolved:
-                stream.write(f"Attachment: {item['filename']} ({len(item['bytes'])} bytes)\n")
-            stream.write("---\n")
+            stream.write("\n".join((
+                "SIMULATED EMAIL RECEIPT",
+                f"RECIPIENT_COUNT: {len(recipients)}",
+                f"SUBJECT_CHARS: {len(str(subject or ''))}",
+                f"BODY_CHARS: {len(body)}",
+                f"ATTACHMENT_COUNT: {len(resolved)}",
+                f"ATTACHMENT_BYTES: {sum(len(item['bytes']) for item in resolved)}",
+                "---",
+            )) + "\n")
         return f"SIMULATE SUCCESS: Email prepared for {', '.join(recipients)}."
 
     if mode != "LIVE":
@@ -473,9 +474,17 @@ def send_or_simulate_email(
         return "ERROR: Email delivery failed. Check the server logs and retry."
 
 
-@tool("send_email_tool")
-@_trace_tool("send_email_tool")
-def send_email_tool(
+def _normalize_draft_attachment_content(content):
+    if not isinstance(content, str):
+        return content
+    value = content.strip()
+    markdown = re.fullmatch(r"!\[[^\]]*\]\((https?://[^)]+)\)", value, flags=re.I)
+    return markdown.group(1).strip() if markdown else content
+
+
+@tool("build_email_draft_tool")
+@_trace_tool("build_email_draft_tool")
+def build_email_draft_tool(
     recipient: str,
     subject: str,
     body: str,
@@ -486,30 +495,38 @@ def send_email_tool(
     tone: str = "modern",
     attachments: list = None,
 ) -> str:
-    """Build a validated email draft. This agent tool never performs SMTP delivery."""
-    recipients = _valid_recipients(recipient)
-    if not recipients:
+    """Build a versioned email draft without performing network delivery."""
+    raw_recipient = str(recipient or "").strip()
+    recipients = _valid_recipients(raw_recipient)
+    if raw_recipient and not recipients:
         raise AgentFastExit("ERROR: No valid recipients found.")
+
     draft_body = str(body or "")
     if raw_attachment_text and raw_attachment_text.strip() not in draft_body:
         draft_body = f"{draft_body}\n\n{raw_attachment_text.strip()}".strip()
-    try:
-        normalized = _normalize_attachments(attachment_content, attachment_filename, attachments)
-    except ValueError as exc:
-        raise AgentFastExit(f"ERROR: {exc}")
-
-    primary = normalized[0] if normalized else {}
-    draft = {
+    normalized_attachment_content = _normalize_draft_attachment_content(attachment_content)
+    draft_attachments = list(attachments or [])
+    if normalized_attachment_content and not draft_attachments:
+        draft_attachments.append({
+            "content": normalized_attachment_content,
+            "filename": attachment_filename,
+            "source": "remote" if str(normalized_attachment_content).startswith(("http://", "https://")) else "legacy",
+        })
+    draft = normalize_email_draft({
         "recipient": ", ".join(recipients),
         "subject": str(subject or "")[:998],
         "body": draft_body,
         "tone": tone if tone in {"formal", "informal", "modern"} else "modern",
-        "attachment_content": primary.get("content"),
-        "attachment_filename": primary.get("filename") or attachment_filename,
-    }
-    if normalized:
-        draft["attachments"] = normalized
-    raise AgentFastExit(f"EMAIL_DRAFT_PAYLOAD:{json.dumps(serialize_full_transient(draft), separators=(',', ':'))}")
+        "attachment_content": normalized_attachment_content,
+        "attachment_filename": attachment_filename,
+        "attachments": draft_attachments,
+    })
+    raise AgentFastExit(draft_marker(draft))
+
+
+# Deprecated compatibility alias. Despite the historical name, this tool only
+# builds a draft and never crosses the protected SMTP delivery boundary.
+send_email_tool = build_email_draft_tool
 
 
 def resolve_chat_images(reference: str, history: list | None = None, max_images: int = 6):

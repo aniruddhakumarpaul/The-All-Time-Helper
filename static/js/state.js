@@ -227,6 +227,10 @@ function sanitizeChatsForPersistence(chats) {
         ...chat,
         ms: (Array.isArray(chat?.ms) ? chat.ms : []).map(message => {
             const next = { ...message };
+            if (next.masked) {
+                next.c = '[MASKED_SECRET]';
+                delete next.apiPrompt;
+            }
             delete next.i;
             delete next.img;
             if (Array.isArray(next.attachments)) {

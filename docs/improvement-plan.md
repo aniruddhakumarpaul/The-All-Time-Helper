@@ -2,7 +2,7 @@
 
 ## Baseline
 
-- Repository baseline before this iteration was 236 passed under python -B -m pytest -q -p no:cacheprovider --basetemp C:\tmp\tah-pytest.
+- Repository baseline before the compound-workflow iteration was 264 passed under `python -B -m pytest -q -p no:cacheprovider`.
 - The current verification target is the same command with a fresh temporary directory.
 - .project_brain/ is generated Chroma runtime state and is not part of source changes; preserve it during recovery.
 
@@ -10,7 +10,7 @@
 
 - Owner-scoped attachment IDs, size/type validation, bounded PDF/text extraction, and metadata-only frontend persistence.
 - NDJSON streaming with job IDs, status updates, heartbeats, cancellation, disconnect handling, and separate inference/tool lanes.
-- Deterministic email drafting, explicit approval delivery, admin-key verification, and delivery idempotency.
+- Deterministic typed email/image workflow planning, explicit approval-only delivery, request-scoped admin-key verification, owner-scoped pending state, and delivery idempotency.
 - Centralized frontend API errors, dialog focus isolation, explicit context drag handles, and reduced-motion support.
 
 ## Prioritized work
@@ -39,13 +39,17 @@
 - Added frontend state mutation APIs and migrated active chat/context/image call sites away from direct collection mutation.
 - Added redaction tests for agent and queue telemetry, plus bounded exception categories in provider/tool failure logs.
 - Added active frontend Node syntax checks to CI and a local recovery runbook.
+- Added a dependency-aware compound workflow above cloud/local routing, including bounded parallel research/image lookup, sequential generated-image attachment, partial failure handling, cancellation, and owner-scoped TTL approval resume.
+- Renamed the agent-facing draft tool to `build_email_draft_tool`, retained a compatibility alias, and extracted the shared protected delivery service used by both HTTP and workflow execution.
+- Added installed-Chromium browser coverage for editable/superseded email cards, live metadata-only follow-up context, and masked persistence redaction.
 
 ## Remaining Concrete Backlog
 
 - A remote CI run has not been observed from this workspace.
-- Browser automation is not configured; current frontend coverage is source/runtime checks and Node syntax validation.
+
 - Live OpenRouter, Ollama, SMTP, and Ngrok behavior remains intentionally unexercised by deterministic tests.
-- /chat route extraction remains deferred until characterization coverage is expanded around all legacy direct-tool and cloud/local fallback branches.
+- `/chat` route extraction remains deferred; known compound workflows are isolated behind the planner/executor, but legacy direct-tool and fallback branches still share the route facade.
+- Browser automation currently covers the email workflow surface, not a complete responsive visual regression matrix.
 
 ## Dependencies and Risks
 

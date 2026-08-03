@@ -9,7 +9,6 @@ from crewai import Crew, Task
 from app.logic.agent_intent import specialist_for_prompt
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.exceptions import AgentFastExit
-from app.logic.memory import admin_auth_context
 from app.logic.profile_links import resolve_public_profile_link_request
 from app.logic.response_policy import build_assistant_system_prompt
 
@@ -100,11 +99,6 @@ def execute_local(
             chunk_callback(email_body_update)
         return email_body_update
 
-    prompt_scan = prompt_text.lower()
-    if intent["requires_tools"] and any(keyword in prompt_scan for keyword in ("email", "mail", "send")):
-        if not admin_auth_context.get():
-            return "ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message (use the Masked icon) to authorize sending emails."
-
     try:
         if abort_event and abort_event.is_set():
             return "Operation cancelled."
@@ -131,7 +125,7 @@ def execute_local(
                     f"Current Request: {context_data.get('final_prompt', '')}\n\n"
                     f"Conversation History:\n{context_data.get('history_context', '')}\n\n"
                     f"Grounding Memory:\n{context_data.get('memory_block', '')}\n\n"
-                    "Preserve supplied technical text and use send_email_tool only to build a draft."
+                    "Preserve supplied technical text and use build_email_draft_tool only to build a draft."
                 ),
                 expected_output="The output of the tool execution or a final helpful answer.",
                 agent=specialist,

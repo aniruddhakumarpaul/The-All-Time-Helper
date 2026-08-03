@@ -295,6 +295,7 @@ def _looks_like_raw_tool_call_leak(result: str) -> bool:
         return False
 
     tool_names = [
+        "build_email_draft_tool",
         "send_email_tool",
         "image_generate_tool",
         "image_search_tool",
@@ -506,7 +507,7 @@ def global_step_callback(step):
                 "web_search_text": "🔍 Scouring the web for real-time data...",
                 "recall_memory": "🧠 Diving into my semantic memory...",
                 "archive_insight": "💾 Archiving new technical insights...",
-                "send_email_tool": "📧 Drafting and dispatching your email...",
+                "build_email_draft_tool": "Drafting your email...",
                 "calculate_horoscope": "✨ Consulting the digital stars...",
                 "analyze_palm_lines": "✋ Reading the visual patterns...",
                 "image_search_tool": "🔍 Searching for real-world images...",
@@ -527,7 +528,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
     
     # Tool assignment based on capability
     dev_tools = [tools.search_tool, tools.recall_memory, tools.archive_insight] if use_tools else []
-    sec_tools = [tools.send_email_tool] if use_tools else []
+    sec_tools = [tools.build_email_draft_tool] if use_tools else []
     visual_tools = [tools.image_search_tool, tools.image_generate_tool] if use_tools else []
     mem_tools = [tools.recall_memory, tools.archive_insight] if use_tools else []
 
@@ -552,14 +553,14 @@ def _build_agents(llm, use_tools=True, sys_config=None):
 
     # 2. The Secretary (Email & Comms)
     selected_tone = sys_config.get('email_tone', '') if sys_config else ''
-    tone_instruction = f" You MUST use the tone '{selected_tone}' when calling send_email_tool." if selected_tone else " Detect the appropriate `tone` parameter for `send_email_tool`: 'formal' for office/business, 'informal' for friends/family, or 'modern' for general/ambiguous."
+    tone_instruction = f" You MUST use the tone '{selected_tone}' when calling build_email_draft_tool." if selected_tone else " Detect the appropriate `tone` parameter for `build_email_draft_tool`: 'formal' for office/business, 'informal' for friends/family, or 'modern' for general/ambiguous."
     
     secretary = Agent(
         role='Senior Executive Secretary',
         goal=(
             f"STRICT RULE: You are a high-fidelity drafting and dispatch engine. "
             f"1. ATTACHMENTS & GENERATION VS RETRIEVAL: Only include `attachment_content` if requested. "
-            f"If the user asks to 'generate', 'create', 'draw' or 'paint' an image and attach it, you MUST ensure that a new image is generated first (if tool is available). NEVER pass a text description of a to-be-generated image (like 'house image') directly to `send_email_tool` without generating it first. "
+            f"If the user asks to 'generate', 'create', 'draw' or 'paint' an image and attach it, you MUST ensure that a new image is generated first (if tool is available). NEVER pass a text description of a to-be-generated image (like 'house image') directly to `build_email_draft_tool` without generating it first. "
             f"If you are attaching a newly generated image, pass the full markdown image tag (e.g. `![alt](url)`) or the URL directly as the `attachment_content` parameter. "
             f"ONLY pass a text description (like 'house image') to `chat_image_reference` when the user did NOT ask to generate a new image, which tells the tool to safely search and attach an existing image from the past chat history. "
             f"2. TONE SELECTION:{tone_instruction} "
@@ -601,9 +602,9 @@ def _build_agents(llm, use_tools=True, sys_config=None):
         If a user asks for a visual and the request is actionable, call the matching tool immediately. Ask one focused question only when a missing constraint would materially change the result.
         
         ## EMAIL ATTACHMENT FOR NEW IMAGES VS EXISTING IMAGES
-        - If the user asks to "generate" or "create" or "draw" or "paint" an image (e.g., "generate a house image and attach it"), you MUST call the `image_generate_tool` FIRST to generate a new image. You must NEVER pass the image description (like 'house image') as the `attachment_content` or `chat_image_reference` of `send_email_tool` without generating it first, as that will fail to create a new image and instead attach a stale one from history.
-        - NEVER call `image_generate_tool` and `send_email_tool` in the same step/turn (in parallel). You MUST call `image_generate_tool` first, wait for the actual output markdown tag containing the URL, and only then call `send_email_tool` in a subsequent step using that actual URL. Never fabricate placeholder URLs like `https://example.com/house.png`.
-        - If you generated a NEW image in this turn, pass its full markdown tag (e.g. `![description](url)`) or its URL directly as the `attachment_content` parameter of `send_email_tool`.
+        - If the user asks to "generate" or "create" or "draw" or "paint" an image (e.g., "generate a house image and attach it"), you MUST call the `image_generate_tool` FIRST to generate a new image. You must NEVER pass the image description (like 'house image') as the `attachment_content` or `chat_image_reference` of `build_email_draft_tool` without generating it first, as that will fail to create a new image and instead attach a stale one from history.
+        - NEVER call `image_generate_tool` and `build_email_draft_tool` in the same step/turn (in parallel). You MUST call `image_generate_tool` first, wait for the actual output markdown tag containing the URL, and only then call `build_email_draft_tool` in a subsequent step using that actual URL. Never fabricate placeholder URLs like `https://example.com/house.png`.
+        - If you generated a NEW image in this turn, pass its full markdown tag (e.g. `![description](url)`) or its URL directly as the `attachment_content` parameter of `build_email_draft_tool`.
         - ONLY use `chat_image_reference` or text descriptions in `attachment_content` when the user does NOT use the word "generate/create/draw/paint" (meaning they explicitly want to attach a past image that is already in the chat history).
         
         ## TOOL EXECUTION & AUTH
@@ -862,14 +863,6 @@ def _reconstruct_contextual_prompt(user_prompt: str, history: list) -> str:
                     logger.debug("[Context] Resolved pronoun reference")
                     return f"[Target: {subject_hint}] {user_prompt}"
  
-    # 3. Admin Key provision detection (Secure wrapper)
-    # If the user prompt is short, alphanumeric, or contains 'admin', and the bot just asked for a key
-    if len(p) < 25 and (p.isalnum() or 'admin' in p):
-        for msg in reversed(history[-2:]):
-            role, content = get_msg_data(msg)
-            if role in ["assistant", "a", "bot", "b"] and "admin key" in content.lower():
-                logger.debug("[Context] Resolved Admin Key provision")
-                return f"ADMIN_KEY_PROVIDED: {user_prompt}. ACTION: Use this key to CALL the send_email_tool NOW and finish the previous request."
     return user_prompt
 
 
@@ -2026,7 +2019,7 @@ def _build_simple_email_draft(prompt: str, recipient: str, status_callback=None)
     if status_callback:
         status_callback("Preparing a validated email draft...")
     try:
-        tools.send_email_tool.func(**fields)
+        tools.build_email_draft_tool.func(**fields)
     except AgentFastExit as exc:
         from app.logic.bus import job_id_context, tool_result_bus
 
@@ -2098,7 +2091,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
     ) or (is_above_attachment and bool(recipient))
 
     # Start an editable draft when the user requests email but has not supplied a recipient yet.
-    # Do not call send_email_tool here: recipient validation belongs to delivery, not drafting.
+    # Do not call build_email_draft_tool here: recipient validation belongs to delivery, not drafting.
     if is_email and not recipient:
         blank_draft = {
             "recipient": "",
@@ -2295,9 +2288,9 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
         if wants_empty_body:
             body = ""
 
-        logger.info("[Direct Tool] Executing send_email_tool (recipient_count=%d)", len(str(recipient).split(",")))
+        logger.info("[Direct Tool] Executing build_email_draft_tool (recipient_count=%d)", len(str(recipient).split(",")))
         try:
-            tools.send_email_tool.func(
+            tools.build_email_draft_tool.func(
                 recipient=recipient,
                 subject=subject,
                 body=body,
@@ -2314,7 +2307,7 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                 tool_result_bus.set_result(jid, e.result)
             return e.result
         except Exception as e:
-            logger.error("[Direct Tool] send_email_tool failed (%s)", type(e).__name__)
+            logger.error("[Direct Tool] build_email_draft_tool failed (%s)", type(e).__name__)
             return "ERROR: The email draft could not be created."
     
     # 1. Image Generation Intent
@@ -2432,24 +2425,6 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
     # Check for early abort
     if abort_event and abort_event.is_set():
         return "Operation cancelled."
-
-    # FLAW 2 FIX: Countermeasure 2 — email_send_log Idempotency Check
-    if any(kw in user_prompt.lower() for kw in ["send email", "send an email", "retry send", "admin key"]):
-        from app.database import DB_FILE
-        import sqlite3
-        try:
-            with sqlite3.connect(DB_FILE) as conn:
-                conn.row_factory = sqlite3.Row
-                # Check for recent successful sends (last 10 mins)
-                recent = conn.execute(
-                    "SELECT * FROM email_send_log WHERE user_email=? AND timestamp > ? ORDER BY timestamp DESC LIMIT 1",
-                    (user_id, time.time() - 600)
-                ).fetchone()
-                if recent:
-                    logger.info("[Agents] Idempotency hit; duplicate email suppressed")
-                    return f"ALREADY SENT: Email was dispatched to {recent['recipients']} (Job: {recent['job_id']}). Skipping duplicate."
-        except Exception as e:
-            logger.warning("[Agents] Idempotency check failed (%s)", type(e).__name__)
 
     # 1. Context Reconstruction (Harden against ambiguous prompts like '1.' or 'it')
     routing_prompt = _reconstruct_contextual_prompt(user_prompt, history)

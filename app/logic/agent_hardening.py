@@ -40,10 +40,10 @@ def harden_result(
         )
 
     result_text = str(result).strip()
-    if "EMAIL_DRAFT_PAYLOAD:" not in result_text and "send_email_tool" in result_text:
+    if "EMAIL_DRAFT_PAYLOAD:" not in result_text and any(name in result_text for name in ("build_email_draft_tool", "send_email_tool")):
         payload = email_payload_from_json(result_text)
         if payload:
-            logger.warning("[Agents] Converted leaked send_email_tool JSON plan into email draft payload")
+            logger.warning("[Agents] Converted leaked email-draft tool JSON plan into email draft payload")
             return payload
 
 
@@ -95,7 +95,7 @@ def harden_result(
 
     def contains_send_plan(data):
         if isinstance(data, dict):
-            return "send_email_tool" in data or any(contains_send_plan(value) for value in data.values())
+            return any(name in data for name in ("build_email_draft_tool", "send_email_tool")) or any(contains_send_plan(value) for value in data.values())
         if isinstance(data, list):
             return any(contains_send_plan(item) for item in data)
         return False

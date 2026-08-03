@@ -122,5 +122,97 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual(self.page.locator("#prompt-context-tray").get_attribute("style"), "display: none;")
 
 
+    def test_live_edits_become_metadata_only_followup_context(self):
+        self.load_state_and_email_surface()
+        draft = {
+            "recipient": "person@example.com",
+            "subject": "Original",
+            "body": "Original body",
+            "attachment_content": "https://images.example/private-token.png",
+            "attachments": [{
+                "filename": "reference.png",
+                "mime_type": "image/png",
+                "content": "https://images.example/private-token.png",
+            }],
+        }
+        result = self.page.evaluate("""draft => {
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify(draft));
+            window.hydrateEmailDraftCards(root);
+            const subject = root.querySelector('.email-draft-subject');
+            const body = root.querySelector('.email-draft-body-input');
+            subject.value = 'Edited subject';
+            body.value = 'Edited body';
+            subject.dispatchEvent(new Event('input', { bubbles: true }));
+            body.dispatchEvent(new Event('input', { bubbles: true }));
+            return window.getActiveEmailDraftPromptContext('attach a reference image');
+        }""", draft)
+
+        self.assertTrue(result.startswith("EMAIL_DRAFT_CONTEXT:"))
+        payload = result.split("EMAIL_DRAFT_CONTEXT:", 1)[1]
+        context = __import__("json").loads(payload)
+        self.assertEqual(context["subject"], "Edited subject")
+        self.assertEqual(context["body"], "Edited body")
+        self.assertNotIn("private-token", payload)
+        self.assertNotIn("content", context["attachments"][0])
+
+    def test_updated_draft_supersedes_previous_card(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => {
+            const root = document.getElementById('chat-area');
+            const first = document.createElement('section');
+            first.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'First', body: 'First body'
+            }));
+            root.appendChild(first);
+            window.hydrateEmailDraftCards(first);
+
+            const second = document.createElement('section');
+            second.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'Updated', body: 'Updated body'
+            }));
+            root.appendChild(second);
+            window.hydrateEmailDraftCards(second);
+            const cards = Array.from(root.querySelectorAll('.email-draft-card'));
+            return {
+                count: cards.length,
+                hidden: cards.map(card => card.hidden),
+                subjects: cards.map(card => card.querySelector('.email-draft-subject').value),
+            };
+        }""")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["hidden"], [True, False])
+        self.assertEqual(result["subjects"], ["First", "Updated"])
+
+    def test_context_panel_draft_does_not_hide_chat_draft(self):
+        self.load_state_and_email_surface()
+        hidden = self.page.evaluate("""() => {
+            const chat = document.getElementById('chat-area');
+            chat.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'Chat draft', body: 'Chat body'
+            }));
+            window.hydrateEmailDraftCards(chat);
+
+            const panel = document.createElement('aside');
+            panel.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'Context copy', body: 'Context body'
+            }));
+            document.body.appendChild(panel);
+            window.hydrateEmailDraftCards(panel);
+            return chat.querySelector('.email-draft-card').hidden;
+        }""")
+        self.assertFalse(hidden)
+
+    def test_masked_messages_are_redacted_before_persistence(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => window.helperSanitizeChatsForPersistence([{
+            id: 'chat-1',
+            ms: [{ r: 'u', c: 'raw-admin-key', apiPrompt: 'raw-admin-key', masked: true }]
+        }])""")
+        message = result[0]["ms"][0]
+        self.assertEqual(message["c"], "[MASKED_SECRET]")
+        self.assertNotIn("apiPrompt", message)
+        self.assertNotIn("raw-admin-key", str(result))
+
 if __name__ == "__main__":
     unittest.main()

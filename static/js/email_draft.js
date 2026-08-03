@@ -118,6 +118,24 @@
         return compact;
     }
 
+    function isEmailDraftWorkflowFollowup(text) {
+        const value = String(text || '').toLowerCase();
+        const hasAny = words => words.some(word => value.includes(word));
+        const delivery = hasAny(['send this', 'send the', 'email it', 'dispatch', 'deliver', 'approve and send']);
+        const attachment = hasAny(['attach', 'include', 'add'])
+            && hasAny(['image', 'photo', 'picture', 'reference', 'refernce', 'artwork']);
+        const update = hasAny(['update', 'change', 'edit', 'rewrite', 'fill', 'set'])
+            && hasAny(['draft', 'email', 'mail', 'subject', 'body', 'recipient', 'tone']);
+        const research = hasAny(['current factual', 'latest facts', 'recent facts'])
+            && hasAny(['draft', 'email', 'mail', 'add']);
+        return delivery || attachment || update || research;
+    }
+
+    function getActiveEmailDraftPromptContext(text) {
+        if (!isEmailDraftWorkflowFollowup(text)) return '';
+        const compact = compactEmailDraftForPrompt(window.__helperActiveEmailDraft);
+        return compact ? 'EMAIL_DRAFT_CONTEXT:' + JSON.stringify(compact) : '';
+    }
     function nextDraftRef() {
         draftRefCounter += 1;
         return `email-draft-${Date.now()}-${draftRefCounter}-${Math.random().toString(36).slice(2, 8)}`;
@@ -131,6 +149,8 @@
         DRAFT_REGISTRY.set(ref, current);
         card.dataset.emailDraftRef = ref;
         card.__emailDraft = current;
+        window.__helperActiveEmailDraft = current;
+        while (DRAFT_REGISTRY.size > 64) DRAFT_REGISTRY.delete(DRAFT_REGISTRY.keys().next().value);
         card.dataset.emailDraft = JSON.stringify(compactEmailDraftForPrompt(current));
         return current;
     }
@@ -396,12 +416,28 @@
         return true;
     }
 
+    function supersedeEarlierDraftCards(currentCard) {
+        if (!currentCard?.isConnected) return;
+        const chatArea = document.getElementById('chat-area');
+        if (!chatArea?.contains(currentCard)) return;
+        chatArea.querySelectorAll('.email-draft-card').forEach(card => {
+            if (card === currentCard) {
+                card.hidden = false;
+                card.removeAttribute('data-email-draft-superseded');
+                return;
+            }
+            card.hidden = true;
+            card.dataset.emailDraftSuperseded = 'true';
+        });
+    }
     function hydrateEmailDraftCards(rootEl) {
         if (!rootEl || typeof rootEl.querySelectorAll !== 'function') return;
         const cards = rootEl.matches?.('.email-draft-card') ? [rootEl] : Array.from(rootEl.querySelectorAll('.email-draft-card'));
         cards.forEach(card => {
+            if (!card.isConnected) return;
             const draft = syncDraftFromCard(card);
             if (!draft) return;
+            supersedeEarlierDraftCards(card);
             if (card.dataset.emailDraftHydrated === 'true') return;
             card.dataset.emailDraftHydrated = 'true';
             const sync = () => syncDraftFromCard(card);
@@ -476,5 +512,7 @@
     window.getVisibleUserMessageContent = getVisibleUserMessageContent;
     window.showDraftContextPanel = showDraftContextPanel;
     window.compactEmailDraftForPrompt = compactEmailDraftForPrompt;
+    window.getActiveEmailDraftPromptContext = getActiveEmailDraftPromptContext;
+    window.isEmailDraftWorkflowFollowup = isEmailDraftWorkflowFollowup;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
 })();

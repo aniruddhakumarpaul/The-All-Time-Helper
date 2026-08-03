@@ -9,6 +9,8 @@ The All Time Helper is a FastAPI assistant with a modular ES6 frontend, determin
 - app/factory.py, app/main.py: ASGI construction, lifespan, static files, CORS, and local startup.
 - app/routes/: authentication, chat/NDJSON streaming, attachments, email delivery, jobs, admin, health, and proxy boundaries.
 - app/logic/: agent routing, context assembly, cloud/local execution, tools, attachment storage, memory, and safety hardening.
+- app/logic/workflow_orchestrator.py: typed deterministic plans for compound email, research, image, attachment, approval, and delivery workflows above the cloud/local split.
+- app/services/email_delivery_service.py: shared protected delivery boundary used by HTTP and workflow callers; internal code must not call its own HTTP route.
 - static/js/: frontend orchestrator (app.js), DOM/UI (ui.js), network adapter (api.js), email draft modules, dialogs, palette, and motion.
 - static/css/, templates/: active visual shell and rendered HTML contract.
 - app/tests/: repository-level behavioral and source-contract tests.
@@ -31,7 +33,9 @@ Do not claim lint, type-check, browser, or cloud-provider verification unless th
 - Text, Markdown, and PDF attachments are document context, not visual inputs. Only image MIME types enter vision analysis.
 - Chat streaming remains NDJSON with job ID, status, heartbeat, content, final, error, disconnect, cancellation, and tool/inference lane behavior.
 - Do not add request-body replay middleware; Starlette body replay can break streaming requests.
-- Email drafting is a widget payload contract. Draft creation never sends mail; SMTP requires explicit approval, admin-key validation, owner-scoped attachments, and idempotency.
+- Email drafting is a widget payload contract. Draft creation, updates, research, image lookup/generation, and attachment preparation never require an Admin Key or send mail; only the delivery node requires explicit request-scoped approval, owner-scoped attachments, and idempotency.
+- Known compound email workflows use a typed dependency graph above model selection. Run only independent actions concurrently, wait for declared dependencies, preserve cancellation, and never submit nested work back into the active queue lane.
+- Pending delivery workflows are owner-scoped and TTL-bounded. Never persist, log, reconstruct from history, or pass an Admin Key to a model.
 - Preserve the blue/red logo assets, active brand gradient, keyboard/Escape dismissal, text selection, reduced-motion behavior, and stable accessible control semantics.
 - Never expose secrets, raw provider errors, attachment paths, recipient addresses, or raw tool arguments in user-facing status or telemetry.
 

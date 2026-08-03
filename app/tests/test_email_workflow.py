@@ -83,7 +83,16 @@ class EmailWorkflowTests(unittest.TestCase):
             "body": "Hello",
             "attachments": [{"id": "0123456789abcdef0123456789abcdef", "name": "photo.png", "type": "image/png"}],
         })
-        with patch.object(email_delivery, "verify_admin_key", return_value=False):
+        from app.services.email_delivery_service import (
+            EmailAuthorizationError,
+            EmailDeliveryResult,
+        )
+
+        with patch.object(
+            email_delivery.email_delivery_service,
+            "send_approved_email",
+            side_effect=EmailAuthorizationError("invalid"),
+        ):
             with self.assertRaises(HTTPException) as raised:
                 email_delivery.send_approved_email_draft(
                     email_delivery.SendDraftRequest(draft=draft, admin_key="wrong"),
@@ -91,15 +100,127 @@ class EmailWorkflowTests(unittest.TestCase):
                 )
         self.assertEqual(raised.exception.status_code, 403)
 
-        with patch.object(email_delivery, "verify_admin_key", return_value=True), patch.object(email_delivery, "send_or_simulate_email", return_value="SIMULATE SUCCESS") as send:
+        delivery_result = EmailDeliveryResult(
+            success=True,
+            status="SIMULATE SUCCESS",
+            request_id="req-1",
+            mode="simulated",
+        )
+        with patch.object(
+            email_delivery.email_delivery_service,
+            "send_approved_email",
+            return_value=delivery_result,
+        ) as send:
             result = email_delivery.send_approved_email_draft(
                 email_delivery.SendDraftRequest(draft=draft, admin_key="right", request_id="req-1"),
                 current_user=OWNER,
             )
         self.assertTrue(result["success"])
-        self.assertEqual(send.call_args.kwargs["attachments"][0]["id"], "0123456789abcdef0123456789abcdef")
-        self.assertNotIn("content", send.call_args.kwargs["attachments"][0])
+        sent_draft = send.call_args.kwargs["draft"]
+        self.assertEqual(sent_draft.attachments[0].id, "0123456789abcdef0123456789abcdef")
+        self.assertIsNone(sent_draft.attachments[0].content)
 
+
+    def test_shared_delivery_service_validates_key_and_deduplicates_request(self):
+        from app.logic.bus import job_id_context
+        from app.logic.memory import user_context
+        from app.services import email_delivery_service as service_module
+
+        receipts = {}
+        sends = []
+
+        def sender(**kwargs):
+            sends.append(kwargs)
+            return f"SIMULATE SUCCESS: prepared for {kwargs['recipient']}"
+
+        def record(job_id, owner, recipient, status):
+            receipts[job_id] = status
+
+        service = service_module.EmailDeliveryService(
+            key_verifier=lambda candidate: candidate == "valid-key",
+            sender=sender,
+        )
+        draft = {
+            "recipient": OWNER,
+            "subject": "Approved",
+            "body": "Hello",
+        }
+        with (
+            patch.object(service_module, "_existing_delivery", side_effect=lambda job_id: receipts.get(job_id)),
+            patch.object(service_module, "_record_delivery", side_effect=record),
+        ):
+            with self.assertRaises(service_module.EmailAuthorizationError):
+                service.send_approved_email(
+                    draft=draft,
+                    owner=OWNER,
+                    admin_key="invalid-key",
+                    request_id="same-request",
+                )
+            first = service.send_approved_email(
+                draft=draft,
+                owner=OWNER,
+                admin_key="valid-key",
+                request_id="same-request",
+            )
+            duplicate = service.send_approved_email(
+                draft=draft,
+                owner=OWNER,
+                admin_key="valid-key",
+                request_id="same-request",
+            )
+            restarted_service = service_module.EmailDeliveryService(
+                key_verifier=lambda candidate: candidate == "valid-key",
+                sender=sender,
+            )
+            persisted_duplicate = restarted_service.send_approved_email(
+                draft=draft,
+                owner=OWNER,
+                admin_key="valid-key",
+                request_id="same-request",
+            )
+
+        self.assertTrue(first.success)
+        self.assertTrue(duplicate.duplicate)
+        self.assertTrue(persisted_duplicate.duplicate)
+        self.assertNotIn(OWNER, first.status)
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(job_id_context.get(), "")
+        self.assertIsNone(user_context.get())
+
+    def test_delivery_service_rejects_invalid_recipient_and_sanitizes_sender_exception(self):
+        from app.logic.bus import job_id_context
+        from app.logic.memory import user_context
+        from app.services import email_delivery_service as service_module
+
+        sends = []
+
+        def broken_sender(**kwargs):
+            sends.append(kwargs)
+            raise RuntimeError("provider included owner@example.com and secret material")
+
+        service = service_module.EmailDeliveryService(
+            key_verifier=lambda _candidate: True,
+            sender=broken_sender,
+        )
+        with self.assertRaises(service_module.EmailValidationError):
+            service.send_approved_email(
+                draft={"recipient": "not-an-email", "subject": "Invalid", "body": "Body"},
+                owner=OWNER,
+                admin_key="request-only-key",
+            )
+        self.assertEqual(sends, [])
+
+        result = service.send_approved_email(
+            draft={"recipient": OWNER, "subject": "Safe", "body": "Body"},
+            owner=OWNER,
+            admin_key="request-only-key",
+            request_id="sender-exception",
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.status, "Email delivery failed. The draft remains available to retry.")
+        self.assertNotIn(OWNER, result.status)
+        self.assertEqual(job_id_context.get(), "")
+        self.assertIsNone(user_context.get())
 
 if __name__ == "__main__":
     unittest.main()

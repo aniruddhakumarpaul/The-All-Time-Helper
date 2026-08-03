@@ -163,6 +163,7 @@ function handleChatKey(event) {
 
 function startNewChat() {
     navigationRevision += 1;
+    window.__helperActiveEmailDraft = null;
     state.setActiveChat(Date.now().toString());
     const chatArea = document.getElementById('chat-area');
     const welcome = document.getElementById('welcome');
@@ -189,6 +190,7 @@ function loadChat(id, options = {}) {
     } = options;
     const chat = state.chats.find(c => c.id === id);
     if (!chat) return;
+    window.__helperActiveEmailDraft = null;
     if (trackNavigation) navigationRevision += 1;
     if (setActiveId) state.setActiveChat(id);
     if (persistActiveId) localStorage.setItem('helper_active_chat_v2', id);
@@ -398,9 +400,13 @@ async function send() {
     const userText = promptEl.value.trim();
     await waitForPendingImageUploads();
     const currentAttachments = state.currentImages.slice();
-    const contextText = state.attachedContexts.map(serializeAttachedContext).filter(Boolean)
+    const attachedContextText = state.attachedContexts.map(serializeAttachedContext).filter(Boolean)
         .map((text, index) => `[Attached Context ${index + 1}]\n"""\n${text}\n"""`).join('\n\n');
-    const apiPrompt = [contextText, userText].filter(Boolean).join('\n\n');
+    const activeDraftContext = attachedContextText.includes('EMAIL_DRAFT_CONTEXT:')
+        ? ''
+        : (window.getActiveEmailDraftPromptContext?.(userText) || '');
+    const contextText = [attachedContextText, activeDraftContext].filter(Boolean).join(String.fromCharCode(10, 10));
+    const apiPrompt = [contextText, userText].filter(Boolean).join(String.fromCharCode(10, 10));
     if (!apiPrompt && !currentAttachments.length) return;
     navigationRevision += 1;
     if (!state.activeId) state.setActiveChat(Date.now().toString());
@@ -426,8 +432,15 @@ async function send() {
         isMasked = authKeywords.some(keyword => last.includes(keyword));
     }
 
-    ui.addMsg('u', userText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
-    state.appendMessage(chat.id, { r: 'u', c: userText, attachments: currentAttachments, apiPrompt, masked: isMasked });
+    const storedUserText = isMasked ? '[MASKED_SECRET]' : userText;
+    ui.addMsg('u', storedUserText, state.currentImg, chat.ms.length, null, isMasked, currentAttachments);
+    state.appendMessage(chat.id, {
+        r: 'u',
+        c: storedUserText,
+        attachments: currentAttachments,
+        apiPrompt: isMasked ? undefined : apiPrompt,
+        masked: isMasked,
+    });
     state.markChatUpdated(chat.id);
     requestChatPersist();
     mascot.triggerBotReaction(userText);
@@ -463,7 +476,8 @@ async function send() {
         const historyForApi = chat.ms.slice(0, -1).map(message => ({
             role: message.r === 'u' ? 'user' : 'assistant',
             content: message.apiPrompt || message.c,
-            attachments: message.attachments || []
+            attachments: message.attachments || [],
+            masked: Boolean(message.masked)
         }));
         const response = await api.streamChat({
             prompt: apiPrompt,
@@ -881,7 +895,7 @@ function bindStaticEvents() {
         state.setPendingImageUploads(api.uploadAttachments(input.files)
             .then(items => { state.replaceCurrentImages(items); })
             .catch(error => { state.replaceCurrentImages([]); ui.notify(error.message || 'Attachment upload failed.', 'error'); })
-            .finally(() => { state.setPendingImageUploads(null); });
+            .finally(() => { state.setPendingImageUploads(null); }));
     });
     on('stop-btn', 'click', stopAI);
     on('export-chat-btn', 'click', exportChat);
