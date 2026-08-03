@@ -46,6 +46,7 @@ from app.logic.agent_intent import (
     analyze_prompt_via_llm,
     is_image_generation_request,
     is_tool_capability_discussion,
+    is_compound_email_media_request,
 )
 from app.logic.agent_context import ContextRuntime, assemble_context
 from app.logic.agent_cloud import CloudRuntime, execute_cloud
@@ -1543,6 +1544,8 @@ def is_deterministic_tool_lane_request(user_prompt: str, history: list = None) -
     normalized = _normalize_prompt_for_intent(clean_prompt).lower().strip()
     if not normalized or is_tool_capability_discussion(normalized):
         return False
+    if is_compound_email_media_request(normalized):
+        return False
 
     sensitive_terms = (
         "mental health", "medical diagnosis", "suicide", "depressed",
@@ -1583,6 +1586,8 @@ def is_deterministic_tool_lane_request(user_prompt: str, history: list = None) -
     return explicit_image_search or explicit_web_search
 
 def _is_image_email_workflow(prompt_lower: str, email_match) -> bool:
+    if is_compound_email_media_request(prompt_lower):
+        return True
     has_email_action = any(kw in prompt_lower for kw in ['email', 'mail', 'send'])
     has_image_reference = any(kw in prompt_lower for kw in ['image', 'picture', 'photo', 'pic', 'artwork'])
     has_attachment_action = any(kw in prompt_lower for kw in ['attach', 'attachment', 'include'])
@@ -2037,6 +2042,9 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
     """
     clean_prompt = clean_user_prompt(user_prompt)
     p = _normalize_prompt_for_intent(user_prompt).lower().strip()
+
+    if is_compound_email_media_request(p):
+        return "I could not identify the email draft to update. Open the draft or attach it to the prompt, then retry."
     
     # Strip common conversational/politeness prefixes at the start to ensure greeting-agnostic guard checks
     conversational_prefixes = [

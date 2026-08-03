@@ -31,6 +31,7 @@ from app.contracts.email_draft import (
     serialize_full_transient,
 )
 from app.logger import logger
+from app.logic.agent_intent import is_compound_email_media_request
 from app.services.email_delivery_service import (
     EmailAuthorizationError,
     EmailDeliveryService,
@@ -537,10 +538,25 @@ class WorkflowPlanner:
         classified_intent = classify_workflow_intent(clean, has_active_draft=active is not None)
         delivery = classified_intent == WorkflowIntent.DELIVER_EMAIL
         draft_request = classified_intent == WorkflowIntent.DRAFT_EMAIL or _is_draft_request(clean)
-        image_attachment = _wants_image_attachment(clean)
-        generated_image = image_attachment and _wants_generated_image(clean)
+        compound_email_media = is_compound_email_media_request(clean)
+        explicit_new_draft = bool(re.search(r"(?i)(?:\b(?:create|write|compose|prepare)\b.{0,32}\b(?:email|mail|draft)\b|\bdraft\s+(?:an?\s+)?(?:email|mail)\b)", clean))
+        image_attachment = _wants_image_attachment(clean) or compound_email_media
+        generated_image = image_attachment and (_wants_generated_image(clean) or compound_email_media)
         research = _wants_research(clean)
         update = bool(active and _wants_draft_update(clean))
+
+        if compound_email_media and not active and not explicit_new_draft:
+            return WorkflowPlan(
+                owner=owner,
+                intent=WorkflowIntent.GENERAL_RESPONSE,
+                actions=[WorkflowAction(
+                    id="clarify_draft",
+                    action_type=WorkflowActionType.GENERAL_RESPONSE,
+                    arguments={"message": "Which email draft should I attach the image to? Open the draft or attach it to the prompt, then retry."},
+                    terminal=True,
+                )],
+                expires_at=now + self.ttl_seconds,
+            )
 
         if image_attachment and not active and not draft_request:
             if re.search(r"(?i)\b(?:email|mail)\s+(?:widget|template)\b", clean) and not re.search(r"(?i)\b(?:refer\w*|actual|real|existing|generate)\b", clean):
@@ -622,7 +638,7 @@ class WorkflowPlanner:
                 id=draft_node,
                 action_type=WorkflowActionType.BUILD_EMAIL_DRAFT,
                 arguments={"recipient": recipient, "topic": topic, "request": clean[:2000]},
-                depends_on=[node for node in external_ids if node == "image"],
+                depends_on=[],
                 optional_depends_on=["web_search"] if research else [],
             ))
         elif active and (update or research):
@@ -969,7 +985,10 @@ class WorkflowExecutor:
             error_category = "validation_error"
         except Exception as exc:
             state = WorkflowActionState.FAILED
-            category = str(exc) if str(exc) in {"tool_unavailable", "invalid_tool_result", "invalid_image_result", "image_generation_unavailable", "image_attachment_blocked", "missing_draft"} else type(exc).__name__
+            if action.action_type == WorkflowActionType.ATTACH_IMAGE:
+                category = "image_attachment_failed"
+            else:
+                category = str(exc) if str(exc) in {"tool_unavailable", "invalid_tool_result", "invalid_image_result", "image_generation_unavailable", "image_attachment_blocked", "missing_draft"} else type(exc).__name__
             error_category = category[:80]
         duration_ms = int((time.monotonic() - started) * 1000)
         logger.info(
@@ -1006,6 +1025,7 @@ class WorkflowExecutor:
         paused: set[str] = set()
         pending = {action.id: action for action in current.actions if action.id not in successful}
         draft = current.active_draft
+        original_active_draft = current.active_draft
         claimed = False
 
         def block_dependents() -> bool:
@@ -1174,18 +1194,35 @@ class WorkflowExecutor:
         )
         if general:
             return WorkflowExecutionResult(message=str(general), plan=current, actions=results)
-        generated_failure = any(
-            item.action_type == WorkflowActionType.IMAGE_GENERATE
-            and item.state in {WorkflowActionState.FAILED, WorkflowActionState.BLOCKED}
+        new_draft_created = original_active_draft is None and any(
+            item.action_type == WorkflowActionType.BUILD_EMAIL_DRAFT
+            and item.state == WorkflowActionState.COMPLETED
+            and isinstance(item.output, EmailDraft)
             for item in results.values()
         )
-        if generated_failure:
-            return WorkflowExecutionResult(
-                message="I could not generate the image, so the existing email draft was not changed. Please retry.",
-                plan=current,
-                actions=results,
-            )
         if draft:
+            generated_failure = any(
+                item.action_type == WorkflowActionType.IMAGE_GENERATE
+                and item.state in {WorkflowActionState.FAILED, WorkflowActionState.BLOCKED}
+                for item in results.values()
+            )
+            if generated_failure:
+                message = "I could not generate the image, so it was not attached."
+                if new_draft_created:
+                    message += " The email draft was created without an image.\n\n" + draft_marker(draft)
+                else:
+                    message = "I could not generate the image, so the existing email draft was not changed. Please retry."
+                return WorkflowExecutionResult(message=message, plan=current, actions=results)
+            attachment_failure = any(
+                item.action_type == WorkflowActionType.ATTACH_IMAGE
+                and item.state == WorkflowActionState.FAILED
+                for item in results.values()
+            )
+            if attachment_failure:
+                message = "I could not attach the generated image, so the existing email draft was not changed. Please retry."
+                if new_draft_created:
+                    message = "I could not attach the generated image, but the email draft was created without it.\n\n" + draft_marker(draft)
+                return WorkflowExecutionResult(message=message, plan=current, actions=results)
             failed_media = any(
                 item.state == WorkflowActionState.FAILED
                 and item.action_type in {WorkflowActionType.IMAGE_SEARCH, WorkflowActionType.IMAGE_GENERATE}
@@ -1196,7 +1233,6 @@ class WorkflowExecutor:
         return WorkflowExecutionResult(
             message="I could not complete that email workflow safely.", plan=current, actions=results,
         )
-
 pending_workflow_store = PendingWorkflowStore()
 workflow_planner = WorkflowPlanner(pending_store=pending_workflow_store)
 workflow_executor = WorkflowExecutor(pending_store=pending_workflow_store)

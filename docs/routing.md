@@ -49,3 +49,12 @@ Routing is designed to prefer the smallest reliable execution path.
 - Chat requests are bounded to 100,000 prompt characters, 200 history items, and 6 attachments. Related-context requests accept 1-100,000 characters and 1-10 results.
 - `/admin/status` remains the compatibility route for the authenticated System Status panel. It exposes user-relevant readiness booleans and counts only; filesystem paths, provider URLs, tunnel URLs, environment names, raw exceptions, configured model IDs, and security settings are forbidden.
 - Uploaded TXT, Markdown, and PDF files remain on the document-context path. The frontend displays them as file cards and does not force a vision model; only image MIME types use visual analysis.
+
+## Compound Email-Media Guard
+- A request containing generation language, an image, an attach/include action, and an email/draft surface is a compound email-media workflow. It must not enter `_try_direct_tool_execution` or produce a standalone image when no draft can be resolved.
+- Active draft resolution is authoritative in this order: live visible `.email-draft-card` state, draft registry, global active draft, then explicit attached prompt contexts. The browser injects only bounded metadata; the backend validates the marker and owner context before planning.
+- Valid prompt markers, historical markers, and frontend-injected active context all route to one `GENERATE_IMAGE` plus `ATTACH_IMAGE` workflow. Missing, malformed, and unsupported contexts use controlled clarification/general-response plans and do not call image generation.
+- For a new draft, draft construction and image generation run independently, then attachment waits for both. For an existing draft, failed media never emits a replacement draft marker.
+
+## Chat Sync Diagnostics
+- `/sync_chats` rolls back on all failures and retries only `database_locked`. It returns generic user-facing errors while logs retain only bounded categories such as `database_corrupt`, `database_schema_error`, `database_disk_full`, and `database_unknown`.

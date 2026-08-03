@@ -9,6 +9,7 @@ const MAX_CONTEXT_CHARS = 6000;
 const MAX_TOTAL_CONTEXT_CHARS = 18000;
 const CHAT_SYNC_DEBOUNCE_MS = 600;
 let syncTimer = null;
+let syncWarningShown = false;
 let navigationRevision = 0;
 
 function escapeHTML(value) {
@@ -279,7 +280,16 @@ async function saveUserChats() {
     const payload = { chats: window.helperSanitizeChatsForPersistence?.(state.chats) || state.chats, deleted_chat_ids: deletedIds.slice() };
     persistLocalChatCache();
     const result = await api.syncChats(payload);
-    if (!result || result.success !== false) deletedIds.length = 0;
+    const syncFailed = !result || result.success === false;
+    if (syncFailed) {
+        if (!syncWarningShown) {
+            ui.notify('Conversation sync is temporarily unavailable. Your changes are saved locally.', 'warning', 5200);
+            syncWarningShown = true;
+        }
+    } else {
+        deletedIds.length = 0;
+        syncWarningShown = false;
+    }
     syncWindowState();
     return result;
 }

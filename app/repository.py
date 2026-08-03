@@ -46,6 +46,17 @@ class ChatRepository:
 
     @staticmethod
     def sync_user_chats(db: sqlite3.Connection, user_email: str, payload):
+        try:
+            ChatRepository._sync_user_chats(db, user_email, payload)
+        except Exception:
+            try:
+                db.rollback()
+            except sqlite3.DatabaseError:
+                pass
+            raise
+
+    @staticmethod
+    def _sync_user_chats(db: sqlite3.Connection, user_email: str, payload):
         MAX_CHATS = 200
         MAX_MESSAGES_PER_CHAT = 500
         MAX_MESSAGE_CHARS = 120_000

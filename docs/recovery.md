@@ -28,3 +28,9 @@
 
 - The repository test suite uses controlled fakes for queues, attachments, email delivery, and `/chat` streaming. Provider keys, SMTP, Ollama, and Ngrok are not required for deterministic verification.
 - Browser automation is not configured in this repository. Use the Node syntax checks and the Python-executed frontend contract tests until a browser harness is added.
+
+## SQLite Health Checks
+- Run `python -m app.cli.db_health --db C:\path\to\users.db` for a non-destructive quick check. Add `--full` for SQLite `integrity_check`.
+- The helper reports only file metadata, check results, table/index names, and migration versions. It does not print messages, addresses, prompts, attachment paths, or repair the database.
+- Health categories distinguish corruption, non-database files, locked/busy state, read-only state, disk-full state, schema errors, constraint errors, I/O errors, and unknown database errors.
+- Back up the database before any manual recovery. Do not run repair, vacuum, migration rollback, or file replacement based only on this helper.

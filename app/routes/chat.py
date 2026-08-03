@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.database import get_db
+from app.database import classify_sqlite_error, get_db, is_transient_sqlite_error
 from app.inference_queue import inference_queue
 from app.logger import logger
 from app.logic.agents import ask_the_helper, is_deterministic_tool_lane_request
@@ -24,8 +24,9 @@ from app.logic.attachment_store import (
 )
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.memory import query_memory, user_context
+from app.logic.agent_intent import is_compound_email_media_request
 from app.logic.neural_explainer import explain_neural_context
-from app.logic.workflow_orchestrator import execute_workflow_for_chat, plan_known_workflow
+from app.logic.workflow_orchestrator import execute_workflow_for_chat, plan_known_workflow, resolve_workflow_context
 from app.repository import ChatRepository
 from app.security import get_current_user
 from app.services.email_widget_intercept import (
@@ -157,13 +158,35 @@ async def upload_attachments(
 
 @router.post("/sync_chats")
 def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
-    try:
-        ChatRepository.sync_user_chats(db, current_user, chats)
-        return {"success": True}
-    except Exception as exc:
-        logger.error("[ChatSync] Failed to persist conversations (%s)", type(exc).__name__)
-        raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
-
+    for attempt in range(2):
+        try:
+            ChatRepository.sync_user_chats(db, current_user, chats)
+            return {"success": True}
+        except ValueError as exc:
+            try:
+                db.rollback()
+            except sqlite3.DatabaseError:
+                pass
+            raise HTTPException(status_code=400, detail="Invalid conversation sync payload.") from exc
+        except sqlite3.DatabaseError as exc:
+            category = classify_sqlite_error(exc)
+            try:
+                db.rollback()
+            except sqlite3.DatabaseError:
+                pass
+            if attempt == 0 and is_transient_sqlite_error(exc):
+                time.sleep(0.05)
+                continue
+            logger.error("[ChatSync] failure_category=%s operation=sync_chats", category)
+            raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
+        except Exception as exc:
+            try:
+                db.rollback()
+            except sqlite3.DatabaseError:
+                pass
+            logger.error("[ChatSync] failure_category=database_unknown operation=sync_chats")
+            raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
+    raise HTTPException(status_code=500, detail="Conversations could not be synced.")
 @router.post("/chat/jobs/{job_id}/cancel")
 async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
     try:
@@ -224,6 +247,15 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     sys_config = req.sys
 
     workflow_admin_key = req.prompt.strip() if req.isMasked else None
+    workflow_candidate = (not req.isMasked) and is_compound_email_media_request(prompt)
+    workflow_context = resolve_workflow_context(prompt, history) if workflow_candidate else None
+    has_prompt_draft_marker = any(marker in prompt for marker in ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:"))
+    has_history_draft_marker = any(
+        marker in _message_content(message)
+        for message in history
+        if isinstance(message, dict)
+        for marker in ("EMAIL_DRAFT_CONTEXT:", "EMAIL_DRAFT_PAYLOAD:")
+    )
     workflow_plan = (
         plan_known_workflow(
             "" if req.isMasked else prompt,
@@ -234,6 +266,23 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         if req.isMasked or (not document_blocks and not has_visual_input)
         else None
     )
+    route_intent = getattr(getattr(workflow_plan, "intent", None), "value", None)
+    if not route_intent:
+        route_intent = "generate_image" if workflow_candidate else "unknown"
+    route_fallback = "workflow" if workflow_plan is not None else "clarification" if workflow_candidate else "inference"
+    logger.info(
+        "[WorkflowRoute] candidate=%s has_prompt_draft_marker=%s has_history_draft_marker=%s active_draft_resolved=%s intent=%s plan_created=%s fallback=%s prompt_chars=%d history_messages=%d",
+        str(workflow_candidate).lower(),
+        str(has_prompt_draft_marker).lower(),
+        str(has_history_draft_marker).lower(),
+        str(bool(workflow_context and workflow_context.active_draft)).lower(),
+        route_intent,
+        str(workflow_plan is not None).lower(),
+        route_fallback,
+        min(len(prompt), 100000),
+        min(len(history), 200),
+    )
+
     if req.isMasked and workflow_plan is None:
         async def no_pending_workflow_stream():
             yield json.dumps({
@@ -244,6 +293,12 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
             }).encode() + b'\n'
             yield json.dumps({"done": True}).encode() + b'\n'
         return StreamingResponse(no_pending_workflow_stream(), media_type="application/x-ndjson")
+
+    if workflow_candidate and workflow_plan is None:
+        return Response(
+            content=_email_widget_ndjson("I could not identify the email draft to update. Open the draft or attach it to the prompt, then retry."),
+            media_type="application/x-ndjson",
+        )
 
     if workflow_plan is None:
         if not req.isMasked:

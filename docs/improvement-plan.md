@@ -55,3 +55,9 @@
 
 - Provider availability remains an external dependency and must be diagnosed with a reproducible request, not inferred from model metadata.
 - The remote Git URL must not contain credential material; rotate and replace any credential-bearing remote outside this implementation pass.
+
+## Reliability Corrections In This Iteration
+
+- Added a pre-direct-tool compound email-media guard, authoritative live-draft context resolution, route diagnostics, and controlled missing/malformed/unsupported draft behavior.
+- Hardened independent new-draft image generation and draft construction, explicit attachment-stage failure handling, and no-replacement semantics for existing widgets.
+- Added rollback/retry classification for chat synchronization and a non-destructive SQLite health CLI. Live provider, SMTP, and production database behavior remain unverified by design.

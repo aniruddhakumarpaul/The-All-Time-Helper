@@ -195,10 +195,10 @@ class HardeningTests(unittest.TestCase):
                         user_id="user@example.com",
                     )
 
-        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
-        image_tool.assert_called_once()
-        email_tool.assert_called_once()
-        self.assertEqual(email_tool.call_args.kwargs["attachment_content"], "https://example.com/img.png")
+        self.assertIn("could not identify the email draft", result)
+        image_tool.assert_not_called()
+        email_tool.assert_not_called()
+
 
     def test_direct_image_email_result_starts_with_payload(self):
         from app.logic import agents
@@ -752,11 +752,8 @@ class HardeningTests(unittest.TestCase):
                     user_id="user@example.com",
                 )
 
-        self.assertTrue(result.startswith("EMAIL_DRAFT_PAYLOAD:"))
-        payload = json.loads(result.split("EMAIL_DRAFT_PAYLOAD:")[1])
-        self.assertEqual(payload["recipient"], "aniruddha24680kumarpaul@gmail.com")
-        self.assertEqual(payload["attachment_content"], image_url)
-        self.assertEqual(payload["attachments"][0]["source"], "remote")
+        self.assertIn("could not identify the email draft", result)
+        self.assertNotIn("EMAIL_DRAFT_PAYLOAD:", result)
 
     def test_openrouter_429_returns_friendly_message(self):
         from app.logic import agents
@@ -770,6 +767,7 @@ class HardeningTests(unittest.TestCase):
 
         self.assertIn("temporarily rate limited", result)
         self.assertIn("OpenRouter", result)
+
 
     def test_memory_query_without_user_context_returns_empty(self):
         from app.logic import memory

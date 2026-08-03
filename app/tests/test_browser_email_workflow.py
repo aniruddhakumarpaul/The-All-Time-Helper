@@ -250,5 +250,33 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertNotIn("apiPrompt", message)
         self.assertNotIn("raw-admin-key", str(result))
 
+    def test_visible_card_recovers_active_context_when_global_is_missing(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => {
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify({
+                recipient: 'person@example.com', subject: 'Live subject', body: 'Live body'
+            }));
+            window.hydrateEmailDraftCards(root);
+            window.__helperActiveEmailDraft = null;
+            const card = root.querySelector('.email-draft-card');
+            card.querySelector('.email-draft-subject').value = 'Edited live subject';
+            card.querySelector('.email-draft-body-input').value = 'Edited live body';
+            const context = window.getActiveEmailDraftPromptContext('generate an image and attach it to this email widget');
+            return { context, resolved: window.resolveActiveEmailDraft() };
+        }""")
+        self.assertTrue(result["context"].startswith("EMAIL_DRAFT_CONTEXT:"))
+        self.assertEqual(result["resolved"]["subject"], "Edited live subject")
+        self.assertIn("Edited live body", result["context"])
+
+    def test_missing_active_context_does_not_inject_stale_global(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => {
+            window.__helperActiveEmailDraft = null;
+            document.getElementById('chat-area').innerHTML = '';
+            return window.getActiveEmailDraftPromptContext('generate an image and attach it to this email widget');
+        }""")
+        self.assertEqual(result, '')
+
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,19 @@ def is_tool_capability_discussion(prompt: str) -> bool:
     return any(term in text for term in meta_terms)
 
 
+def is_compound_email_media_request(prompt: str) -> bool:
+    """Identify image generation requests whose result must update an email draft."""
+    text = re.sub(r"\s+", " ", str(prompt or "")).lower().strip()
+    if not text or is_tool_capability_discussion(text):
+        return False
+    if re.search(r"\b(?:reference|real|actual|existing|stock)\b", text):
+        return False
+    has_generation = bool(re.search(r"\b(?:generate|create|draw|paint|render|make|produce)\b", text))
+    has_visual = bool(re.search(r"\b(?:image|photo|picture|artwork|illustration)\b", text))
+    has_attachment = bool(re.search(r"\b(?:attach|add|include)\b", text))
+    has_email_surface = bool(re.search(r"\b(?:email|mail|draft|widget|template)\b", text))
+    return has_generation and has_visual and has_attachment and has_email_surface
+
 def is_image_generation_request(prompt: str) -> bool:
     """Detect an actionable creative-image request without firing on tool discussion."""
     text = re.sub(r"\s+", " ", str(prompt or "").lower()).strip(" .?!")

@@ -50,6 +50,8 @@ class FrontendChatSyncTests(unittest.TestCase):
         self.assertIn("if (state.activeId) localStorage.setItem('helper_active_chat_v2', state.activeId)", app_js)
         self.assertIn("state.markChatUpdated(chat.id);\n    requestChatPersist();", app_js)
         self.assertIn("const mergedChats = mergeChatsByRecency(localChats, remoteChats);", app_js)
+        self.assertIn("Conversation sync is temporarily unavailable. Your changes are saved locally.", app_js)
+        self.assertIn("persistLocalChatCache();", app_js)
         self.assertIn("function chooseActiveChatId(chats, preferredId)", app_js)
         self.assertEqual(app_js.count("window.__helperActiveEmailDraft = null;"), 2)
         self.assertIn("const activeChatId = chooseActiveChatId(mergedChats, savedActiveChatId);", app_js)

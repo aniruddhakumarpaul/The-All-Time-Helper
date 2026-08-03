@@ -118,6 +118,16 @@
         return compact;
     }
 
+    function isCompoundEmailMediaRequest(text) {
+        const value = String(text || '').replace(/\s+/g, ' ').toLowerCase().trim();
+        if (!value) return false;
+        const hasGeneration = /\b(generate|create|draw|paint|render|make|produce)\b/.test(value);
+        const hasVisual = /\b(image|photo|picture|artwork|illustration)\b/.test(value);
+        const hasAttachment = /\b(attach|add|include)\b/.test(value);
+        const hasEmailSurface = /\b(email|mail|draft|widget|template)\b/.test(value);
+        return hasGeneration && hasVisual && hasAttachment && hasEmailSurface;
+    }
+
     function isEmailDraftWorkflowFollowup(text) {
         const value = String(text || '').toLowerCase();
         const hasAny = words => words.some(word => value.includes(word));
@@ -128,13 +138,39 @@
             && hasAny(['draft', 'email', 'mail', 'subject', 'body', 'recipient', 'tone']);
         const research = hasAny(['current factual', 'latest facts', 'recent facts'])
             && hasAny(['draft', 'email', 'mail', 'add']);
-        return delivery || attachment || update || research;
+        return isCompoundEmailMediaRequest(value) || delivery || attachment || update || research;
     }
 
+    function resolveActiveEmailDraft() {
+        const visibleCards = Array.from(document.querySelectorAll('#chat-area .email-draft-card'))
+            .filter(card => !card.hidden && card.offsetParent !== null);
+        for (const card of visibleCards.reverse()) {
+            const draft = syncDraftFromCard(card);
+            if (draft) return draft;
+        }
+        for (const draft of Array.from(DRAFT_REGISTRY.values()).reverse()) {
+            const normalized = normalizeDraft(draft);
+            if (normalized) return normalized;
+        }
+        const globalDraft = normalizeDraft(window.__helperActiveEmailDraft);
+        if (globalDraft) return globalDraft;
+        const contexts = window.__helperState?.attachedContexts || [];
+        for (const context of contexts.slice().reverse()) {
+            if (context?.kind !== 'email_draft') continue;
+            const draft = context.draft || parseEmailDraftContext(context.text)?.draft;
+            const normalized = normalizeDraft(draft);
+            if (normalized) return normalized;
+        }
+        return null;
+    }
     function getActiveEmailDraftPromptContext(text) {
         if (!isEmailDraftWorkflowFollowup(text)) return '';
-        const compact = compactEmailDraftForPrompt(window.__helperActiveEmailDraft);
-        return compact ? 'EMAIL_DRAFT_CONTEXT:' + JSON.stringify(compact) : '';
+        const compact = compactEmailDraftForPrompt(resolveActiveEmailDraft());
+        if (!compact) {
+            console.debug('[WorkflowContext] injection_failed reason=active_draft_unresolved');
+            return '';
+        }
+        return 'EMAIL_DRAFT_CONTEXT:' + JSON.stringify(compact);
     }
     function nextDraftRef() {
         draftRefCounter += 1;
@@ -295,7 +331,7 @@
         title.textContent = 'Email Draft';
         title.style.cssText = 'font-size:0.95rem;color:var(--text-main);letter-spacing:.02em;';
         const hint = document.createElement('span');
-        hint.textContent = 'Editable • drag or attach to prompt';
+        hint.textContent = 'Editable â€¢ drag or attach to prompt';
         hint.style.cssText = 'font-size:0.72rem;color:var(--text-sub);';
         header.append(title, hint);
 
@@ -513,6 +549,8 @@
     window.showDraftContextPanel = showDraftContextPanel;
     window.compactEmailDraftForPrompt = compactEmailDraftForPrompt;
     window.getActiveEmailDraftPromptContext = getActiveEmailDraftPromptContext;
+    window.resolveActiveEmailDraft = resolveActiveEmailDraft;
+    window.isCompoundEmailMediaRequest = isCompoundEmailMediaRequest;
     window.isEmailDraftWorkflowFollowup = isEmailDraftWorkflowFollowup;
     window.__EMAIL_DRAFT_MIME = DRAFT_MIME;
 })();
