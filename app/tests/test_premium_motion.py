@@ -31,7 +31,7 @@ class PremiumMotionTests(unittest.TestCase):
         self.assertIn("injectScript('motion_enhancements', '3', 'premium-motion')", bootstrap)
         reuse_index = bootstrap.index("injectScript('chat_context_reuse', '1', 'chat-context-reuse')")
         motion_index = bootstrap.index("injectScript('motion_enhancements', '3', 'premium-motion')")
-        tray_index = bootstrap.index("injectScript('composer_context_tray', '8', 'composer-context-tray')")
+        tray_index = bootstrap.index("injectScript('composer_context_tray', '9', 'composer-context-tray')")
         self.assertLess(reuse_index, motion_index)
         self.assertLess(motion_index, tray_index)
 

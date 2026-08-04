@@ -152,3 +152,13 @@ This file records the current high-level architectural decisions.
 - Prompt context transfer is normalized to bounded metadata, uses a stable source-aware fingerprint, and updates an existing email chip when the same live card changes. Duplicate drops pulse the existing chip without duplicating state.
 - The context tray stays in normal composer flow and advertises all valid targets with copy semantics. Escape, dragend, invalid drops, leave depth, blur, and successful drops clear transient target state.
 - Widget presentation is separated into static/css/email_draft.css for responsive, touch-sized, reduced-motion, forced-colors, labelled-field, attachment-chip, and sandbox-preview behavior.
+
+## 2026-08-04 Image, Attachment, And Settings Interaction Decisions
+
+- Native image dragging is handled before the selectable message-text guard. HTTP(S) image sources may carry the internal composer MIME plus `text/uri-list`, `text/plain`, and browser-normalized `DownloadURL`; data, blob, local filesystem, credential, and binary payloads never enter native transfer data.
+- Image click actions use the existing single image viewer. The action rail is pointer- and keyboard-accessible, distinguishes click from movement with a small threshold, and exposes only safe download/copy actions.
+- Attachment chips are semantic controls. Images preview through the shared viewer, documents attach as typed document context, unavailable owner-scoped IDs are visible but disabled, and generated prompt-like filenames are shortened at the display/normalization boundary.
+- The composer normalizer preserves `document` as a first-class context kind. Context cards use trusted inline SVG icons and text status labels rather than single-letter or decorative status dots.
+- The attachment download route resolves metadata under the authenticated owner and returns private no-store media. Frontend attachment actions store IDs and bounded metadata, not file bytes or raw base64.
+- Settings layout is intentionally visible at normal desktop sizes, becomes a bottom-sheet surface on narrow screens, and gains bounded internal scrolling only for short or zoomed viewports. Escape and explicit close remain available independently of outside-click configuration.
+- Browser coverage separates real FastAPI shell geometry from native Playwright drag behavior. The shell test verifies the served route and single viewer/composer surfaces; the interaction test verifies native transfer types and safe URL exclusion.

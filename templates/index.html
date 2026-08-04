@@ -13,11 +13,11 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <link rel="stylesheet" href="/static/css/style_v3.css?v=146">
-    <link rel="stylesheet" href="/static/css/animations.css?v=209">
-    <link rel="stylesheet" href="/static/css/composer_context_tray.css?v=4">
-    <link rel="stylesheet" href="/static/css/email_draft.css?v=1">
+    <link rel="stylesheet" href="/static/css/animations.css?v=210">
+    <link rel="stylesheet" href="/static/css/composer_context_tray.css?v=5">
+    <link rel="stylesheet" href="/static/css/email_draft.css?v=2">
     <meta name="referrer" content="no-referrer">
-    <script src="/static/js/composer_context_tray.js?v=8" defer data-helper-extension="composer-context-tray"></script>
+    <script src="/static/js/composer_context_tray.js?v=9" defer data-helper-extension="composer-context-tray"></script>
     <script src="/static/js/bootstrap.js?v=214"></script>
 </head>
 
@@ -114,8 +114,8 @@
             <div class="set-row">
                 <span class="setting-copy"><strong>Interface theme</strong><small>Match the workspace to your environment.</small></span>
                 <div class="theme-dropdown-wrapper">
-                    <button type="button" class="tool-btn" id="theme-btn-settings" aria-haspopup="menu" aria-controls="theme-menu-settings" aria-expanded="false" style="background:rgba(255,255,255,.05);padding:5px 15px;border-radius:10px;border:1px solid var(--glass-border);color:var(--text-main);"><span id="current-theme-icon-settings">System</span></button>
-                    <div id="theme-menu-settings" class="dropdown-menu" role="menu" style="right:auto;left:-25px;top:40px;display:none;flex-direction:column-reverse;">
+                    <button type="button" class="tool-btn settings-theme-trigger" id="theme-btn-settings" aria-haspopup="menu" aria-controls="theme-menu-settings" aria-expanded="false"><span id="current-theme-icon-settings">System</span></button>
+                    <div id="theme-menu-settings" class="dropdown-menu settings-theme-menu" role="menu">
                         <button type="button" class="menu-item" role="menuitemradio" aria-checked="false" data-theme-choice="light">&#9728; Light</button>
                         <button type="button" class="menu-item" role="menuitemradio" aria-checked="false" data-theme-choice="dark">&#9790; Dark</button>
                         <button type="button" class="menu-item active" role="menuitemradio" aria-checked="true" data-theme-choice="system">&#9681; System</button>
@@ -183,20 +183,30 @@
             </div>
         </div>
     </div>
-    <div id="image-modal" class="image-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" aria-hidden="true" data-helper-dialog style="display:none;">
-        <button type="button" class="lightbox-close" aria-label="Close image preview">&times;</button>
-        <img id="modal-img" src="" alt="Full view">
-    </div>
-    <div id="app-toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
+    <div id="image-modal" class="image-lightbox" role="dialog" aria-modal="true" aria-labelledby="image-modal-title" aria-describedby="image-modal-meta" aria-hidden="true" data-helper-dialog style="display:none;">
+        <button type="button" class="lightbox-close" id="image-modal-close" aria-label="Close image preview">&times;</button>
+        <div class="image-modal-panel">
+            <div class="image-modal-heading">
+                <strong id="image-modal-title">Image preview</strong>
+                <span id="image-modal-meta"></span>
+            </div>
+            <img id="modal-img" src="" alt="Full view">
+            <div class="image-modal-actions" aria-label="Image preview actions">
+                <button type="button" id="image-modal-use" hidden>Use in prompt</button>
+                <button type="button" id="image-modal-download" hidden>Download</button>
+                <button type="button" id="image-modal-copy" hidden>Copy image link</button>
+            </div>
+        </div>
+    </div>    <div id="app-toast-region" role="status" aria-live="polite" aria-atomic="true"></div>
 
     <meta name="helper-outside-click-dismiss" content="{{ 'true' if outside_click_dismiss else 'false' }}">
     <script src="/static/js/runtime_config.js?v=1"></script>
     <script src="/static/js/particles.js?v=146"></script>
     <script src="/static/js/palette.js?v=212"></script>
-    <script src="/static/js/utils.js?v=210"></script>
-    <script src="/static/js/email_draft_contract.js?v=1" data-helper-extension="email-draft-contract"></script>
-    <script src="/static/js/email_draft.js?v=5" data-helper-extension="email-draft-core"></script>
-    <script type="module" src="/static/js/app.js?v=222"></script>
+    <script src="/static/js/utils.js?v=212"></script>
+    <script src="/static/js/email_draft_contract.js?v=2" data-helper-extension="email-draft-contract"></script>
+    <script src="/static/js/email_draft.js?v=6" data-helper-extension="email-draft-core"></script>
+    <script type="module" src="/static/js/app.js?v=223"></script>
 </body>
 
 </html>

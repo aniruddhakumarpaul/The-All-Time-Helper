@@ -17,6 +17,7 @@
     let renderingTray = false;
     let clearAfterSendQueued = false;
     let pendingSentContexts = [];
+    let contextTrayExpanded = true;
 
     function state() {
         return window.__helperState || null;
@@ -108,7 +109,7 @@
 
     function normalizeContext(item) {
         if (!item || !item.text) return null;
-        const kind = ['text', 'image', 'email', 'widget'].includes(item.kind) ? item.kind : 'text';
+        const kind = ['text', 'image', 'document', 'email', 'widget'].includes(item.kind) ? item.kind : 'text';
         const text = clip(item.text, MAX_ITEM_CHARS);
         if (!text) return null;
         return {
@@ -119,7 +120,7 @@
             preview: typeof item.preview === 'string' && !item.preview.startsWith('data:') ? item.preview : '',
             sourceId: clip(item.sourceId || '', 120),
             fingerprint: clip(item.fingerprint || fingerprintFor({ kind, text, sourceId: item.sourceId }), 120),
-            status: item.status || 'ready',
+            status: ['ready', 'attaching', 'sending', 'rendering'].includes(item.status) ? item.status : 'ready',
         };
     }
 
@@ -143,6 +144,7 @@
 
     function labelForKind(kind) {
         if (kind === 'image') return 'Image Target';
+        if (kind === 'document') return 'Document Target';
         if (kind === 'email') return 'Email Widget';
         if (kind === 'widget') return 'Widget Target';
         return 'Text Target';
@@ -150,39 +152,42 @@
 
     function sourceLabelForKind(kind) {
         if (kind === 'image') return 'Image';
+        if (kind === 'document') return 'Document';
         if (kind === 'email') return 'Email draft';
         if (kind === 'widget') return 'Widget';
         return 'Chat text';
     }
 
-    function iconForKind(kind) {
-        if (kind === 'image') return 'IMG';
-        if (kind === 'email') return '@';
-        if (kind === 'widget') return 'W';
-        return 'T';
+    function iconSvgForKind(kind) {
+        const paths = {
+            image: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m5 17 4.5-4 3 3 2-2 4.5 4"></path></svg>',
+            document: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v5h5M8 16h8M8 12h5"></path></svg>',
+            email: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"></rect><path d="m4 7 8 6 8-6"></path></svg>',
+            widget: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4"></rect><path d="M8 9h8M8 13h5M8 17h8"></path></svg>',
+            text: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8"></path></svg>'
+        };
+        return paths[kind] || paths.text;
     }
 
+    function contextStatusLabel(status) {
+        if (status === 'attaching') return 'Adding';
+        if (status === 'sending') return 'Sending';
+        if (status === 'rendering') return 'Rendering';
+        return 'Ready';
+    }
     function contextCardHtml(item, mode = 'composer') {
         const kind = item.kind || 'text';
         const title = item.title || labelForKind(kind);
         const subtitle = item.subtitle || compactText(item.text, mode === 'chat' ? 140 : 90);
         const source = sourceLabelForKind(kind);
         const thumb = kind === 'image' && item.preview
-            ? `<img class="composer-context-thumb" src="${escapeHtml(item.preview)}" alt="">`
-            : `<span class="composer-context-icon">${escapeHtml(iconForKind(kind))}</span>`;
-        return `
-            <div class="composer-context-media">
-                ${thumb}
-                <span class="composer-context-dot" aria-hidden="true"></span>
-            </div>
-            <div class="composer-context-meta">
-                <em>${escapeHtml(source)}</em>
-                <strong>${escapeHtml(title)}</strong>
-                <span>${escapeHtml(subtitle)}</span>
-            </div>
-        `;
+            ? '<img class="composer-context-thumb" src="' + escapeHtml(item.preview) + '" alt="">'
+            : '<span class="composer-context-icon">' + iconSvgForKind(kind) + '</span>';
+        return '<div class="composer-context-media">' + thumb
+            + '<span class="composer-context-state">' + escapeHtml(contextStatusLabel(item.status || 'ready')) + '</span></div>'
+            + '<div class="composer-context-meta"><em>' + escapeHtml(source) + '</em><strong>'
+            + escapeHtml(title) + '</strong><span>' + escapeHtml(subtitle) + '</span></div>';
     }
-
     function ensureTray() {
         const container = document.querySelector('.pill-bar-container');
         if (!container) return null;
@@ -191,6 +196,7 @@
         tray = document.createElement('div');
         tray.id = 'composer-context-tray';
         tray.setAttribute('aria-label', 'Targeted prompt context');
+        tray.setAttribute('role', 'list');
         container.insertBefore(tray, container.firstChild);
         return tray;
     }
@@ -225,7 +231,33 @@
         try {
             tray.textContent = '';
             tray.classList.toggle('has-context', items.length > 0);
+            tray.classList.toggle('is-collapsed', items.length > 2 && !contextTrayExpanded);
             if (!items.length) return;
+
+            const header = document.createElement('div');
+            header.className = 'composer-context-header';
+            const title = document.createElement('span');
+            title.className = 'composer-context-summary';
+            title.setAttribute('aria-live', 'polite');
+            title.textContent = items.length + (items.length === 1 ? ' item attached' : ' items attached');
+            header.appendChild(title);
+            if (items.length > 2) {
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'composer-context-expand';
+                toggle.setAttribute('aria-expanded', String(contextTrayExpanded));
+                toggle.textContent = contextTrayExpanded ? 'Collapse' : 'View';
+                toggle.addEventListener('click', () => {
+                    contextTrayExpanded = !contextTrayExpanded;
+                    scheduleRender();
+                });
+                header.appendChild(toggle);
+            }
+            tray.appendChild(header);
+
+            const list = document.createElement('div');
+            list.className = 'composer-context-items';
+            list.setAttribute('role', 'list');
             for (const [index, item] of items.entries()) {
                 const kind = item.kind || 'text';
                 const status = item.status || 'ready';
@@ -234,19 +266,19 @@
                 chip.dataset.index = String(index);
                 chip.dataset.fingerprint = item.fingerprint || fingerprintFor(item);
                 chip.setAttribute('role', 'listitem');
-                chip.innerHTML = contextCardHtml(item) + '<button type="button" class="composer-context-remove" aria-label="Remove ' + escapeHtml(item.title || 'context') + '">×</button><span class="composer-context-progress" aria-hidden="true"></span>';
+                chip.innerHTML = contextCardHtml(item) + '<button type="button" class="composer-context-remove" aria-label="Remove ' + escapeHtml(item.title || 'context') + '"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"></path></svg></button><span class="composer-context-progress" aria-hidden="true"></span>';
                 chip.querySelector('.composer-context-remove')?.addEventListener('click', () => {
                     const st = state();
                     st?.set('attachedContexts', contextItems().filter((_, itemIndex) => itemIndex !== index));
                     scheduleRender();
                 });
-                tray.appendChild(chip);
+                list.appendChild(chip);
             }
+            tray.appendChild(list);
         } finally {
             renderingTray = false;
         }
     }
-
     function scheduleRender() {
         if (renderQueued) return;
         renderQueued = true;
@@ -389,19 +421,25 @@
             kind: 'email',
             sourceId: String(card.dataset.emailDraftRef || ''),
             title: 'Email Draft',
-            subtitle: attachment ? subject + ' • ' + attachment : subject,
+            subtitle: attachment ? subject + ' / ' + attachment : subject,
             text: emailContextTextFromDraft(compactDraft),
         };
     }
 
     function imageContextFromElement(img) {
         if (!img) return null;
-        const src = img.currentSrc || img.src || img.getAttribute('src') || '';
-        if (!src) return null;
+        const rawSource = img.dataset?.modalUrl || img.currentSrc || img.src || img.getAttribute('src') || '';
+        if (!rawSource) return null;
         const alt = img.getAttribute('alt') || img.closest('.msg')?.querySelector('[id^="msg-text-"]')?.innerText || 'chat image';
-        const safeSource = src.startsWith('data:') ? '' : src.slice(0, 2000);
+        let safeSource = '';
+        try {
+            const parsed = new URL(rawSource, window.location.href);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') safeSource = parsed.href.slice(0, 2000);
+        } catch (_) {}
+        const sourceId = String(img.dataset?.imageContextId || safeSource || img.id || '').slice(0, 120);
         return {
             kind: 'image',
+            sourceId,
             title: 'Image Target',
             subtitle: compactText(alt, 96),
             preview: safeSource,
@@ -449,27 +487,46 @@
         return Boolean(target?.closest?.('.email-draft-card button, .email-draft-card input, .email-draft-card textarea, .email-draft-card select, .email-draft-card option, .email-draft-card label, .email-draft-card a, .email-draft-card [contenteditable="true"]'));
     }
 
-    function contextFromDragTarget(target) {
+    const IMAGE_SELECTOR = [
+        'img.chat-rendered-img',
+        'img.chat-img-preview',
+        '.chat-img-preview-container img',
+        '.upscale-container img',
+        '[data-image-result] img',
+        '.generated-image-result img',
+        '.image-search-result img'
+    ].join(', ');
+
+    function classifyDragSource(target) {
         const explicitHandle = target?.closest?.('[data-context-drag-handle]');
         if (explicitHandle) {
             const emailCard = explicitHandle.closest('.email-draft-card');
-            if (emailCard) return emailDraftContextFromCard(emailCard);
-            const textBubble = explicitHandle.closest('.msg .txt');
-            if (textBubble) return textContextFromElement(textBubble);
+            if (emailCard) return { type: 'email-handle', element: explicitHandle, context: emailDraftContextFromCard(emailCard) };
             const reusable = explicitHandle.closest('.chat-context-reusable[data-context-json]');
             if (reusable) {
-                try { return normalizeContext(JSON.parse(reusable.dataset.contextJson)); } catch (_) { return null; }
+                try { return { type: 'reusable-context', element: explicitHandle, context: normalizeContext(JSON.parse(reusable.dataset.contextJson)) }; } catch (_) { return { type: 'reject', element: explicitHandle, context: null }; }
             }
+            const textBubble = explicitHandle.closest('.msg .txt');
+            if (textBubble) return { type: 'text-handle', element: explicitHandle, context: textContextFromElement(textBubble) };
         }
-        if (target?.closest?.('.email-draft-card')) return null;
-        if (isInteractiveDraftControl(target)) return null;
+        const image = target?.closest?.(IMAGE_SELECTOR);
+        if (image) return { type: 'image', element: image, context: imageContextFromElement(image) };
+        const reusable = target?.closest?.('.chat-context-reusable[data-context-json]');
+        if (reusable) {
+            try { return { type: 'reusable-context', element: reusable, context: normalizeContext(JSON.parse(reusable.dataset.contextJson)) }; } catch (_) { return { type: 'reject', element: reusable, context: null }; }
+        }
+        if (target?.closest?.('.email-draft-card') || isInteractiveDraftControl(target)) {
+            return { type: 'reject', element: target, context: null };
+        }
         const widget = widgetContextFromElement(target);
-        if (widget) return widget;
-        const img = target?.closest?.('img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img');
-        if (img) return imageContextFromElement(img);
+        if (widget) return { type: 'widget', element: target, context: widget };
         const textBubble = target?.closest?.('.msg .txt');
-        if (textBubble) return textContextFromElement(textBubble);
-        return null;
+        if (textBubble && window.isGDown) return { type: 'text-bubble', element: textBubble, context: textContextFromElement(textBubble) };
+        return { type: 'reject', element: target, context: null };
+    }
+
+    function contextFromDragTarget(target) {
+        return classifyDragSource(target).context;
     }
 
     function markDraggable(root = document) {
@@ -482,7 +539,7 @@
             card.setAttribute('draggable', 'false');
             card.classList.remove('composer-draggable-context');
         });
-        root.querySelectorAll?.('[data-context-drag-handle], img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img, .chat-context-reusable').forEach(el => {
+        root.querySelectorAll?.('[data-context-drag-handle], ' + IMAGE_SELECTOR + ', .chat-context-reusable').forEach(el => {
             el.setAttribute('draggable', 'true');
             el.classList.add('composer-draggable-context');
         });
@@ -496,25 +553,68 @@
         ensureTray()?.classList.remove('composer-drop-active', 'is-loading');
     }
 
+    function safeImageTransferUrl(img) {
+        const candidates = [
+            img?.dataset?.modalUrl,
+            img?.dataset?.originalUrl,
+            img?.currentSrc,
+            img?.getAttribute?.('src')
+        ];
+        for (const candidate of candidates) {
+            try {
+                const url = new URL(String(candidate || ''), window.location.href);
+                if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.href.startsWith('data:') && !url.href.startsWith('blob:')) {
+                    return url.href;
+                }
+            } catch (_) {}
+        }
+        return '';
+    }
+
+    function safeImageMimeType(img, url) {
+        const explicit = String(img?.dataset?.mimeType || img?.getAttribute?.('type') || '').toLowerCase().trim();
+        if (/^image\/(?:png|jpe?g|webp|gif|bmp|svg\+xml)$/.test(explicit)) return explicit;
+        const extension = String(url || '').split(/[?#]/, 1)[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+        return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[extension] || '';
+    }
+
+    function safeImageFilename(img, url, mimeType) {
+        const raw = String(img?.getAttribute?.('alt') || '').trim()
+            || String(url || '').split(/[?#]/, 1)[0].split('/').pop()
+            || 'helper-image';
+        const base = raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'helper-image';
+        if (/\.[A-Za-z0-9]{2,5}$/.test(base)) return base;
+        const extension = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' })[mimeType] || 'png';
+        return base + '.' + extension;
+    }
+
+    function augmentNativeImageTransfer(event, img) {
+        const url = safeImageTransferUrl(img);
+        const mimeType = safeImageMimeType(img, url);
+        if (!url || !mimeType || !event.dataTransfer) return false;
+        const filename = safeImageFilename(img, url, mimeType);
+        event.dataTransfer.setData('text/uri-list', url + '\r\n');
+        event.dataTransfer.setData('DownloadURL', mimeType + ':' + filename + ':' + url);
+        event.dataTransfer.setData('text/plain', url);
+        return true;
+    }
+
     function installDragSource() {
         document.addEventListener('dragstart', event => {
-            const explicitHandle = event.target?.closest?.('[data-context-drag-handle]');
-            const emailCard = event.target?.closest?.('.email-draft-card');
-            const textBubble = event.target?.closest?.('.msg .txt');
-            if (emailCard && !explicitHandle) {
-                event.preventDefault();
+            const source = classifyDragSource(event.target);
+            const context = source.context;
+            if (!context || !event.dataTransfer) {
+                if (source.type === 'text-bubble' || source.type === 'reject') event.preventDefault();
                 return;
             }
-            if (textBubble && !explicitHandle && !window.isGDown && !event.target?.closest?.('.chat-context-reusable')) {
-                event.preventDefault();
-                return;
-            }
-            const context = contextFromDragTarget(event.target);
-            if (!context || !event.dataTransfer) return;
-            event.stopImmediatePropagation();
             event.dataTransfer.setData(CONTEXT_MIME, JSON.stringify(context));
-            event.dataTransfer.setData('text/plain', context.text);
+            if (source.type === 'image') {
+                augmentNativeImageTransfer(event, source.element);
+            } else {
+                event.dataTransfer.setData('text/plain', context.text);
+            }
             event.dataTransfer.effectAllowed = 'copy';
+            event.stopPropagation();
             document.body.classList.add('composer-context-dragging');
         }, true);
         document.addEventListener('dragend', clearDragState, true);
@@ -539,7 +639,7 @@
                 return {
                     kind: 'email',
                     title: 'Email Draft',
-                    subtitle: attachment ? subject + ' • ' + attachment : subject,
+                    subtitle: attachment ? subject + ' / ' + attachment : subject,
                     text: emailContextTextFromDraft(compactDraft),
                 };
             } catch (_) { return null; }
@@ -560,7 +660,10 @@
 
         function supported(event) {
             const types = Array.from(event.dataTransfer?.types || []);
-            return types.includes(CONTEXT_MIME) || types.includes(EMAIL_DRAFT_MIME) || types.includes('text/plain');
+            return Boolean(event.dataTransfer?.files?.length)
+                || types.includes(CONTEXT_MIME)
+                || types.includes(EMAIL_DRAFT_MIME)
+                || types.includes('text/plain');
         }
 
         function activate(target) {
@@ -599,13 +702,28 @@
         document.addEventListener('drop', event => {
             const target = targetFromEvent(event);
             if (!target) return;
+            const files = Array.from(event.dataTransfer?.files || []).slice(0, 6);
+            if (files.length) {
+                event.preventDefault();
+                event.stopPropagation();
+                clearTarget();
+                if (typeof window.handleComposerFileDrop === 'function') {
+                    window.handleComposerFileDrop(files);
+                } else {
+                    window.notify?.('File upload is not ready. Please use the attachment button.', 'error');
+                }
+                return;
+            }
             const context = parseDrop(event);
             if (!context) {
+                event.preventDefault();
+                event.stopPropagation();
                 clearTarget();
+                window.notify?.('Unsupported drop. Use an image, document, text, or context handle.', 'error');
                 return;
             }
             event.preventDefault();
-            event.stopImmediatePropagation();
+            event.stopPropagation();
             clearTarget();
             addContext(context);
             document.getElementById('prompt')?.focus({ preventScroll: true });

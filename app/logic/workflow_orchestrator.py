@@ -743,7 +743,10 @@ def normalize_image_tool_result(raw: Any, *, source: str, query: str = "") -> Im
         guessed_name = os.path.basename(parsed.path) or (
             _generated_filename(query) if source == "generated" else "reference-image.jpg"
         )
-        if source == "generated" and not filename:
+        decoded_filename = unquote(filename or "")
+        prompt_like = len(decoded_filename) > 64 or len(re.findall(r"[A-Za-z0-9]+", decoded_filename)) > 7 or bool(re.match(r"(?i)^(edit|change|update|add|include|make|create|draft)\b", decoded_filename.strip()))
+        if source == "generated" and (not filename or prompt_like):
+            filename = ""
             guessed_name = _generated_filename(query)
         filename = _safe_filename(filename or guessed_name, "image.png")
         guessed_mime = {

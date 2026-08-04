@@ -111,7 +111,7 @@ class EmailAttachment(BaseModel):
     size: int | None = Field(default=None, ge=0)
     sha256: str | None = None
     available: bool | None = None
-    source: Literal["upload", "generated", "legacy", "remote", "unknown"] = "unknown"
+    source: Literal["upload", "generated", "legacy", "remote", "reference", "unknown"] = "unknown"
     content: str | None = None
 
 
@@ -130,7 +130,7 @@ def _canonical_attachment(raw: Any, index: int = 0, legacy_content: Any = None) 
         "application/octet-stream",
     )
     source = _text(item.get("source"), "generated" if content and not attachment_id else "upload" if attachment_id else "unknown")
-    if source not in {"upload", "generated", "legacy", "remote", "unknown"}:
+    if source not in {"upload", "generated", "legacy", "remote", "reference", "unknown"}:
         source = "unknown"
     available = item.get("available")
     if available is None and (attachment_id or content):

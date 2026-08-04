@@ -8,7 +8,7 @@ import uuid
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import classify_sqlite_error, get_db, is_transient_sqlite_error
@@ -19,6 +19,7 @@ from app.logic.attachment_store import (
     AttachmentStoreError,
     MAX_ATTACHMENT_BYTES,
     extract_attachment_text,
+    resolve_attachment_metadata,
     resolve_attachment_reference,
     save_attachment_bytes,
 )
@@ -156,6 +157,18 @@ async def upload_attachments(
     except AttachmentStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+@router.get("/attachments/{attachment_id}")
+def get_attachment(attachment_id: str, current_user: str = Depends(get_current_user)):
+    try:
+        metadata = resolve_attachment_metadata(attachment_id, current_user)
+    except AttachmentStoreError as exc:
+        raise HTTPException(status_code=404, detail="Attachment unavailable.") from exc
+    return FileResponse(
+        metadata["path"],
+        media_type=metadata.get("content_type") or "application/octet-stream",
+        filename=metadata.get("filename") or metadata.get("name") or "attachment",
+        headers={"Cache-Control": "private, no-store"},
+    )
 @router.post("/sync_chats")
 def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
     for attempt in range(2):

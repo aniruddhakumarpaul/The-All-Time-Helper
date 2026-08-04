@@ -6,15 +6,15 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=8", template)
+        self.assertIn("composer_context_tray.js?v=9", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 
     def test_composer_context_stylesheet_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.css?v=4", template)
-        self.assertIn("email_draft.css?v=1", template)
+        self.assertIn("composer_context_tray.css?v=5", template)
+        self.assertIn("email_draft.css?v=2", template)
 
     def test_drag_sources_include_handles_images_and_widgets(self):
         root = Path(__file__).resolve().parents[2]
@@ -83,7 +83,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         script = (root / "static" / "js" / "composer_context_tray.js").read_text(encoding="utf-8")
         css = (root / "static" / "css" / "composer_context_tray.css").read_text(encoding="utf-8")
         self.assertIn("composer-context-media", script)
-        self.assertIn("composer-context-dot", script)
+        self.assertIn("composer-context-state", script)
         self.assertIn("composer-context-progress", script)
         self.assertIn("sourceLabelForKind", script)
         self.assertIn("is-attaching", script)
@@ -110,7 +110,7 @@ class ComposerContextTrayTests(unittest.TestCase):
         self.assertIn("function isInteractiveDraftControl(target)", tray)
         self.assertIn("setAttribute('draggable', 'false')", draft)
         self.assertIn("data-context-drag-handle", draft)
-        self.assertIn("if (target?.closest?.('.email-draft-card')) return null;", tray)
+        self.assertIn("function classifyDragSource(target)", tray)
         self.assertIn("if (emailCard) return emailDraftContextFromCard(emailCard);", tray)
         self.assertNotIn("card.addEventListener('dragstart'", draft)
 

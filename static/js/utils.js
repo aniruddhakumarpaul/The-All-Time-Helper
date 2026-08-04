@@ -558,6 +558,7 @@
             rootEl.querySelectorAll('.chat-rendered-img').forEach(img => {
                 if (img.dataset.hydrated === 'true') return;
                 img.dataset.hydrated = 'true';
+                window.installChatImageActions?.(img);
                 img.addEventListener('click', () => {
                     const modalUrl = img.dataset.modalUrl || img.src;
                     if (modalUrl && typeof window.openImageModal === 'function') {

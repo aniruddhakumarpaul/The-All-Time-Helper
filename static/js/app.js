@@ -104,6 +104,32 @@ function clearPendingComposerDrafts() {
     state.setPendingImageUploads(null);
 }
 
+function handleComposerFileDrop(files) {
+    const input = document.getElementById('img-in');
+    if (!input || !files?.length) return false;
+    if (typeof DataTransfer !== 'function') {
+        ui.notify('File drop is unavailable in this browser. Use the attachment button.', 'error');
+        return false;
+    }
+    const transfer = new DataTransfer();
+    Array.from(files).slice(0, 6).forEach(file => transfer.items.add(file));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
+function handleComposerFileDrop(files) {
+    const input = document.getElementById('img-in');
+    if (!input || !files?.length) return false;
+    if (typeof DataTransfer !== 'function') {
+        ui.notify('File drop is unavailable in this browser. Use the attachment button.', 'error');
+        return false;
+    }
+    const transfer = new DataTransfer();
+    Array.from(files).slice(0, 6).forEach(file => transfer.items.add(file));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
 async function waitForPendingImageUploads() {
     if (!state.pendingImageUploads) return state.currentImages;
     await state.pendingImageUploads;
@@ -1029,16 +1055,47 @@ function initImageModal() {
     const container = document.getElementById('image-modal');
     if (!image || !container) return;
     image.onclick = event => { event.stopPropagation(); image.classList.toggle('is-zoomed'); };
+    document.getElementById('image-modal-close')?.addEventListener('click', () => ui.closeImageModal());
+    document.getElementById('image-modal-download')?.addEventListener('click', () => {
+        const meta = container.__imageMeta || {};
+        const candidateUrl = meta.downloadUrl || meta.sourceUrl || meta.src;
+        const url = window.__helperSafeImageUrl?.(candidateUrl) || (meta.downloadable && /^blob:/i.test(String(candidateUrl || '')) ? String(candidateUrl) : '');
+        if (!url) return ui.notify('Download is unavailable for this image.', 'error');
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = String(meta.filename || 'helper-image');
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.click();
+    });
+    document.getElementById('image-modal-copy')?.addEventListener('click', async () => {
+        const meta = container.__imageMeta || {};
+        const candidateUrl = meta.downloadUrl || meta.sourceUrl || meta.src;
+        const url = window.__helperSafeImageUrl?.(candidateUrl) || (meta.downloadable && /^blob:/i.test(String(candidateUrl || '')) ? String(candidateUrl) : '');
+        if (!url || !navigator.clipboard?.writeText) return ui.notify('Copy link is unavailable for this image.', 'error');
+        try {
+            await navigator.clipboard.writeText(url);
+            ui.notify('Image link copied.', 'success', 1600);
+        } catch (_) {
+            ui.notify('Copy link is unavailable in this browser.', 'error');
+        }
+    });
+    document.getElementById('image-modal-use')?.addEventListener('click', event => {
+        const context = container.__imageMeta?.context;
+        if (!context || typeof window.addComposerContext !== 'function') return;
+        if (window.addComposerContext(context)) ui.notify('Image added to the next prompt.', 'success', 1600);
+        event.currentTarget.blur();
+    });
     container.onclick = event => {
         const backdropClick = event.target === container && window.helperOutsideClickDismissEnabled?.() !== false;
-        if (backdropClick || event.target.classList.contains('lightbox-close')) {
+        if (backdropClick) {
             image.classList.remove('is-zoomed');
             ui.closeImageModal();
         }
     };
 }
-
 function installWindowBridge() {
+    window.handleComposerFileDrop = handleComposerFileDrop;
     window.handleAuth = handleAuth;
     window.switchAuth = ui.switchAuth;
     window.signOut = ui.signOut;

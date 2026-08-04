@@ -51,18 +51,18 @@ class EmailDraftFrontendTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         helper_js = (root / "static" / "js" / "email_draft.js").read_text(encoding="utf-8")
-        self.assertIn('/static/js/email_draft.js?v=5', template)
+        self.assertIn('/static/js/email_draft.js?v=6', template)
         self.assertIn('data-helper-extension="email-draft-core"', template)
         self.assertNotIn('/static/js/email_draft.js?v=1', template)
         self.assertNotIn('/static/js/email_draft.js?v=1', bootstrap)
-        self.assertIn("injectScript('email_draft', '5', 'email-draft-core')", bootstrap)
+        self.assertIn("injectScript('email_draft', '6', 'email-draft-core')", bootstrap)
         self.assertIn("injectScript('email_approval', '4', 'draft-send')", bootstrap)
         self.assertIn('document.querySelector(`script[data-helper-extension="${marker}"]`)', bootstrap)
         self.assertIn("function isInteractiveDraftControl(target)", helper_js)
         self.assertIn("setAttribute('draggable', 'false')", helper_js)
         self.assertIn("data-context-drag-handle", helper_js)
         self.assertLess(
-            bootstrap.index("injectScript('email_draft', '5', 'email-draft-core')"),
+            bootstrap.index("injectScript('email_draft', '6', 'email-draft-core')"),
             bootstrap.index("injectScript('email_approval', '4', 'draft-send')"),
         )
 

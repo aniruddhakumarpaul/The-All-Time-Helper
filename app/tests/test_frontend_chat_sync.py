@@ -74,7 +74,7 @@ class FrontendChatSyncTests(unittest.TestCase):
         self.assertIn("requestAnimationFrame", particles_js)
         self.assertIn("getElementById('particle-canvas')", particles_js)
         self.assertIn("ui_restore.js?v=3", particles_js)
-        self.assertIn('/static/js/app.js?v=222', template)
+        self.assertIn('/static/js/app.js?v=223', template)
         self.assertIn('placeholder="Ask me anything..."', template)
 
 

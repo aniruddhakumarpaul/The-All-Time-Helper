@@ -172,17 +172,6 @@
     object-fit: cover;
 }
 
-.composer-context-dot {
-    position: absolute;
-    right: -2px;
-    bottom: -2px;
-    width: 12px;
-    height: 12px;
-    border-radius: 999px;
-    background: rgb(61, 220, 151);
-    border: 2px solid rgba(15, 18, 25, 0.96);
-    box-shadow: 0 0 10px rgba(61, 220, 151, 0.6);
-}
 
 .composer-context-meta {
     min-width: 0;
@@ -383,4 +372,27 @@ body.composer-context-dragging #composer-context-tray,
     #composer-context-tray.is-loading::after,
     #composer-context-tray.is-attaching::after,
     #composer-context-tray.is-sending::after { animation: none; }
+}
+#composer-context-tray::before { content: none !important; }
+#composer-context-tray { display: none; flex-direction: column; align-items: stretch; }
+#composer-context-tray.has-context, #composer-context-tray.composer-drop-active { display: flex; }
+.composer-context-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 28px; }
+.composer-context-summary { color: var(--text-sub); font-size: .66rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.composer-context-expand { min-height: 32px; padding: 5px 10px; border: 1px solid var(--glass-border); border-radius: 999px; color: var(--text-main); background: rgba(255,255,255,.06); font: inherit; font-size: .68rem; font-weight: 800; cursor: pointer; }
+.composer-context-items { display: flex; flex-wrap: wrap; gap: 8px; }
+#composer-context-tray.is-collapsed .composer-context-items { display: none; }
+.composer-context-icon { display: inline-flex; align-items: center; justify-content: center; }
+.composer-context-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.composer-context-state { position: absolute; right: -5px; bottom: -5px; min-width: 28px; padding: 2px 4px; border: 2px solid rgba(15,18,25,.96); border-radius: 999px; color: #bdf8da; background: rgba(20,105,73,.95); font-size: .47rem; font-weight: 900; line-height: 1.1; text-align: center; }
+.composer-context-remove svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.composer-context-chip { max-width: min(388px, 100%); }
+@media (max-width: 850px) {
+    #composer-context-tray { padding: 8px; }
+    .composer-context-items { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; }
+    .composer-context-chip { width: 100%; max-width: none; min-height: 56px; }
+    .composer-context-chip .composer-context-meta > span { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .composer-context-remove { min-width: 42px; min-height: 42px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .composer-context-state { transition: none; }
 }

@@ -279,28 +279,125 @@
         return names.join(', ');
     }
 
+    function attachmentImageType(item) {
+        return /^image\/(?:jpeg|png|webp|gif)$/i.test(String(item?.mime_type || item?.content_type || item?.type || ''));
+    }
+
+    function safeAttachmentUrl(item) {
+        const candidate = item?.url || (typeof item?.content === 'string' && /^https?:\/\//i.test(item.content) ? item.content : '');
+        try {
+            const url = new URL(String(candidate || ''), window.location.origin);
+            return url.protocol === 'http:' || url.protocol === 'https:' ? url.href.slice(0, 2000) : '';
+        } catch (_) {
+            return '';
+        }
+    }
+
+    function attachmentSourceLabel(item) {
+        const source = String(item?.source || '').toLowerCase();
+        if (source === 'generated') return 'Generated';
+        if (source === 'reference' || source === 'remote') return 'Reference';
+        if (source === 'upload') return 'Uploaded';
+        return 'Attachment';
+    }
+
+    function attachmentCategory(item) {
+        const mime = String(item?.mime_type || item?.content_type || item?.type || 'file').toLowerCase();
+        if (mime === 'application/pdf') return 'PDF document';
+        if (mime === 'text/plain' || mime === 'text/markdown') return 'Text document';
+        if (mime.startsWith('image/')) return mime.split('/')[1].toUpperCase() + ' image';
+        return mime.split('/').pop().replace(/[-_]+/g, ' ') || 'File';
+    }
+
+    function attachmentIdentity(item, index) {
+        return String(item?.id || safeAttachmentUrl(item) || item?.sha256 || item?.filename || 'attachment-' + index).slice(0, 160);
+    }
+
+    function attachmentIcon(item) {
+        const mime = String(item?.mime_type || '').toLowerCase();
+        if (mime.startsWith('image/')) return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"></rect><circle cx="8.5" cy="9" r="1.5"></circle><path d="m5 17 4.5-4 3 3 2-2 4.5 4"></path></svg>';
+        if (mime === 'application/pdf') return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v5h5M8 16h8M8 12h5"></path></svg>';
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"></path><path d="M14 3v5h5"></path></svg>';
+    }
+
+    async function resolveOwnerAttachmentUrl(item) {
+        if (!item?.id || typeof window.helperApiUrl !== 'function') return null;
+        try {
+            const response = await fetch(window.helperApiUrl('/attachments/' + encodeURIComponent(item.id)), {
+                headers: { Authorization: 'Bearer ' + (localStorage.getItem('helper_token_v2') || '') }
+            });
+            if (!response.ok) return null;
+            const blob = await response.blob();
+            if (!/^image\//i.test(blob.type)) return null;
+            return { url: URL.createObjectURL(blob), revoke: true };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function attachmentPromptContext(item, index) {
+        const url = safeAttachmentUrl(item);
+        const name = String(item?.filename || item?.name || 'Attached file').slice(0, 160);
+        const description = String(item?.description || '').slice(0, 320);
+        const mime = String(item?.mime_type || item?.content_type || item?.type || '').slice(0, 100);
+        const sourceRef = item?.id ? 'Owner attachment reference: ' + String(item.id).slice(0, 120) : '';
+        const sourceUrl = url ? (attachmentImageType(item) ? 'Image source: ' : 'Attachment source: ') + url : '';
+        return {
+            kind: attachmentImageType(item) ? 'image' : 'document',
+            sourceId: 'attachment:' + attachmentIdentity(item, index),
+            title: name,
+            subtitle: [attachmentCategory(item), attachmentSourceLabel(item)].join(' / '),
+            preview: url,
+            text: '[Attached File]\nFilename: ' + name + '\nMIME type: ' + mime + '\n' + [sourceRef, sourceUrl, description].filter(Boolean).join('\n')
+        };
+    }
+
+    function attachAttachmentToPrompt(card, index) {
+        const draft = syncDraftFromCard(card);
+        const item = draft?.attachments?.[index];
+        if (!item || item.available === false || typeof window.addComposerContext !== 'function') {
+            window.notify?.('This attachment is unavailable.', 'error');
+            return false;
+        }
+        const accepted = window.addComposerContext(attachmentPromptContext(item, index));
+        if (accepted) window.notify?.('Attachment added to the next prompt.', 'success', 1600);
+        return Boolean(accepted);
+    }
+
+    async function openAttachmentPreview(card, index, button) {
+        const draft = syncDraftFromCard(card);
+        const item = draft?.attachments?.[index];
+        if (!item || !attachmentImageType(item) || item.available === false) {
+            window.notify?.('Preview is unavailable for this attachment.', 'error');
+            return;
+        }
+        button?.setAttribute('aria-busy', 'true');
+        const originalUrl = safeAttachmentUrl(item);
+        let resolved = originalUrl ? { url: originalUrl, revoke: false } : await resolveOwnerAttachmentUrl(item);
+        button?.removeAttribute('aria-busy');
+        if (!resolved?.url) {
+            window.notify?.('This image attachment is unavailable.', 'error');
+            return;
+        }
+        const previewUrl = originalUrl && typeof window.helperApiUrl === 'function'
+            ? window.helperApiUrl('/api/image_proxy?url=' + encodeURIComponent(originalUrl))
+            : resolved.url;
+        window.openImageModal(previewUrl, {
+            filename: String(item.filename || item.name || 'Attached image'),
+            mimeType: String(item.mime_type || item.content_type || item.type || 'image/png'),
+            source: attachmentSourceLabel(item),
+            sourceUrl: originalUrl,
+            downloadUrl: originalUrl || resolved.url,
+            downloadable: Boolean(originalUrl || resolved.revoke),
+            revokeUrl: resolved.revoke ? resolved.url : '',
+            context: attachmentPromptContext(item, index)
+        });
+    }
+
     function renderAttachmentSummary(container, draft) {
         if (!container) return;
         container.textContent = '';
-        const attachments = [];
-        if (draft?.attachment_filename) attachments.push({
-            name: draft.attachment_filename,
-            type: draft.attachment_type || 'Attachment',
-            description: draft.attachment_description || ''
-        });
-        for (const item of draft?.attachments || []) {
-            const name = item?.filename || item?.name;
-            if (name && !attachments.some(entry => entry.name === name)) {
-                attachments.push({
-                    name,
-                    type: item.content_type || item.mime_type || item.type || 'Attachment',
-                    description: item.description || ''
-                });
-            }
-        }
-        if (!attachments.length && (draft?.has_attachment_content || draft?.attachment_content)) {
-            attachments.push({ name: 'Attached file', type: draft?.attachment_type || 'Attachment', description: '' });
-        }
+        const attachments = Array.isArray(draft?.attachments) ? draft.attachments : [];
         if (!attachments.length) {
             const empty = document.createElement('span');
             empty.className = 'email-draft-attachment-empty';
@@ -308,19 +405,48 @@
             container.appendChild(empty);
             return;
         }
-        for (const item of attachments) {
-            const chip = document.createElement('span');
+        attachments.forEach((item, index) => {
+            const row = document.createElement('div');
+            row.className = 'email-draft-attachment-row';
+            const available = item.available !== false;
+            const image = attachmentImageType(item);
+            const chip = document.createElement(available ? 'button' : 'div');
+            chip.type = available ? 'button' : undefined;
             chip.className = 'email-draft-attachment-chip';
+            chip.dataset.attachmentIndex = String(index);
+            chip.setAttribute('aria-label', image ? 'Preview ' + String(item.filename || item.name || 'image') : 'Use ' + String(item.filename || item.name || 'attachment') + ' in prompt');
+            chip.title = available ? (image ? 'Preview image attachment' : 'Use document attachment in prompt') : 'Attachment unavailable';
+            if (!available) chip.setAttribute('aria-disabled', 'true');
+            const icon = document.createElement('span');
+            icon.className = 'email-draft-attachment-icon';
+            icon.innerHTML = attachmentIcon(item);
+            const copy = document.createElement('span');
+            copy.className = 'email-draft-attachment-copy';
             const name = document.createElement('strong');
-            name.textContent = item.name;
+            name.textContent = String(item.filename || item.name || 'Attached file');
             const type = document.createElement('small');
-            type.textContent = item.type;
-            chip.append(name, type);
-            if (item.description) chip.title = item.description;
-            container.appendChild(chip);
-        }
+            type.textContent = [attachmentCategory(item), attachmentSourceLabel(item), available ? '' : 'Unavailable'].filter(Boolean).join(' / ');
+            copy.append(name, type);
+            chip.append(icon, copy);
+            if (available && image) chip.addEventListener('click', () => openAttachmentPreview(container.closest('.email-draft-card'), index, chip));
+            row.appendChild(chip);
+            if (available) {
+                const use = document.createElement('button');
+                use.type = 'button';
+                use.className = 'email-draft-attachment-use';
+                use.dataset.attachmentIndex = String(index);
+                use.setAttribute('aria-label', 'Use ' + String(item.filename || item.name || 'attachment') + ' in prompt');
+                use.textContent = 'Use';
+                use.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    attachAttachmentToPrompt(container.closest('.email-draft-card'), index);
+                });
+                row.appendChild(use);
+            }
+            container.appendChild(row);
+        });
     }
-
     function field(labelText, control) {
         const label = document.createElement('label');
         label.className = 'email-draft-field-label';

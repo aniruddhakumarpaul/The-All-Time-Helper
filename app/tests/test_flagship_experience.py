@@ -381,7 +381,7 @@ class FlagshipExperienceTests(unittest.TestCase):
         self.assertNotIn('North Mini Code Free', template)
         self.assertNotIn('Nemotron Nano Free', template)
         self.assertIn('/static/js/particles.js?v=146', template)
-        self.assertIn('/static/js/app.js?v=222', template)
+        self.assertIn('/static/js/app.js?v=223', template)
         self.assertIn("window.helperApiUrl", bootstrap)
         self.assertIn("requestAnimationFrame", particles)
 

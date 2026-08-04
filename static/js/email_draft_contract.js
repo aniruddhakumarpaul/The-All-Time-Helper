@@ -53,6 +53,31 @@
         return (clean || fallback).slice(0, 160);
     }
 
+    function safeRemoteUrl(value) {
+        try {
+            const url = new URL(text(value), window.location.origin);
+            return url.protocol === 'http:' || url.protocol === 'https:' ? url.href.slice(0, 2000) : '';
+        } catch (_) {
+            return '';
+        }
+    }
+    function displayFilename(value, item, index, mimeType) {
+        const clean = filename(value, `attachment-${index + 1}.bin`);
+        const source = text(item?.source).toLowerCase();
+        const stem = clean.replace(/\.[a-z0-9]{2,8}$/i, '');
+        const words = stem.match(/[A-Za-z0-9]+/g) || [];
+        const promptLike = source === 'generated' && (
+            clean.length > 64
+            || words.length > 7
+            || /^(edit|change|update|add|include|make|create|draft)\b/i.test(stem)
+        );
+        if (!promptLike) return clean;
+        const slug = (words.slice(0, 6).join('-').toLowerCase() || 'generated-image').slice(0, 72);
+        const extension = ({
+            'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif',
+        })[mimeType] || 'bin';
+        return slug + '.' + extension;
+    }
     function attachment(raw, index, legacyContent) {
         const item = raw && typeof raw === 'object' ? raw : { content: raw };
         const content = item.content || item.data || (index === 0 ? legacyContent : null);
@@ -63,12 +88,12 @@
         const derivedSource = content && !id ? 'generated' : id ? 'upload' : 'unknown';
         const source = rawSource == null
             ? derivedSource
-            : ['upload', 'generated', 'legacy', 'remote', 'unknown'].includes(rawSource)
+            : ['upload', 'generated', 'legacy', 'remote', 'reference', 'unknown'].includes(rawSource)
                 ? rawSource : 'unknown';
         const result = {
 
-            filename: filename(item.filename || item.name, `attachment-${index + 1}.bin`),
-            name: filename(item.filename || item.name, `attachment-${index + 1}.bin`),
+            filename: displayFilename(item.filename || item.name, item, index, MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream'),
+            name: displayFilename(item.filename || item.name, item, index, MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream'),
             mime_type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
             type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
             content_type: MIME_RE.test(mimeType) ? mimeType : 'application/octet-stream',
@@ -76,8 +101,11 @@
             sha256: /^[0-9a-f]{64}$/i.test(text(item.sha256 || item.sha_256)) ? text(item.sha256 || item.sha_256).toLowerCase() : undefined,
             available: available == null ? undefined : Boolean(available),
             source,
+            description: text(item.description).slice(0, 320) || undefined,
         };
         if (id != null) result.id = id;
+        const safeUrl = safeRemoteUrl(item.url || (typeof content === 'string' && /^https?:\/\//i.test(content) ? content : ''));
+        if (safeUrl) result.url = safeUrl;
         if (content != null) result.content = String(content);
         return result;
     }

@@ -23,7 +23,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             self.browser = self.playwright.chromium.launch(headless=True)
         except Exception as error:
             self.playwright.stop()
-            self.skipTest(f"Chromium is not available: {error}")
+            raise AssertionError(f"Chromium is not available: {error}") from error
         self.page = self.browser.new_page()
         self.page.set_content("""
             <!doctype html>
@@ -403,5 +403,128 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
         self.assertIn("Use this email draft", self.page.locator(".email-draft-use-context-btn").get_attribute("aria-label"))
 
+    def test_native_image_drag_preserves_file_transfer_types_and_context(self):
+        self.load_state_and_email_surface()
+        self.page.evaluate("""() => {
+            const bubble = document.createElement('article');
+            bubble.className = 'msg b-msg';
+            bubble.innerHTML = '<div class="txt"><p>Generated reference</p><img class="chat-rendered-img" alt="Generated reference" data-mime-type="image/png" src="https://example.test/generated.png" style="width:180px;height:120px;display:block;"></div>';
+            document.getElementById('chat-area').appendChild(bubble);
+            window.__dragAudit = [];
+            document.addEventListener('dragstart', event => {
+                window.__dragAudit.push({
+                    types: Array.from(event.dataTransfer?.types || []),
+                    uri: event.dataTransfer?.getData('text/uri-list') || '',
+                    download: event.dataTransfer?.getData('DownloadURL') || '',
+                    plain: event.dataTransfer?.getData('text/plain') || '',
+                });
+            }, true);
+            window.syncComposerDragSources();
+        }""")
+        image = self.page.locator(".chat-rendered-img")
+        self.assertEqual(image.get_attribute("draggable"), "true")
+        image.drag_to(self.page.locator("#prompt"))
+        self.page.wait_for_selector(".composer-context-image")
+        audit = self.page.evaluate("() => window.__dragAudit[window.__dragAudit.length - 1]")
+        self.assertIn("application/x-helper-composer-context", audit["types"])
+        self.assertIn("text/uri-list", audit["types"])
+        self.assertIn("downloadurl", [item.lower() for item in audit["types"]])
+        self.assertEqual(audit["uri"], "https://example.test/generated.png\r\n")
+        self.assertIn("image/png:Generated-reference.png:https://example.test/generated.png", audit["download"])
+        self.assertEqual(audit["plain"], "https://example.test/generated.png")
+        self.assertIn("https://example.test/generated.png", self.page.evaluate("() => window.__helperState.attachedContexts[0].text"))
+
+    def test_data_url_image_drag_never_enters_native_file_transfer(self):
+        self.load_state_and_email_surface()
+        result = self.page.evaluate("""() => {
+            const image = document.createElement('img');
+            image.className = 'chat-img-preview';
+            image.alt = 'Transient preview';
+            image.src = 'data:image/png;base64,not-persisted';
+            document.getElementById('chat-area').appendChild(image);
+            window.__dragAudit = null;
+            document.addEventListener('dragstart', event => {
+                window.__dragAudit = {
+                    types: Array.from(event.dataTransfer?.types || []),
+                    uri: event.dataTransfer?.getData('text/uri-list') || '',
+                    download: event.dataTransfer?.getData('DownloadURL') || '',
+                };
+            }, true);
+            window.syncComposerDragSources();
+            const transfer = new DataTransfer();
+            image.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+            return window.__dragAudit;
+        }""")
+        self.assertIn("application/x-helper-composer-context", result["types"])
+        self.assertNotIn("text/uri-list", result["types"])
+        self.assertNotIn("DownloadURL", result["types"])
+        self.assertEqual(result["uri"], "")
+        self.assertEqual(result["download"], "")
+
+    def test_attachment_actions_keep_images_and_documents_typed(self):
+        self.load_state_and_email_surface()
+        draft = {
+            "recipient": "person@example.com",
+            "subject": "Attachment actions",
+            "body": "Review these files",
+            "attachments": [
+                {
+                    "id": "upload-image-1",
+                    "filename": "reference.png",
+                    "mime_type": "image/png",
+                    "source": "upload",
+                    "url": "https://example.test/reference.png",
+                    "available": True,
+                },
+                {
+                    "filename": "Edit the draft change the tone and include the product image in the email.png",
+                    "mime_type": "image/png",
+                    "source": "generated",
+                    "url": "https://example.test/generated.png",
+                    "available": True,
+                },
+                {
+                    "id": "upload-pdf-1",
+                    "filename": "brief.pdf",
+                    "mime_type": "application/pdf",
+                    "source": "upload",
+                    "available": True,
+                },
+                {
+                    "id": "expired-image-1",
+                    "filename": "expired.png",
+                    "mime_type": "image/png",
+                    "source": "upload",
+                    "available": False,
+                },
+            ],
+        }
+        self.page.evaluate("""draft => {
+            window.openImageModal = (src, options) => { window.__openedImage = { src, ...options }; };
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify(draft));
+            window.hydrateEmailDraftCards(root);
+        }""", draft)
+        self.assertEqual(self.page.locator(".email-draft-attachment-row").count(), 4)
+        self.assertEqual(self.page.locator(".email-draft-attachment-chip").count(), 4)
+        self.assertIn("edit-the-draft-change-the-tone.png", self.page.locator(".email-draft-attachment-row").nth(1).inner_text())
+        self.assertEqual(self.page.locator("[aria-disabled='true']").count(), 1)
+        self.assertNotIn("https://example.test", self.page.locator("#chat-area").inner_text())
+
+        self.page.locator(".email-draft-attachment-chip").nth(0).click()
+        self.page.wait_for_function("() => window.__openedImage && window.__openedImage.filename === 'reference.png'")
+        opened = self.page.evaluate("() => window.__openedImage")
+        self.assertEqual(opened["filename"], "reference.png")
+        self.assertEqual(opened["source"], "Uploaded")
+        self.assertEqual(opened["downloadable"], True)
+
+        self.page.locator(".email-draft-attachment-use").nth(1).click()
+        self.page.locator(".email-draft-attachment-use").nth(2).click()
+        self.page.wait_for_function("() => document.querySelectorAll('.composer-context-chip').length === 2")
+        contexts = self.page.evaluate("() => window.__helperState.attachedContexts")
+        self.assertEqual([item["kind"] for item in contexts], ["image", "document"])
+        self.assertTrue(all("content" not in item["text"].lower() for item in contexts))
+        self.assertIn("brief.pdf", contexts[1]["text"])
+        self.assertEqual(self.page.locator(".email-draft-attachment-use").count(), 3)
 if __name__ == "__main__":
     unittest.main()

@@ -343,6 +343,7 @@ function addMsg(r, c, i, idx, mName, isMasked = false, attachments = []) {
     const textContainer = div.querySelector('.txt');
     textContainer?.addEventListener('dragstart', event => {
         if (event.target?.closest?.('[data-context-drag-handle]')) return;
+        if (event.target?.closest?.('img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img')) return;
         if (!window.isGDown) { event.preventDefault(); return; }
         handleDragStart(event);
     });
@@ -350,6 +351,8 @@ function addMsg(r, c, i, idx, mName, isMasked = false, attachments = []) {
     div.querySelector('[data-edit-index]')?.addEventListener('click', event => startEditPrompt(Number(idx), event.currentTarget));
 
     div.querySelector('[data-preview-src]')?.addEventListener('click', event => openImageModal(event.currentTarget.dataset.previewSrc));
+    const previewImage = div.querySelector(".chat-img-preview");
+    if (previewImage) window.installChatImageActions?.(previewImage);
     if (r === 'b') window.hydrateRenderedMarkdown?.(div);
     div.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
     document.getElementById('chat-area').scrollTop = document.getElementById('chat-area').scrollHeight;
@@ -637,16 +640,136 @@ function closeDeleteConfirm() {
     state.chatToDelete = null;
 }
 
-function openImageModal(src) {
+function safeImageUrl(value) {
+    try {
+        const url = new URL(String(value || ''), window.location.href);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+        return url.href;
+    } catch (_) {
+        return '';
+    }
+}
+
+function imageMimeFromUrl(url, explicit = '') {
+    const type = String(explicit || '').toLowerCase();
+    if (/^image\/(?:png|jpe?g|webp|gif|bmp|svg\+xml)$/.test(type)) return type;
+    const extension = String(url || '').split(/[?#]/, 1)[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
+    return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[extension] || '';
+}
+
+function imageContextFromElement(img) {
+    const rawUrl = img?.dataset?.modalUrl || img?.currentSrc || img?.src || '';
+    const url = safeImageUrl(rawUrl);
+    const alt = String(img?.alt || 'chat image').trim().slice(0, 240);
+    const text = url
+        ? '[Target Image]\nUse this image as explicit context for the next request.\nImage source: ' + url + '\nImage description/context: ' + alt
+        : '[Target Image]\nUse the selected image as explicit context for the next request.\nImage description/context: ' + alt;
+    return {
+        kind: 'image',
+        sourceId: String(img?.dataset?.imageContextId || url || img?.id || alt).slice(0, 120),
+        title: 'Image Target',
+        subtitle: alt || 'Selected image',
+        preview: url,
+        text
+    };
+}
+
+function attachImageContext(img) {
+    const context = imageContextFromElement(img);
+    if (!context || typeof window.addComposerContext !== 'function') {
+        notify('This image cannot be used as prompt context.', 'error');
+        return false;
+    }
+    const accepted = window.addComposerContext(context);
+    if (accepted) notify('Image added to the next prompt.', 'success', 1600);
+    return Boolean(accepted);
+}
+
+function installChatImageActions(img) {
+    if (!img || img.dataset.imageActionsInstalled === 'true') return;
+    const host = img.closest('.chat-img-preview-container, .ai-img-wrapper, .upscale-container') || img.parentElement;
+    if (!host) return;
+    img.dataset.imageActionsInstalled = 'true';
+    let imagePointerStart = null;
+    img.addEventListener('pointerdown', event => { imagePointerStart = { x: event.clientX, y: event.clientY }; });
+    img.addEventListener('pointermove', event => { if (imagePointerStart && Math.hypot(event.clientX - imagePointerStart.x, event.clientY - imagePointerStart.y) > 8) img.dataset.imageDragged = 'true'; });
+    img.addEventListener('pointerup', () => { imagePointerStart = null; });
+    img.addEventListener('click', event => { if (img.dataset.imageDragged === 'true') { delete img.dataset.imageDragged; event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+    host.classList.add('has-image-actions');
+    const rail = document.createElement('div');
+    rail.className = 'chat-image-actions';
+    rail.setAttribute('aria-label', 'Image actions');
+    const addAction = (label, handler, visible = true) => {
+        if (!visible) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'chat-image-action';
+        button.setAttribute('aria-label', label);
+        button.title = label;
+        button.textContent = label;
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            handler(button);
+        });
+        rail.appendChild(button);
+    };
+    const url = safeImageUrl(img.dataset.modalUrl || img.currentSrc || img.src);
+    const mimeType = imageMimeFromUrl(url, img.dataset.mimeType);
+    addAction('Use in prompt', () => attachImageContext(img));
+    addAction('Open preview', () => openImageModal(url || img.currentSrc || img.src, {
+        filename: img.alt || 'Helper image',
+        mimeType,
+        imageElement: img,
+        context: imageContextFromElement(img)
+    }));
+    addAction('Download', () => {
+        if (!url) return notify('Download is unavailable for this image.', 'error');
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'helper-image' + (mimeType === 'image/jpeg' ? '.jpg' : mimeType ? '.' + mimeType.split('/')[1] : '.png');
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.click();
+    }, Boolean(url && mimeType));
+    addAction('Copy image link', async () => {
+        if (!url || !navigator.clipboard?.writeText) return notify('Copy link is unavailable for this image.', 'error');
+        try {
+            await navigator.clipboard.writeText(url);
+            notify('Image link copied.', 'success', 1600);
+        } catch (_) {
+            notify('Copy link is unavailable in this browser.', 'error');
+        }
+    }, Boolean(url));
+    host.appendChild(rail);
+}
+
+function openImageModal(src, options = {}) {
     const modal = document.getElementById('image-modal');
     const image = document.getElementById('modal-img');
-    if (!modal || !image) return;
-    image.src = src;
+    if (!modal || !image || !src) return;
+    modal.__imageReturnFocus = document.activeElement;
+    modal.__imageMeta = { ...options, src: String(src) };
+    image.src = String(src);
+    image.alt = String(options.filename || 'Full image preview');
     image.classList.remove('is-zoomed');
+    const title = document.getElementById('image-modal-title');
+    const meta = document.getElementById('image-modal-meta');
+    if (title) title.textContent = String(options.filename || 'Image preview');
+    if (meta) meta.textContent = [options.mimeType, options.source].filter(Boolean).join(' / ');
+    const download = document.getElementById('image-modal-download');
+    const copy = document.getElementById('image-modal-copy');
+    const use = document.getElementById('image-modal-use');
+    const candidateUrl = options.downloadUrl || options.sourceUrl || src;
+    const safeUrl = safeImageUrl(candidateUrl) || (options.downloadable && /^blob:/i.test(String(candidateUrl || '')) ? String(candidateUrl) : '');
+    if (download) download.hidden = !safeUrl;
+    if (copy) copy.hidden = !safeUrl;
+    if (use) use.hidden = typeof window.addComposerContext !== 'function' || !options.context;
     modal.style.display = 'flex';
     setTimeout(() => {
         modal.classList.add('active');
         window.HelperDialogs?.sync();
+        document.getElementById('image-modal-close')?.focus({ preventScroll: true });
     }, 10);
     history.pushState({ view: 'image' }, "");
 }
@@ -657,12 +780,16 @@ function closeImageModal() {
     if (!modal) return;
     modal.classList.remove('active');
     image?.classList.remove('is-zoomed');
+    const revoke = modal.__imageMeta?.revokeUrl;
+    const returnFocus = modal.__imageReturnFocus;
+    modal.__imageMeta = null;
     setTimeout(() => {
         modal.style.display = 'none';
+        if (revoke) URL.revokeObjectURL(revoke);
         window.HelperDialogs?.sync();
+        if (returnFocus?.isConnected && !returnFocus.disabled) returnFocus.focus({ preventScroll: true });
     }, 300);
 }
-
 function showNeuralContext(results, explanation) {
     const card = document.getElementById('neural-context-card');
     const cont = document.getElementById('context-results');
@@ -731,6 +858,10 @@ function handleDragEnd(e) {
     e.currentTarget.parentElement.classList.remove('dragging');
     document.getElementById('mascot-container')?.classList.remove('mascot-drop-active');
 }
+
+window.installChatImageActions = installChatImageActions;
+window.notify = notify;
+window.__helperSafeImageUrl = safeImageUrl;
 
 const ui = {
     smartFocus, switchAuth, updUI, signOut, toggleDropdown, selModel,

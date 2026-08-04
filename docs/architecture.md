@@ -62,3 +62,11 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `BUILD_EMAIL_DRAFT` and `IMAGE_GENERATE` are independent actions for a new compound draft. `ATTACH_IMAGE` requires both to succeed. If generation or attachment fails, an existing draft is not replaced; a newly built draft may be returned without the image with explicit failure wording.
 - `/chat` emits low-cardinality `[WorkflowRoute]` fields only: candidate, marker presence, active-draft resolution, intent, plan creation, fallback lane, and bounded prompt/history sizes. It never logs prompts, draft contents, addresses, tool arguments, or image data.
 - `/sync_chats` rolls back failed writes, retries only transient SQLite locked/busy failures once, and maps persistent failures to safe categories. `app.database_health` and `python -m app.cli.db_health` provide bounded, non-destructive checks without repair or user-content output.
+
+## Interaction Surfaces
+
+- `static/js/composer_context_tray.js` is the sole drag/drop owner for message text, images, widgets, explicit email handles, external files, and typed prompt context. The selectable text contract is preserved by classifying image targets before the optional hold-G text-grab mode.
+- `static/js/ui.js` owns the shared image viewer and image action rail. `static/js/utils.js` installs that rail on hydrated markdown images, while `static/js/app.js` supplies prompt, download, copy, focus, and modal lifecycle actions.
+- `static/js/email_draft_contract.js` and `static/js/email_draft.js` keep image/document attachment metadata typed, owner-safe, and byte-free in prompt context. `app/routes/chat.py` serves owner-validated attachment bytes only through the authenticated private media route.
+- `static/css/email_draft.css` owns attachment widget presentation. `static/css/product_controls.css` owns shared image actions, viewer layout, and responsive settings modal behavior. The template keeps one image viewer instance and cache-busts the active interaction modules.
+- Served-shell browser checks validate the FastAPI HTML/CSS surface; active native drag and context transfer are validated by Playwright against the loaded interaction modules. Browser checks must fail when Chromium cannot launch rather than silently skipping.

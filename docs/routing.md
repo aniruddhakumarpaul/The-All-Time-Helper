@@ -65,3 +65,12 @@ Routing is designed to prefer the smallest reliable execution path.
 - Transfers use the application/x-helper-composer-context MIME with bounded metadata and text/plain compatibility text. Attachment content, bytes, data URIs, and internal admin fields are removed before persistence or transfer.
 - Context fingerprints suppress duplicate drops. An email card identity updates its existing chip when its subject/body/tone or attachment metadata changes rather than creating a second chip.
 - Valid drop surfaces are the prompt, pill bar, input wrapper, and context tray. All surfaces use copy semantics, stable drag-depth cleanup, prompt focus after acceptance, and no state mutation for invalid payloads.
+
+## Image And Attachment Interaction Routing
+
+- A rendered or generated image inside `.msg .txt` is classified as an image source before the text-selection guard. Dragging it to the prompt, pill bar, input wrapper, or context tray adds bounded image context while preserving browser file-transfer metadata when the source is an HTTP(S) URL.
+- Data and blob previews may remain transiently viewable, but they never populate `text/uri-list`, `DownloadURL`, or persistence/context metadata as transferable file sources.
+- Image action rails route `Use in prompt` to `addComposerContext`, `Open preview` to the shared viewer, and safe `Download`/`Copy image link` actions only when the source passes the HTTP(S) boundary.
+- Attachment image chips resolve remote safe URLs or owner-scoped attachment IDs before opening the shared viewer. PDF, Markdown, and text chips use the document context lane and never enter vision inference.
+- External file drops use the existing upload input/change pipeline. Unsupported drops are prevented and produce controlled feedback without mutating composer state.
+- The owner-scoped `GET /attachments/{attachment_id}` route is a media retrieval boundary only; it does not expose metadata across owners and returns private no-store responses.
