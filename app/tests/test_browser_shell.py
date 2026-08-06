@@ -94,24 +94,102 @@ class BrowserShellTests(unittest.TestCase):
             self.assertEqual(page.locator("#image-modal").count(), 1)
             self.assertEqual(page.locator(".pill-bar-container").count(), 1)
 
-            for width, height in ((1280, 900), (1024, 768), (412, 915), (390, 844), (360, 800), (390, 560)):
+            for width, height in ((1280, 900), (1024, 768), (412, 915), (390, 844), (360, 800)):
                 page.set_viewport_size({"width": width, "height": height})
+                page.locator("#settings-modal").evaluate("element => { element.style.display = 'flex'; }")
                 metrics = page.evaluate("""() => {
                     const modal = document.querySelector('#settings-modal .modal-card');
+                    const modalRect = modal.getBoundingClientRect();
+                    const rect = element => {
+                        const value = element.getBoundingClientRect();
+                        return {
+                            width: value.width,
+                            height: value.height,
+                            top: value.top,
+                            bottom: value.bottom,
+                            left: value.left,
+                            right: value.right,
+                            visible: value.width > 0 && value.height > 0,
+                        };
+                    };
+                    const close = document.querySelector('#close-settings-btn');
+                    const signout = document.querySelector('#signout-btn');
+                    const credit = document.querySelector('#settings-modal .modal-credit');
+                    const controls = [
+                        document.querySelector('#theme-btn-settings'),
+                        document.querySelector('#response-style-setting'),
+                        document.querySelector('#t-pers'),
+                        document.querySelector('#t-word'),
+                        document.querySelector('#t-eng'),
+                    ].map(rect);
+                    const inside = value => value.visible
+                        && value.left >= modalRect.left - 1
+                        && value.right <= modalRect.right + 1
+                        && value.top >= modalRect.top - 1
+                        && value.bottom <= modalRect.bottom + 1;
                     return {
                         documentWidth: document.documentElement.scrollWidth,
                         viewportWidth: window.innerWidth,
-                        modalOverflow: modal ? getComputedStyle(modal).overflowY : '',
-                        modalPosition: modal ? getComputedStyle(modal).position : '',
+                        modalWidth: modal.clientWidth,
+                        modalHeight: modal.clientHeight,
+                        modalScrollWidth: modal.scrollWidth,
+                        modalScrollHeight: modal.scrollHeight,
+                        overflowY: getComputedStyle(modal).overflowY,
+                        close: rect(close),
+                        signout: rect(signout),
+                        account: rect(document.querySelector('#settings-modal .settings-account')),
+                        credit: rect(credit),
+                        controls,
+                        modalRect: { top: modalRect.top, bottom: modalRect.bottom, left: modalRect.left, right: modalRect.right },
+                        closeInside: inside(rect(close)),
+                        signoutInside: inside(rect(signout)),
+                        controlsInside: controls.map(inside),
                     };
                 }""")
-                self.assertLessEqual(metrics["documentWidth"], metrics["viewportWidth"] + 1)
-                page.locator("#settings-modal").evaluate("element => { element.style.display = 'flex'; }")
-                bounds = page.locator("#settings-modal .modal-card").bounding_box()
-                self.assertIsNotNone(bounds)
-                self.assertGreater(bounds["width"], 0)
-                self.assertLessEqual(bounds["x"] + bounds["width"], width + 1)
+                self.assertLessEqual(metrics["documentWidth"], width + 1)
+                self.assertLessEqual(metrics["modalScrollWidth"], metrics["modalWidth"] + 1)
+                self.assertLessEqual(metrics["modalScrollHeight"], metrics["modalHeight"] + 1)
+                self.assertTrue(metrics["close"]["visible"])
+                self.assertTrue(metrics["closeInside"])
+                self.assertTrue(metrics["signout"]["visible"])
+                self.assertTrue(metrics["signoutInside"])
+                self.assertTrue(all(metrics["controlsInside"]))
+                self.assertLessEqual(abs(metrics["signout"]["width"] - metrics["account"]["width"]), 2)
+                self.assertLess(metrics["credit"]["bottom"], metrics["signout"]["top"])
                 page.locator("#settings-modal").evaluate("element => { element.style.display = 'none'; }")
+
+            page.set_viewport_size({"width": 390, "height": 560})
+            page.locator("#settings-modal").evaluate("element => { element.style.display = 'flex'; }")
+            short_initial = page.evaluate("""() => {
+                const modal = document.querySelector('#settings-modal .modal-card');
+                const close = document.querySelector('#close-settings-btn').getBoundingClientRect();
+                return {
+                    overflowY: getComputedStyle(modal).overflowY,
+                    closeVisible: close.width > 0 && close.height > 0 && close.top >= 0 && close.bottom <= window.innerHeight + 1,
+                    modalClientHeight: modal.clientHeight,
+                    modalScrollHeight: modal.scrollHeight,
+                };
+            }""")
+            self.assertEqual(short_initial["overflowY"], "auto")
+            self.assertTrue(short_initial["closeVisible"])
+            page.locator("#settings-modal .modal-card").evaluate("element => { element.scrollTop = element.scrollHeight; }")
+            short_bottom = page.evaluate("""() => {
+                const modal = document.querySelector('#settings-modal .modal-card');
+                const signout = document.querySelector('#signout-btn').getBoundingClientRect();
+                return {
+                    scrollTop: modal.scrollTop,
+                    maxScrollTop: Math.max(0, modal.scrollHeight - modal.clientHeight),
+                    signoutVisible: signout.width > 0 && signout.height > 0,
+                    signoutInside: signout.top >= 0 && signout.bottom <= window.innerHeight + 1,
+                    documentWidth: document.documentElement.scrollWidth,
+                    viewportWidth: window.innerWidth,
+                };
+            }""")
+            self.assertGreaterEqual(short_bottom["scrollTop"] + 1, short_bottom["maxScrollTop"])
+            self.assertTrue(short_bottom["signoutVisible"])
+            self.assertTrue(short_bottom["signoutInside"])
+            self.assertLessEqual(short_bottom["documentWidth"], short_bottom["viewportWidth"] + 1)
+            page.locator("#settings-modal").evaluate("element => { element.style.display = 'none'; }")
 
             # Native image drag is exercised by the browser email workflow; this served-shell test verifies the responsive surface.
             page.locator("#prompt").fill("responsive shell")

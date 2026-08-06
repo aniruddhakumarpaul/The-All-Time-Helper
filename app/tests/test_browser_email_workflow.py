@@ -400,6 +400,56 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual(self.page.locator(".email-draft-context-chip").count(), 1)
         self.assertIn("Use this email draft", self.page.locator(".email-draft-use-context-btn").get_attribute("aria-label"))
 
+    def test_remote_document_url_is_redacted_from_context_persistence_and_request_shape(self):
+        self.load_state_and_email_surface()
+        remote_url = "https://example.test/private/brief.pdf?token=secret"
+        attachment_id = "0123456789abcdef0123456789abcdef"
+        draft = {
+            "recipient": "person@example.com",
+            "subject": "Remote brief",
+            "body": "Review the attached brief.",
+            "attachments": [{
+                "id": attachment_id,
+                "filename": "brief.pdf",
+                "mime_type": "application/pdf",
+                "size": 2048,
+                "url": remote_url,
+                "source": "remote",
+            }],
+        }
+        self.page.evaluate("""draft => {
+            const root = document.getElementById('chat-area');
+            root.innerHTML = window.renderMarkdown('EMAIL_DRAFT_PAYLOAD:' + JSON.stringify(draft));
+            window.hydrateEmailDraftCards(root);
+        }""", draft)
+        self.page.locator(".email-draft-attachment-chip").click()
+        self.page.wait_for_selector(".composer-context-document")
+        result = self.page.evaluate("""url => {
+            const context = window.__helperState.attachedContexts[0];
+            const fence = String.fromCharCode(34).repeat(3);
+            const requestPrompt = '[Attached Context 1]\\n' + fence + context.text + '\\n' + fence;
+            const persisted = window.helperSanitizeChatsForPersistence([{
+                id: 'remote-doc-chat',
+                ms: [{ r: 'u', c: 'Review the brief', apiPrompt: requestPrompt, attachments: [context.attachmentRef] }]
+            }]);
+            return {
+                context,
+                requestPrompt,
+                persisted: JSON.stringify(persisted),
+                visible: document.body.innerText,
+                dom: document.body.innerHTML,
+                requestAttachments: [context.attachmentRef],
+                url,
+            };
+        }""", remote_url)
+
+        for field in ("context", "requestPrompt", "persisted", "visible", "dom"):
+            self.assertNotIn(remote_url, str(result[field]))
+        self.assertEqual(result["requestAttachments"][0]["id"], attachment_id)
+        self.assertEqual(result["requestAttachments"][0]["name"], "brief.pdf")
+        self.assertEqual(result["requestAttachments"][0]["type"], "application/pdf")
+        self.assertIn("Owner-scoped attachment available", result["context"]["text"])
+
     def test_native_image_drag_preserves_file_transfer_types_and_context(self):
         self.load_state_and_email_surface()
         self.page.evaluate("""() => {
@@ -431,6 +481,81 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual(audit["plain"], "https://example.test/generated.png")
         self.assertIn("https://example.test/generated.png", self.page.evaluate("() => window.__helperState.attachedContexts[0].text"))
 
+    def test_production_generated_image_drag_and_post_upscale_refresh(self):
+        self.load_state_and_email_surface()
+        self.add_script(
+            "static/js/ui.js",
+            module=True,
+            replacements=[
+                ("import { state } from './state.js?v=210';", "const state = window.__helperState;"),
+                ("import { sortChatsNewestFirst } from './chat_sync.js?v=203';", "const sortChatsNewestFirst = chats => chats;"),
+            ],
+        )
+        self.add_script("static/js/utils.js")
+        generated_url = "https://image.pollinations.ai/prompt/digital%20india%20infrastructure?model=flux&width=1024&height=1024&seed=123&uid=test-job"
+        enhanced_url = "https://cdn.example.test/enhanced-image.png"
+        rendered = self.page.evaluate("""({ generatedUrl, enhancedUrl }) => {
+            const root = document.getElementById('chat-area');
+            window.marked = {
+                Renderer: function () {},
+                parse: (_text, options) => {
+                    const alt = 'Digital India infrastructure';
+                    return options.renderer.image({ href: window.__testGeneratedUrl, text: alt }, null, alt);
+                },
+            };
+            window.__testGeneratedUrl = generatedUrl;
+            root.innerHTML = window.renderMarkdown('![Digital India infrastructure](' + generatedUrl + ')');
+            const image = root.querySelector('.chat-rendered-img');
+            image.style.display = 'block';
+            image.src = generatedUrl;
+            image.dataset.loaded = 'true';
+            window.hydrateRenderedMarkdown(root);
+            window.syncComposerDragSources();
+            window.fetch = async () => ({
+                json: async () => ({ success: true, status: 'ready', url: enhancedUrl }),
+            });
+            window.Image = class {
+                set src(value) {
+                    this.currentSrc = value;
+                    if (this.onload) this.onload();
+                }
+            };
+            window.initUpscaleImagePolling(root);
+            return root.innerHTML;
+        }""", {"generatedUrl": generated_url, "enhancedUrl": enhanced_url})
+        self.assertIn("chat-rendered-img", rendered)
+        self.page.wait_for_function("() => document.querySelector('.chat-rendered-img')?.src === 'https://cdn.example.test/enhanced-image.png'")
+        image = self.page.locator(".chat-rendered-img")
+        self.assertEqual(image.get_attribute("data-generated"), "true")
+        self.assertEqual(self.page.locator(".chat-image-actions").count(), 1)
+        self.assertEqual(image.get_attribute("draggable"), "true")
+
+        self.page.evaluate("""() => {
+            window.__dragAudit = [];
+            document.addEventListener('dragstart', event => {
+                window.__dragAudit.push({
+                    types: Array.from(event.dataTransfer?.types || []),
+                    uri: event.dataTransfer?.getData('text/uri-list') || '',
+                    download: event.dataTransfer?.getData('DownloadURL') || '',
+                    plain: event.dataTransfer?.getData('text/plain') || '',
+                });
+            }, true);
+            window.syncComposerDragSources();
+        }""")
+        image.drag_to(self.page.locator("#prompt"))
+        self.page.wait_for_selector(".composer-context-image")
+        audit = self.page.evaluate("() => window.__dragAudit[window.__dragAudit.length - 1]")
+        self.assertIn("application/x-helper-composer-context", audit["types"])
+        self.assertIn("text/uri-list", audit["types"])
+        self.assertIn("downloadurl", [item.lower() for item in audit["types"]])
+        self.assertEqual(audit["uri"], enhanced_url + "\r\n")
+        self.assertIn("image/png:Digital-India-infrastructure.png:" + enhanced_url, audit["download"])
+        self.assertEqual(audit["plain"], enhanced_url)
+        contexts = self.page.evaluate("() => window.__helperState.attachedContexts")
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0]["kind"], "image")
+        self.assertNotIn("base64", str(contexts))
+        self.assertEqual(self.page.locator(".chat-image-actions").count(), 1)
     def test_data_url_image_drag_never_enters_native_file_transfer(self):
         self.load_state_and_email_surface()
         result = self.page.evaluate("""() => {

@@ -312,7 +312,7 @@
     }
 
     function attachmentIdentity(item, index) {
-        return String(item?.id || safeAttachmentUrl(item) || item?.sha256 || item?.filename || 'attachment-' + index).slice(0, 160);
+        return String(item?.id || (attachmentImageType(item) ? safeAttachmentUrl(item) : '') || item?.sha256 || item?.filename || 'attachment-' + index).slice(0, 160);
     }
 
     function attachmentIcon(item) {
@@ -338,10 +338,12 @@
     }
 
     function attachmentPromptContext(item, index) {
-        const url = safeAttachmentUrl(item);
+        const isImage = attachmentImageType(item);
+        const url = isImage ? safeAttachmentUrl(item) : '';
+        const remoteDocumentUrl = !isImage && Boolean(safeAttachmentUrl(item));
         const name = String(item?.filename || item?.name || 'Attached file').slice(0, 160);
         const description = String(item?.description || '').slice(0, 320);
-        const mime = String(item?.mime_type || item?.content_type || item?.type || '').slice(0, 100);
+        const mime = String(item?.mime_type || item?.content_type || item?.type || 'application/octet-stream').slice(0, 100);
         const attachmentRef = item?.id && /^[a-f0-9]{32}$/i.test(String(item.id))
             ? {
                 id: String(item.id).toLowerCase(),
@@ -350,15 +352,30 @@
                 size: Number.isInteger(Number(item.size)) && Number(item.size) >= 0 ? Number(item.size) : undefined,
             }
             : undefined;
+        const sourceCategory = attachmentSourceLabel(item);
+        const availability = item?.available === false
+            ? 'Unavailable'
+            : attachmentRef
+                ? 'Owner-scoped attachment available'
+                : isImage && url
+                    ? 'Remote image available'
+                    : 'Metadata only';
         const sourceRef = attachmentRef ? 'Owner attachment reference: ' + attachmentRef.id : '';
-        const sourceUrl = url ? (attachmentImageType(item) ? 'Image source: ' : 'Attachment source: ') + url : '';
+        const imageSource = isImage && url ? 'Image source: ' + url : '';
+        const documentNotice = remoteDocumentUrl && !attachmentRef
+            ? 'This remote document is referenced by metadata only; its contents are not attached.'
+            : '';
         return {
-            kind: attachmentImageType(item) ? 'image' : 'document',
+            kind: isImage ? 'image' : 'document',
             sourceId: 'attachment:' + attachmentIdentity(item, index),
             title: name,
-            subtitle: [attachmentCategory(item), attachmentSourceLabel(item)].join(' / '),
-            preview: url,
-            text: '[Attached File]\nFilename: ' + name + '\nMIME type: ' + mime + '\n' + [sourceRef, sourceUrl, description].filter(Boolean).join('\n'),
+            subtitle: [attachmentCategory(item), sourceCategory].join(' / '),
+            preview: isImage ? url : '',
+            text: '[Attached File]\nFilename: ' + name
+                + '\nMIME type: ' + mime
+                + '\nSource category: ' + sourceCategory
+                + '\nAvailability state: ' + availability
+                + '\n' + [sourceRef, imageSource, documentNotice, description].filter(Boolean).join('\n'),
             ...(attachmentRef ? { attachmentRef } : {}),
         };
     }

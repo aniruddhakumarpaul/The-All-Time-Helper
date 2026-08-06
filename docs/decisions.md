@@ -170,4 +170,5 @@ This file records the current high-level architectural decisions.
 - Generated and uploaded image actions resolve through one metadata contract after deferred hydration, proxy/upscale replacement, and image load. Blob previews can download when safe but never expose Copy Link.
 - Use document in prompt transfers bounded owner-scoped attachment references (id, name, type, size) through the chat request’s attachments collection; it never transfers document bytes or preview URLs.
 - The settings modal explicitly overrides the legacy flex .set-row rule with a contained grid, a mobile bottom-sheet layout, and short-viewport scrolling. The served-shell test checks 1280x900, 1024x768, 412x915, 390x844, 360x800, and 390x560.
+- The legacy app-level upscale entry point delegates to the authoritative metadata-aware poller; enhancement refreshes image modal/download/context metadata while retaining the wrapper original URL only as fallback.
 - The Sign Out control occupies a dedicated full-width final row in the preferences card, preserving the long-tab action hierarchy while keeping the animated treatment intact.

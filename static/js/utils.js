@@ -28,7 +28,8 @@
             if (!url || typeof url !== 'string') return '';
             try {
                 const normalizedUrl = url.replace(/&amp;/g, '&');
-                const parsed = new URL(normalizedUrl, window.location.origin);
+                const baseOrigin = window.location.origin && window.location.origin !== 'null' ? window.location.origin : 'http://localhost';
+                const parsed = new URL(normalizedUrl, baseOrigin);
                 if (!parsed.hostname || !parsed.hostname.toLowerCase().includes('pollinations.ai')) {
                     return '';
                 }
@@ -180,6 +181,11 @@
 
                             originalUrl = originalUrl || currentWrapper.getAttribute('data-original-url') || '';
                             img.dataset.loaded = 'true';
+                            // Replace action metadata with the enhanced asset while keeping the wrapper fallback URL.
+                            img.dataset.originalUrl = localUrl;
+                            img.dataset.modalUrl = localUrl;
+                            img.dataset.downloadUrl = localUrl;
+                            img.dataset.retryUrl = '';
                             img.src = localUrl;
                             img.style.display = 'block';
                             if (loadingEl) loadingEl.remove();
@@ -391,7 +397,9 @@
             }
 
             try {
-                const parsed = new URL(normalized, window.location.origin);
+                // about:blank/file previews have a null origin; absolute image URLs still need a valid URL base.
+                const baseOrigin = window.location.origin && window.location.origin !== 'null' ? window.location.origin : 'http://localhost';
+                const parsed = new URL(normalized, baseOrigin);
                 if (parsed.origin === window.location.origin && parsed.pathname.startsWith('/static/')) {
                     return { kind: 'local', url: parsed.pathname + parsed.search + parsed.hash };
                 }

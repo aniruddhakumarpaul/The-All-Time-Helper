@@ -254,48 +254,10 @@ async function waitForPendingImageUploads() {
 }
 
 function startUpscalePoller(jobId, container) {
-    if (state.activePollers.has(jobId)) return;
-    state.activePollers.add(jobId);
-    const img = container.querySelector('.chat-rendered-img');
-    if (!img) { state.activePollers.delete(jobId); return; }
-    if (!img.parentElement.classList.contains('upscale-container')) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'upscale-container';
-        img.parentNode.insertBefore(wrapper, img);
-        wrapper.appendChild(img);
+    // The classic app entry point delegates to the authoritative metadata-aware poller.
+    if (typeof window.initUpscaleImagePolling === 'function') {
+        window.initUpscaleImagePolling(container);
     }
-    img.classList.add('upscaling');
-    const badge = document.createElement('div');
-    badge.className = 'upscale-badge';
-    badge.innerHTML = '<div class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px;"></div> Enhancing...';
-    img.parentElement.appendChild(badge);
-
-    const poll = async () => {
-        try {
-            const data = await api.checkUpscaleStatus(jobId);
-            if (data.success && data.status === 'ready') {
-                const hi = new Image();
-                hi.src = data.url;
-                hi.onload = () => {
-                    img.src = data.url;
-                    img.classList.remove('upscaling');
-                    badge.innerHTML = '✨ 4K Enhanced';
-                    badge.classList.add('ready');
-                    setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 4000);
-                    state.activePollers.delete(jobId);
-                };
-            } else if (data.status === 'failed' || data.status === 'missing') {
-                img.classList.remove('upscaling');
-                badge.remove();
-                state.activePollers.delete(jobId);
-            } else {
-                setTimeout(poll, 2500);
-            }
-        } catch (_) {
-            state.activePollers.delete(jobId);
-        }
-    };
-    poll();
 }
 
 function handleChatKey(event) {

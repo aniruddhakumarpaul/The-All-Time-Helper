@@ -390,3 +390,11 @@ button.menu-item {
     margin-top: 8px;
     min-height: 48px;
 }
+/* Re-apply after the final settings layout overrides so short screens scroll inside the modal. */
+@media (max-height: 620px) {
+    #settings-modal .modal-card {
+        max-height: calc(100dvh - 24px);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+}

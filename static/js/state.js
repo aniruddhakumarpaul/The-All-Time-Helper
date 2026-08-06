@@ -163,6 +163,10 @@ class AppState {
 // Singleton instance
 const state = new AppState();
 
+function redactRemoteDocumentContext(value) {
+    const text = String(value || '');
+    return text.replace(/(^|\n)(?:Attachment source|Document source|Source URL):\s*https?:\/\/[^\s]+/gi, '$1Availability state: Metadata only\nThis remote document is referenced by metadata only; its contents are not attached.');
+}
 function stripAttachmentPayloadForPersistence(item) {
     if (!item || typeof item !== 'object') return item;
     const next = { ...item };
@@ -170,6 +174,12 @@ function stripAttachmentPayloadForPersistence(item) {
     delete next.data;
     delete next.bytes;
     delete next.attachment_content;
+    const mime = String(next.mime_type || next.content_type || next.type || '').toLowerCase();
+    if (!mime.startsWith('image/')) {
+        delete next.url;
+        delete next.sourceUrl;
+        delete next.downloadUrl;
+    }
     return next;
 }
 
@@ -236,8 +246,8 @@ function sanitizeChatsForPersistence(chats) {
             if (Array.isArray(next.attachments)) {
                 next.attachments = next.attachments.map(stripAttachmentPayloadForPersistence);
             }
-            if (typeof next.c === 'string') next.c = redactDraftMarkerText(next.c);
-            if (typeof next.apiPrompt === 'string') next.apiPrompt = redactDraftMarkerText(next.apiPrompt);
+            if (typeof next.c === 'string') next.c = redactRemoteDocumentContext(redactDraftMarkerText(next.c));
+            if (typeof next.apiPrompt === 'string') next.apiPrompt = redactRemoteDocumentContext(redactDraftMarkerText(next.apiPrompt));
             return next;
         })
     }));

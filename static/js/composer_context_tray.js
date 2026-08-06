@@ -46,6 +46,16 @@
         return clip(String(value || '').replace(/\s+/g, ' '), size);
     }
 
+    function sanitizeDocumentContextText(value) {
+        const text = String(value || '').trim();
+        if (!/https?:\/\//i.test(text)) return text;
+        const withoutUrls = text
+            .replace(/(^|\n)(?:Attachment source|Document source|Source URL):\s*https?:\/\/[^\s]+/gi, '$1')
+            .replace(/https?:\/\/[^\s]+/gi, '');
+        return (withoutUrls + '\nThis remote document is referenced by metadata only; its contents are not attached.')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
     function decodeAttachmentName(name) {
         const value = String(name || '').trim();
         if (!value) return '';
@@ -111,7 +121,7 @@
     function normalizeContext(item) {
         if (!item || !item.text) return null;
         const kind = ['text', 'image', 'document', 'email', 'widget'].includes(item.kind) ? item.kind : 'text';
-        const text = clip(item.text, MAX_ITEM_CHARS);
+        const text = kind === 'document' ? sanitizeDocumentContextText(clip(item.text, MAX_ITEM_CHARS)) : clip(item.text, MAX_ITEM_CHARS);
         if (!text) return null;
         const rawRef = item.attachmentRef || item.attachment_ref;
         const attachmentRef = rawRef && typeof rawRef === 'object' && /^[a-f0-9]{32}$/i.test(String(rawRef.id || ''))
@@ -122,15 +132,16 @@
                 size: Number.isInteger(Number(rawRef.size)) && Number(rawRef.size) >= 0 ? Number(rawRef.size) : undefined,
             }
             : undefined;
-        const preview = typeof item.preview === 'string' && !/^data:|^blob:/i.test(item.preview) ? item.preview : '';
+        const preview = kind === 'image' && typeof item.preview === 'string' && !/^data:|^blob:/i.test(item.preview) ? item.preview : '';
+        const sourceId = kind === 'document' ? clip(String(item.sourceId || '').replace(/https?:\/\/[^\s]+/gi, 'remote-document'), 120) : clip(item.sourceId || '', 120);
         return {
             kind,
             title: clip(item.title || labelForKind(kind), 80),
             subtitle: clip(item.subtitle || '', 140),
             text,
             preview,
-            sourceId: clip(item.sourceId || '', 120),
-            fingerprint: clip(item.fingerprint || fingerprintFor({ kind, text, sourceId: item.sourceId }), 120),
+            sourceId,
+            fingerprint: clip(item.fingerprint || fingerprintFor({ kind, text, sourceId }), 120),
             status: ['ready', 'attaching', 'sending', 'rendering'].includes(item.status) ? item.status : 'ready',
             ...(attachmentRef ? { attachmentRef } : {}),
         };
