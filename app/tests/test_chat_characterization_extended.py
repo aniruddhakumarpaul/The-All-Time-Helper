@@ -1,4 +1,3 @@
-import asyncio
 import json
 import unittest
 from unittest.mock import ANY, patch
@@ -13,21 +12,11 @@ class ImmediateRequest:
 
 
 class DisconnectingRequest:
-    async def is_disconnected(self):
-        return True
-
-
-class BlockingQueue:
     def __init__(self):
-        self.lanes = []
+        self.disconnect_checks = 0
 
-    async def submit(self, job_id, fn, abort_event, timeout, owner, lane):
-        self.lanes.append(lane)
-        while not abort_event.is_set():
-            await asyncio.sleep(0.01)
-        return "cancelled worker"
-
-    def cancel(self, job_id, owner):
+    async def is_disconnected(self):
+        self.disconnect_checks += 1
         return True
 
 
@@ -132,18 +121,20 @@ class ExtendedChatCharacterizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(candidate, joined)
         self.assertEqual(lines[-1], {"done": True})
 
-    async def test_client_disconnect_emits_cancellation_and_preserves_stream_shape(self):
-        queue = BlockingQueue()
-        with patch.object(chat, "inference_queue", queue), patch.object(chat, "ask_the_helper", return_value="unreachable"):
+    async def test_client_disconnect_only_detaches_stream_and_job_completes(self):
+        queue = ImmediateQueue()
+        request = DisconnectingRequest()
+        with patch.object(chat, "inference_queue", queue), patch.object(chat, "ask_the_helper", return_value="server response"):
             response = await chat.chat_endpoint(
                 chat.ChatRequest(prompt="keep working", model="helper-auto"),
-                DisconnectingRequest(),
+                request,
                 current_user="owner@example.com",
             )
             lines = await response_lines(response)
         self.assertEqual(queue.lanes, ["inference"])
-        self.assertTrue(any(item.get("message", {}).get("content") == "Request cancelled." for item in lines))
+        self.assertTrue(any(item.get("message", {}).get("content") == "server response" for item in lines))
         self.assertEqual(lines[-1], {"done": True})
+        self.assertEqual(request.disconnect_checks, 0)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,12 @@ class FrontendChatSyncTests(unittest.TestCase):
         self.assertIn("requestAnimationFrame", particles_js)
         self.assertIn("getElementById('particle-canvas')", particles_js)
         self.assertIn("ui_restore.js?v=3", particles_js)
-        self.assertIn('/static/js/app.js?v=224', template)
+        self.assertIn("const ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_job_v1';", app_js)
+        self.assertIn("function rememberActiveJob(jobId, chatId, model)", app_js)
+        self.assertIn("async function recoverActiveChatJob()", app_js)
+        self.assertIn("api.getChatJob(pending.id)", app_js)
+        self.assertIn("api.cancelInferenceJob(previousJobId)", app_js)
+        self.assertIn('/static/js/app.js?v=225', template)
         self.assertIn('placeholder="Ask me anything..."', template)
 
 

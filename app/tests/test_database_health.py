@@ -81,6 +81,16 @@ class DatabaseHealthTests(unittest.TestCase):
         self.assertEqual(db.rollbacks, 1)
 
 
+    def test_get_chats_maps_corrupt_database_to_safe_service_error(self):
+        class FakeDb:
+            pass
+
+        with patch.object(chat.ChatRepository, "get_chats_for_user", side_effect=sqlite3.DatabaseError("database disk image is malformed")):
+            with self.assertRaises(HTTPException) as raised:
+                chat.get_chats("owner@example.com", FakeDb())
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.detail, "Conversations are temporarily unavailable.")
+
 def json_safe(result):
     return {key: value for key, value in result.items() if key in {"database_file", "exists", "status", "failure_category", "quick_check", "integrity_check", "journal_mode", "foreign_key_violations", "chats_table", "chat_columns", "chat_indexes", "schema_versions"}}
 

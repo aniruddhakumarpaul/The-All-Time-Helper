@@ -98,6 +98,14 @@ async function uploadAttachments(files) {
     return data.attachments || [];
 }
 
+async function getChatJob(jobId, after = 0) {
+    if (!jobId) return { success: false, status: 404, error: 'Task not found' };
+    return await requestJson(
+        '/chat/jobs/' + encodeURIComponent(jobId) + '?after=' + Math.max(0, Number(after) || 0),
+        { headers: getAuthHeaders() },
+        'Response task could not be recovered'
+    );
+}
 async function cancelInferenceJob(jobId) {
     if (!jobId) return null;
     return await requestJson(`/chat/jobs/${encodeURIComponent(jobId)}/cancel`, {
@@ -144,6 +152,7 @@ const api = {
     handleAuth,
     streamChat,
     uploadAttachments,
+    getChatJob,
     cancelInferenceJob,
     fetchChats,
     syncChats,

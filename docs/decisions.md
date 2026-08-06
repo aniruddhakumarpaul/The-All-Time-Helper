@@ -6,6 +6,7 @@
 - `static/js/app.js` owns refresh restore end-to-end: it reads local cache, fetches remote chats once, merges once, renders history once, and opens a single active chat once.
 - `static/js/ui_restore.js` remains a compatibility no-op, and `static/js/latest_view_guard.js` is no longer part of the active restore path.
 - New user messages update the per-user local cache and active-chat ID immediately, before the debounced cloud sync, so refresh cannot reopen an older conversation.
+- Chat inference is server-owned after `/chat` returns a job ID: browser disconnects detach only the NDJSON stream; the owner-scoped job registry retains bounded events and the terminal result for refresh recovery. Only explicit Stop, a new follow-up send, or server shutdown ends that job.
 - Background history restoration is revision-guarded: starting, opening, or sending in a thread after restore begins must prevent the late merge from replacing the user's chosen view.
 - `/sync_chats` is merge-based; it no longer deletes unmentioned chats from a stale client snapshot.
 - Chat deletion uses explicit tombstones (`deleted_chat_ids`) so deletes are intentional and can be retried safely.
@@ -18,6 +19,7 @@
 - The startup page loader is lifecycle-driven: it measures real bootstrap elapsed time, updates the progress bar from that elapsed time, and only dismisses after app initialization finishes.
 - The intent normalizer must preserve structured technical prompts instead of collapsing them into a single line; only ordinary prose should have whitespace compacted for routing.
 - The stop button now cancels the active backend job by job_id, and the chat stream exits early instead of awaiting the full worker future after cancellation.
+- The active job ID is persisted separately from chat history in browser storage; reload polls the job endpoint and appends the completed response exactly once, while a follow-up prompt invalidates an in-flight recovery poll before cancelling the old job.
 - Pasted code/logs that ask for explanation, syntax breakdown, summary, or description are direct chat requests; they must bypass tool/email routing unless the user explicitly asks to send, attach, edit files, run code, or execute another action.
 - Runtime theme changes must keep `data-theme` synchronized on both `<html>` and `<body>` because CSS uses ancestor theme selectors and JS visual effects observe the body attribute.
 - Runtime theme changes must also select the matching brand asset: dark mode uses the red `/static/img/logo.png`, while light mode uses the blue `/static/img/logo(2).jpg`; the favicon follows the same mapping.

@@ -59,7 +59,7 @@ class InteractionIntegrityTests(unittest.TestCase):
         self.assertIn("/static/css/style_v3.css?v=146", self.template)
         self.assertIn("/static/js/composer_context_tray.js?v=10", self.template)
         self.assertIn("/static/js/palette.js?v=212", self.template)
-        self.assertIn("/static/js/app.js?v=224", self.template)
+        self.assertIn("/static/js/app.js?v=225", self.template)
 
 
 if __name__ == "__main__":

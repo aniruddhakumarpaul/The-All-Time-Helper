@@ -1,6 +1,5 @@
 import asyncio
 import json
-import queue
 import sqlite3
 import threading
 import time
@@ -13,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.database import classify_sqlite_error, get_db, is_transient_sqlite_error
 from app.inference_queue import inference_queue
+from app.logic.chat_job_registry import chat_job_registry
 from app.logger import logger
 from app.logic.agents import ask_the_helper, is_deterministic_tool_lane_request
 from app.logic.attachment_store import (
@@ -137,9 +137,18 @@ def _message_content(message: dict) -> str:
 
 @router.get("/get_chats")
 def get_chats(current_user: str = Depends(get_current_user), db: sqlite3.Connection = Depends(get_db)):
-    chats_array = ChatRepository.get_chats_for_user(db, current_user)
-    return {"success": True, "chats": chats_array}
-
+    try:
+        chats_array = ChatRepository.get_chats_for_user(db, current_user)
+        return {"success": True, "chats": chats_array}
+    except sqlite3.DatabaseError as exc:
+        logger.error(
+            "[ChatSync] failure_category=%s operation=get_chats",
+            classify_sqlite_error(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Conversations are temporarily unavailable.",
+        ) from exc
 
 @router.post("/attachments")
 async def upload_attachments(
@@ -200,13 +209,30 @@ def sync_chats(chats: list[dict] | dict, current_user: str = Depends(get_current
             logger.error("[ChatSync] failure_category=database_unknown operation=sync_chats")
             raise HTTPException(status_code=500, detail="Conversations could not be synced.") from exc
     raise HTTPException(status_code=500, detail="Conversations could not be synced.")
+@router.get("/chat/jobs/{job_id}")
+async def get_chat_job(
+    job_id: str,
+    after: int = 0,
+    current_user: str = Depends(get_current_user),
+):
+    try:
+        uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    snapshot = chat_job_registry.snapshot(job_id, current_user, after=after)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"success": True, **snapshot}
+
 @router.post("/chat/jobs/{job_id}/cancel")
 async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
     try:
         uuid.UUID(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
-    if not inference_queue.cancel(job_id, current_user):
+    queue_cancelled = inference_queue.cancel(job_id, current_user)
+    registry_cancelled = chat_job_registry.cancel(job_id, current_user)
+    if not queue_cancelled and not registry_cancelled:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"success": True}
 
@@ -364,47 +390,40 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
     abort_event = threading.Event()
 
-    async def listen_for_disconnect():
-        try:
-            while not abort_event.is_set():
-                if await request.is_disconnected():
-                    abort_event.set()
-                    logger.warning("[Chat] Client disconnected. Cancelling agent job.")
-                    break
-                await asyncio.sleep(2)
-        except Exception:
-            pass
-
     try:
         job_id = _new_job_id()
+        chat_job_registry.create(job_id, current_user, abort_event)
 
-        async def agent_stream():
+        async def run_job():
             token = user_context.set(current_user)
-            listener_task = asyncio.create_task(listen_for_disconnect())
+            streamed_parts: list[str] = []
             try:
-                yield json.dumps({"job_id": job_id}).encode() + b'\n'
-                yield json.dumps({"status": "Starting your request..."}).encode() + b'\n'
-                await asyncio.sleep(0.5)
-
+                chat_job_registry.publish(job_id, current_user, {"status": "Starting your request..."})
                 if has_visual_input:
-                    yield json.dumps({"status": "Reading the attached image..."}).encode() + b'\n'
+                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached image..."})
                 elif img:
-                    yield json.dumps({"status": "Reading the attached document..."}).encode() + b'\n'
+                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached document..."})
                 else:
-                    yield json.dumps({"status": "Checking relevant context..."}).encode() + b'\n'
-                streaming_occurred = []
-                status_queue = queue.Queue()
+                    chat_job_registry.publish(job_id, current_user, {"status": "Checking relevant context..."})
 
                 def status_callback(msg):
                     logger.debug("[Chat] Status Update (chars=%d)", len(str(msg)))
-                    status_queue.put({"type": "status", "data": msg})
+                    chat_job_registry.publish(job_id, current_user, {"status": str(msg)[:4000]})
 
-                def chunk_callback(token):
-                    streaming_occurred.append(True)
-                    status_queue.put({"type": "chunk", "data": token})
+                def chunk_callback(value):
+                    chunk = str(value or "")
+                    if not chunk:
+                        return
+                    streamed_parts.append(chunk)
+                    chat_job_registry.publish(
+                        job_id,
+                        current_user,
+                        {"message": {"content": chunk[:12000]}, "done": False},
+                    )
 
                 _workflow_key_for_thread = workflow_admin_key
                 _workflow_plan_for_thread = workflow_plan
+
                 from app.logic.bus import job_id_context
                 _job_id_for_thread = job_id
 
@@ -425,73 +444,80 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
                         intent=direct_tool_intent,
                     )
 
-                task = asyncio.create_task(
-                    inference_queue.submit(
-                        job_id,
-                        thread_target,
-                        abort_event,
-                        timeout=1500.0,
-                        owner=current_user,
-                        lane=execution_lane,
-                    )
+                result = await inference_queue.submit(
+                    job_id,
+                    thread_target,
+                    abort_event,
+                    timeout=1500.0,
+                    owner=current_user,
+                    lane=execution_lane,
                 )
-
-                while not task.done():
-                    if abort_event.is_set():
-                        inference_queue.cancel(job_id, current_user)
-                        break
-
-                    while not status_queue.empty():
-                        item = status_queue.get()
-                        if item["type"] == "status":
-                            yield json.dumps({"status": item["data"]}).encode() + b'\n'
-                        elif item["type"] == "chunk":
-                            yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
-                        await asyncio.sleep(0.01)
-
-                    yield json.dumps({"hb": int(time.time())}).encode() + b'\n'
-                    await asyncio.sleep(0.1)
-
-                result = await task
-                while not status_queue.empty():
-                    item = status_queue.get()
-                    if item["type"] == "status":
-                        yield json.dumps({"status": item["data"]}).encode() + b'\n'
-                    elif item["type"] == "chunk":
-                        yield json.dumps({"message": {"content": item["data"]}, "done": False}).encode() + b'\n'
-
-                if abort_event.is_set():
-                    logger.info("[ChatTrace] job=%s lane=%s state=cancelled reason=client_disconnect_or_stop", job_id, execution_lane)
-                    yield json.dumps({"message": {"content": "Request cancelled."}, "done": True}).encode() + b'\n'
-                else:
-                    is_tool_res = result and result.strip() in ["SUCCESS", "ERROR", "AUTH_REQUIRED"]
-                    if is_tool_res or not streaming_occurred:
-                        yield json.dumps({"message": {"content": str(result)}, "done": True}).encode() + b'\n'
-
-                yield json.dumps({"done": True}).encode() + b'\n'
+                cancelled = abort_event.is_set()
+                result_text = str(result or "")
+                is_tool_result = result_text.strip() in {"SUCCESS", "ERROR", "AUTH_REQUIRED"}
+                content = "Request cancelled." if cancelled else (
+                    result_text if not streamed_parts or is_tool_result else "".join(streamed_parts)
+                )
+                if not content.strip():
+                    content = "I could not complete that response. Please retry or choose another route."
+                chat_job_registry.complete(
+                    job_id,
+                    current_user,
+                    content,
+                    streamed=bool(streamed_parts) and not is_tool_result and not cancelled,
+                    cancelled=cancelled,
+                )
+                logger.info(
+                    "[JobTrace] job=%s lane=%s state=%s",
+                    job_id,
+                    execution_lane,
+                    "cancelled" if cancelled else "completed",
+                )
             except asyncio.CancelledError:
                 abort_event.set()
-                inference_queue.cancel(job_id, current_user)
-                raise
-            except GeneratorExit:
-                abort_event.set()
-                inference_queue.cancel(job_id, current_user)
+                chat_job_registry.fail(
+                    job_id,
+                    current_user,
+                    "The server stopped this request before it completed.",
+                )
                 raise
             except Exception:
-                logger.error("[Chat] Assistant task failed (stream)")
-                yield json.dumps({
-                    "message": {
-                        "content": "I could not complete that response. Please retry or choose another route."
-                    },
-                    "done": True,
-                }).encode() + b'\n'
+                logger.error("[Chat] Assistant task failed (background job)")
+                chat_job_registry.fail(
+                    job_id,
+                    current_user,
+                    "I could not complete that response. Please retry or choose another route.",
+                )
             finally:
-                abort_event.set()
-                listener_task.cancel()
                 try:
                     user_context.reset(token)
                 except ValueError:
-                    logger.debug("[Chat] User context reset skipped after stream context switch.")
+                    logger.debug("[Chat] User context reset skipped after background job context switch.")
+
+        asyncio.create_task(run_job())
+
+        async def agent_stream():
+            last_sequence = 0
+            yield json.dumps({"job_id": job_id}).encode() + b"\n"
+            while True:
+                snapshot = chat_job_registry.snapshot(job_id, current_user, after=last_sequence)
+                if not snapshot:
+                    yield json.dumps({
+                        "message": {
+                            "content": "The response task is no longer available. Please retry."
+                        },
+                        "done": True,
+                    }).encode() + b"\n"
+                    yield json.dumps({"done": True}).encode() + b"\n"
+                    return
+
+                for item in snapshot["events"]:
+                    last_sequence = max(last_sequence, int(item["seq"]))
+                    yield json.dumps(item["event"]).encode() + b"\n"
+
+                if snapshot["status"] in {"completed", "failed", "cancelled"} and not snapshot["events"]:
+                    return
+                await asyncio.sleep(0.1)
 
         return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
     except Exception as exc:
