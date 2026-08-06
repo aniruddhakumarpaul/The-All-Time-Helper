@@ -379,3 +379,14 @@ button.menu-item {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
 }
+#settings-modal .settings-account .modal-credit {
+    grid-column: 1 / -1;
+    grid-row: 2;
+}
+#settings-modal .settings-account .signout-btn {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+    margin-top: 8px;
+    min-height: 48px;
+}
