@@ -74,6 +74,22 @@ async function handleAuth(type) {
     }, 'Account request failed');
 }
 
+async function createChatJob(payload, signal) {
+    return await requestJson('/chat/jobs', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(payload),
+        signal
+    }, 'The response task could not be created');
+}
+
+async function streamChatJob(jobId, after = 0, signal) {
+    return await fetch(apiUrl(`/chat/jobs/${encodeURIComponent(jobId)}/events?after=${Math.max(0, Number(after) || 0)}`), {
+        method: 'GET',
+        headers: getAuthHeaders(),
+        signal
+    });
+}
 async function streamChat(payload, signal) {
     return await fetch(apiUrl('/chat'), {
         method: 'POST',
@@ -151,6 +167,8 @@ async function checkUpscaleStatus(jobId) {
 const api = {
     handleAuth,
     streamChat,
+    createChatJob,
+    streamChatJob,
     uploadAttachments,
     getChatJob,
     cancelInferenceJob,

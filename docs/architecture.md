@@ -3,6 +3,8 @@
 The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 frontend, a CrewAI-driven backend, local Ollama fallback, and ChromaDB-backed neural memory.
 
 ## Core Layers
+- `POST /chat/jobs`: creates an authenticated server-owned job before subscription; `GET /chat/jobs/{job_id}/events?after=N` is the authoritative NDJSON cursor stream, while `GET /chat/jobs/{job_id}` remains the snapshot/recovery surface. All job responses are private and no-store.
+- `app/logic/chat_job_registry.py`: SQLite WAL persistence is the default shared local backend. It stores owner-scoped bounded events, terminal content, TTLs, cancellation intent, cursor sequences, event compaction, and retention limits. A process-local cancel event is only an execution optimization; a watcher polls durable cancellation so another worker/tab can stop the local queue.
 - `app/factory.py`: FastAPI construction, lifespan work, CORS, static files, and router wiring.
 - `app/main.py`: Thin ASGI import and local run entry point; owns the optional Ngrok session when executed directly.
 - `app/routes/health.py`: UI, health, and upscale-status routes.

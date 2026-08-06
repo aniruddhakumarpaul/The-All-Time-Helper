@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -7,7 +8,7 @@ import uuid
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import classify_sqlite_error, get_db, is_transient_sqlite_error
@@ -38,6 +39,69 @@ from app.services.email_widget_intercept import (
 )
 
 router = APIRouter()
+
+NO_STORE_HEADERS = {
+    "Cache-Control": "private, no-store",
+    "Pragma": "no-cache",
+    "X-Content-Type-Options": "nosniff",
+}
+
+
+def _inline_ndjson_response(body: str) -> JSONResponse:
+    return JSONResponse({"success": True, "inline_ndjson": body}, headers=NO_STORE_HEADERS)
+
+
+def _finalize_event(event: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
+    event = dict(event)
+    if event.get("final"):
+        event["content"] = snapshot.get("content", "")
+        if isinstance(event.get("message"), dict):
+            message = dict(event["message"])
+            message["content"] = snapshot.get("content", "")
+            event["message"] = message
+    return event
+
+
+async def _stream_job_events(job_id: str, owner: str, after: int = 0):
+    last_sequence = max(0, int(after))
+    while True:
+        snapshot = chat_job_registry.snapshot(job_id, owner, after=last_sequence)
+        if not snapshot:
+            yield json.dumps({"error": "Task not found", "done": True}).encode() + b"\n"
+            return
+        saw_final = False
+        for item in snapshot["events"]:
+            last_sequence = max(last_sequence, int(item["seq"]))
+            event = _finalize_event(item["event"], snapshot)
+            saw_final = saw_final or bool(event.get("final") or (event.get("done") and snapshot["status"] in {"completed", "failed", "cancelled"}))
+            yield json.dumps(event).encode() + b"\n"
+        if snapshot["status"] in {"completed", "failed", "cancelled"}:
+            if not saw_final and last_sequence < int(snapshot["next_seq"]):
+                yield json.dumps({
+                    "final": True,
+                    "status": snapshot["status"],
+                    "content": snapshot.get("content", ""),
+                    "done": True,
+                }).encode() + b"\n"
+            return
+        await asyncio.sleep(0.1)
+
+async def _legacy_job_stream(job_id: str, owner: str):
+    yield json.dumps({"job_id": job_id}).encode() + b"\n"
+    async for chunk in _stream_job_events(job_id, owner, after=0):
+        try:
+            event = json.loads(chunk)
+        except (TypeError, json.JSONDecodeError):
+            yield chunk
+            continue
+        if event.get("final"):
+            message = event.get("message") if isinstance(event.get("message"), dict) else {
+                "content": event.get("content", "")
+            }
+            yield json.dumps({"message": message, "done": True}).encode() + b"\n"
+            yield json.dumps({"done": True}).encode() + b"\n"
+            return
+        yield chunk
 
 
 class Attachment(BaseModel):
@@ -222,7 +286,7 @@ async def get_chat_job(
     snapshot = chat_job_registry.snapshot(job_id, current_user, after=after)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"success": True, **snapshot}
+    return JSONResponse({"success": True, **snapshot}, headers=NO_STORE_HEADERS)
 
 @router.post("/chat/jobs/{job_id}/cancel")
 async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_user)):
@@ -234,7 +298,17 @@ async def cancel_chat_job(job_id: str, current_user: str = Depends(get_current_u
     registry_cancelled = chat_job_registry.cancel(job_id, current_user)
     if not queue_cancelled and not registry_cancelled:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {"success": True}
+    return JSONResponse({"success": True}, headers=NO_STORE_HEADERS)
+
+@router.get("/chat/jobs/{job_id}/events")
+async def stream_chat_job_events(job_id: str, after: int = 0, current_user: str = Depends(get_current_user)):
+    try:
+        uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    if not chat_job_registry.snapshot(job_id, current_user, after=after):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return StreamingResponse(_stream_job_events(job_id, current_user, after), media_type="application/x-ndjson", headers=NO_STORE_HEADERS)
 
 @router.post("/retrieve_context")
 def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_current_user)):
@@ -263,8 +337,7 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
         user_context.reset(token)
 
 
-@router.post("/chat")
-async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
+async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user), *, create_only: bool = False):
     target_model = req.model
     prompt = req.prompt
     try:
@@ -323,35 +396,38 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
     )
 
     if req.isMasked and workflow_plan is None:
-        async def no_pending_workflow_stream():
-            yield json.dumps({
-                "message": {
-                    "content": "No pending email delivery was found. Reopen the draft and request delivery again."
-                },
-                "done": True,
-            }).encode() + b'\n'
-            yield json.dumps({"done": True}).encode() + b'\n'
-        return StreamingResponse(no_pending_workflow_stream(), media_type="application/x-ndjson")
+        body = (json.dumps({"message": {"content": "No pending email delivery was found. Reopen the draft and request delivery again."}, "done": True}) + "\n" + json.dumps({"done": True}) + "\n")
+        if create_only:
+            return _inline_ndjson_response(body)
+        async def inline_stream():
+            yield body.encode()
+        return StreamingResponse(inline_stream(), media_type="application/x-ndjson", headers=NO_STORE_HEADERS)
 
     if workflow_candidate and workflow_plan is None:
-        return Response(
-            content=_email_widget_ndjson("I could not identify the email draft to update. Open the draft or attach it to the prompt, then retry."),
-            media_type="application/x-ndjson",
-        )
+        body = _email_widget_ndjson("I could not identify the email draft to update. Open the draft or attach it to the prompt, then retry.")
+        return _inline_ndjson_response(body) if create_only else Response(content=body, media_type="application/x-ndjson", headers=NO_STORE_HEADERS)
 
     if workflow_plan is None:
         if not req.isMasked:
             body_update = build_email_draft_body_update_payload_from_history(prompt, history, logger=logger)
             if body_update:
                 logger.info("[EmailWidget] Routed targeted body update inside chat endpoint before image shortcut.")
-                return Response(content=_email_widget_ndjson(body_update), media_type="application/x-ndjson")
+                if create_only:
+                    return _inline_ndjson_response(_email_widget_ndjson(body_update))
+                legacy_response = Response(content=_email_widget_ndjson(body_update), media_type="application/x-ndjson")
+                legacy_response.headers.update(NO_STORE_HEADERS)
+                return legacy_response
 
         if not req.isMasked and _is_email_widget_attachment_request(prompt):
             try:
                 draft = _latest_image_email_draft(history)
                 message = _email_widget_message(draft)
                 logger.info("[EmailWidget] Routed latest image attachment request inside chat endpoint.")
-                return Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
+                if create_only:
+                    return _inline_ndjson_response(_email_widget_ndjson(message))
+                legacy_response = Response(content=_email_widget_ndjson(message), media_type="application/x-ndjson")
+                legacy_response.headers.update(NO_STORE_HEADERS)
+                return legacy_response
             except Exception as exc:
                 logger.warning("[EmailWidget] Route shortcut failed, continuing normal chat flow (%s)", type(exc).__name__)
 
@@ -394,6 +470,18 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
         job_id = _new_job_id()
         chat_job_registry.create(job_id, current_user, abort_event)
 
+        watch_task = None
+
+        async def cancellation_watcher():
+            while True:
+                snapshot = chat_job_registry.snapshot(job_id, current_user)
+                if not snapshot or snapshot["status"] in {"completed", "failed", "cancelled"}:
+                    return
+                if snapshot.get("cancel_requested"):
+                    abort_event.set()
+                    return
+                await asyncio.sleep(0.4)
+
         async def run_job():
             token = user_context.set(current_user)
             streamed_parts: list[str] = []
@@ -412,114 +500,72 @@ async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = 
 
                 def chunk_callback(value):
                     chunk = str(value or "")
-                    if not chunk:
-                        return
-                    streamed_parts.append(chunk)
-                    chat_job_registry.publish(
-                        job_id,
-                        current_user,
-                        {"message": {"content": chunk[:12000]}, "done": False},
-                    )
-
-                _workflow_key_for_thread = workflow_admin_key
-                _workflow_plan_for_thread = workflow_plan
+                    if chunk:
+                        streamed_parts.append(chunk)
+                        chat_job_registry.publish(job_id, current_user, {"message": {"content": chunk[:12000]}, "done": False})
 
                 from app.logic.bus import job_id_context
-                _job_id_for_thread = job_id
-
                 def thread_target():
                     user_context.set(current_user)
-                    job_id_context.set(_job_id_for_thread)
-                    if _workflow_plan_for_thread is not None:
-                        return execute_workflow_for_chat(
-                            _workflow_plan_for_thread,
-                            admin_key=_workflow_key_for_thread,
-                            abort_event=abort_event,
-                            status_callback=status_callback,
-                        )
-                    return ask_the_helper(
-                        prompt, img, target_model, sys_config, history, req.persona, abort_event, current_user,
-                        status_callback=status_callback,
-                        chunk_callback=chunk_callback,
-                        intent=direct_tool_intent,
-                    )
+                    job_id_context.set(job_id)
+                    test_delay = max(0.0, float(os.getenv("CHAT_JOB_TEST_DELAY_SECONDS", "0") or 0))
+                    if test_delay and prompt.startswith("__test_delay__"):
+                        deadline = time.monotonic() + test_delay
+                        while time.monotonic() < deadline and not abort_event.is_set():
+                            time.sleep(0.05)
+                        return "server-owned delayed response"
+                    if workflow_plan is not None:
+                        return execute_workflow_for_chat(workflow_plan, admin_key=workflow_admin_key,
+                                                         abort_event=abort_event, status_callback=status_callback)
+                    return ask_the_helper(prompt, img, target_model, sys_config, history, req.persona, abort_event,
+                                          current_user, status_callback=status_callback, chunk_callback=chunk_callback,
+                                          intent=direct_tool_intent)
 
-                result = await inference_queue.submit(
-                    job_id,
-                    thread_target,
-                    abort_event,
-                    timeout=1500.0,
-                    owner=current_user,
-                    lane=execution_lane,
-                )
+                result = await inference_queue.submit(job_id, thread_target, abort_event, timeout=1500.0,
+                                                       owner=current_user, lane=execution_lane)
                 cancelled = abort_event.is_set()
                 result_text = str(result or "")
                 is_tool_result = result_text.strip() in {"SUCCESS", "ERROR", "AUTH_REQUIRED"}
-                content = "Request cancelled." if cancelled else (
-                    result_text if not streamed_parts or is_tool_result else "".join(streamed_parts)
-                )
+                content = "Request cancelled." if cancelled else (result_text if not streamed_parts or is_tool_result else "".join(streamed_parts))
                 if not content.strip():
                     content = "I could not complete that response. Please retry or choose another route."
-                chat_job_registry.complete(
-                    job_id,
-                    current_user,
-                    content,
-                    streamed=bool(streamed_parts) and not is_tool_result and not cancelled,
-                    cancelled=cancelled,
-                )
-                logger.info(
-                    "[JobTrace] job=%s lane=%s state=%s",
-                    job_id,
-                    execution_lane,
-                    "cancelled" if cancelled else "completed",
-                )
+                chat_job_registry.complete(job_id, current_user, content, streamed=bool(streamed_parts), cancelled=cancelled)
+                logger.info("[JobTrace] job=%s lane=%s state=%s", job_id, execution_lane,
+                            "cancelled" if cancelled else "completed")
             except asyncio.CancelledError:
                 abort_event.set()
-                chat_job_registry.fail(
-                    job_id,
-                    current_user,
-                    "The server stopped this request before it completed.",
-                )
+                chat_job_registry.fail(job_id, current_user, "The server stopped this request before it completed.")
                 raise
             except Exception:
                 logger.error("[Chat] Assistant task failed (background job)")
-                chat_job_registry.fail(
-                    job_id,
-                    current_user,
-                    "I could not complete that response. Please retry or choose another route.",
-                )
+                chat_job_registry.fail(job_id, current_user, "I could not complete that response. Please retry or choose another route.")
             finally:
                 try:
                     user_context.reset(token)
                 except ValueError:
                     logger.debug("[Chat] User context reset skipped after background job context switch.")
 
-        asyncio.create_task(run_job())
+        watch_task = asyncio.create_task(cancellation_watcher())
+        job_task = asyncio.create_task(run_job())
 
-        async def agent_stream():
-            last_sequence = 0
-            yield json.dumps({"job_id": job_id}).encode() + b"\n"
-            while True:
-                snapshot = chat_job_registry.snapshot(job_id, current_user, after=last_sequence)
-                if not snapshot:
-                    yield json.dumps({
-                        "message": {
-                            "content": "The response task is no longer available. Please retry."
-                        },
-                        "done": True,
-                    }).encode() + b"\n"
-                    yield json.dumps({"done": True}).encode() + b"\n"
-                    return
+        def stop_watcher(_task):
+            if not watch_task.done():
+                watch_task.cancel()
+        job_task.add_done_callback(stop_watcher)
 
-                for item in snapshot["events"]:
-                    last_sequence = max(last_sequence, int(item["seq"]))
-                    yield json.dumps(item["event"]).encode() + b"\n"
-
-                if snapshot["status"] in {"completed", "failed", "cancelled"} and not snapshot["events"]:
-                    return
-                await asyncio.sleep(0.1)
-
-        return StreamingResponse(agent_stream(), media_type="application/x-ndjson")
+        if create_only:
+            return JSONResponse({"success": True, "job_id": job_id}, status_code=202, headers=NO_STORE_HEADERS)
+        return StreamingResponse(_legacy_job_stream(job_id, current_user),
+                                 media_type="application/x-ndjson", headers=NO_STORE_HEADERS)
     except Exception as exc:
         logger.error("[Chat] Failed to start assistant request (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="The assistant request could not be started.") from exc
+
+@router.post("/chat")
+async def chat_endpoint(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
+    return await _chat_endpoint_impl(req, request, current_user)
+
+
+@router.post("/chat/jobs")
+async def create_chat_job(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user)):
+    return await _chat_endpoint_impl(req, request, current_user, create_only=True)

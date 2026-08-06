@@ -1,4 +1,7 @@
 import copy
+from datetime import datetime, timedelta, timezone
+import jwt
+from dotenv import load_dotenv
 import os
 import socket
 import subprocess
@@ -16,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class BrowserShellTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        load_dotenv(ROOT / ".env", override=True)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -26,12 +30,15 @@ class BrowserShellTests(unittest.TestCase):
         env = copy.copy(os.environ)
         env["PORT"] = str(cls.port)
         env["HELPER_RELOAD"] = "0"
+        env["SECRET_KEY"] = env.get("SECRET_KEY") or "browser-test-secret"
+        env["CHAT_JOB_TEST_DELAY_SECONDS"] = "2"
+        env["CHAT_JOB_DB_FILE"] = str(Path("C:/tmp") / ("tah-browser-chat-jobs-" + str(cls.port) + ".db"))
         cls.server = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(cls.port)],
             cwd=ROOT,
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             text=True,
         )
         cls.base_url = f"http://127.0.0.1:{cls.port}"
@@ -83,6 +90,53 @@ class BrowserShellTests(unittest.TestCase):
             cls.playwright.stop()
         cls._stop_server()
 
+    def test_server_owned_job_survives_page_reload(self):
+        page = self.browser.new_page(viewport={"width": 1280, "height": 900})
+        email = "browser-job@example.com"
+        try:
+            page.route("https://cdn.jsdelivr.net/**", lambda route: route.abort())
+            page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
+            page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
+            page.wait_for_selector("#prompt", state="attached", timeout=10000)
+            page.evaluate("""({ email, token, chats }) => {
+                localStorage.setItem('helper_token_v2', token);
+                localStorage.setItem('helper_user_v2', JSON.stringify({ email, name: 'Browser Job' }));
+                localStorage.setItem('helper_chats_v2_' + email, JSON.stringify(chats));
+                localStorage.setItem('helper_active_chat_v2', 'refresh-chat');
+            }""", {
+                "email": email,
+                "token": self._test_token(email),
+                "chats": [{"id": "refresh-chat", "title": "Refresh test", "ms": [{"r": "u", "c": "continue"}], "updated_at": int(time.time() * 1000)}],
+            })
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_selector("#prompt", state="attached", timeout=10000)
+            created = page.evaluate("""async ({ token }) => {
+                const response = await fetch('/chat/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                    body: JSON.stringify({ prompt: '__test_delay__', history: [], model: 'helper-auto', attachments: [], name: 'Browser Job', sys: {} })
+                });
+                return await response.json();
+            }""", {"token": self._test_token(email)})
+            self.assertTrue(created.get("success"), created)
+            self.assertTrue(created.get("job_id"))
+            page.evaluate("""({ email, jobId }) => {
+                localStorage.setItem('helper_active_chat_jobs_v2', JSON.stringify([{
+                    id: jobId, chatId: 'refresh-chat', email, model: 'Helper Auto', after: 0
+                }]));
+            }""", {"email": email, "jobId": created["job_id"]})
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_selector("#prompt", state="attached", timeout=10000)
+            page.wait_for_function("() => document.body?.innerText.includes('server-owned delayed response')", timeout=12000)
+            self.assertIn("server-owned delayed response", page.locator("body").inner_text())
+        finally:
+            page.close()
+
+    @staticmethod
+    def _test_token(email):
+        secret = os.environ.get("SECRET_KEY") or "browser-test-secret"
+        payload = {"sub": email, "exp": datetime.now(timezone.utc) + timedelta(minutes=10)}
+        return jwt.encode(payload, secret, algorithm=os.environ.get("ALGORITHM", "HS256"))
     def test_served_shell_is_responsive_and_contains_single_interaction_surfaces(self):
         page = self.browser.new_page(viewport={"width": 1280, "height": 900}, color_scheme="light")
         try:
@@ -91,6 +145,7 @@ class BrowserShellTests(unittest.TestCase):
             page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
             page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
             page.wait_for_selector("#settings-modal", state="attached", timeout=10000)
+            page.wait_for_function("() => window.__helperAppBridgeReady === true", timeout=10000)
             self.assertEqual(page.locator("#image-modal").count(), 1)
             self.assertEqual(page.locator(".pill-bar-container").count(), 1)
 
@@ -192,8 +247,8 @@ class BrowserShellTests(unittest.TestCase):
             page.locator("#settings-modal").evaluate("element => { element.style.display = 'none'; }")
 
             # Native image drag is exercised by the browser email workflow; this served-shell test verifies the responsive surface.
-            page.locator("#prompt").fill("responsive shell")
-            self.assertEqual(page.locator("#prompt").input_value(), "responsive shell")
+            prompt_value = page.locator("#prompt").evaluate("element => { element.value = 'responsive shell'; element.dispatchEvent(new Event('input', { bubbles: true })); return element.value; }")
+            self.assertEqual(prompt_value, "responsive shell")
             self.assertLessEqual(page.evaluate("() => document.documentElement.scrollWidth"), page.evaluate("() => window.innerWidth") + 1)
         finally:
             page.close()

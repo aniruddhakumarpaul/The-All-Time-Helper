@@ -5,6 +5,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from app.routes import chat
+from app.logic.chat_job_registry import ChatJobRegistry, InMemoryChatJobStore
 
 
 class FakeRequest:
@@ -102,6 +103,33 @@ class ChatCharacterizationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as raised:
                 await chat.chat_endpoint(request, FakeRequest(), current_user="other@example.com")
         self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_create_then_events_protocol_is_durable_and_owner_scoped(self):
+        registry = ChatJobRegistry(InMemoryChatJobStore())
+        queue = FakeQueue()
+        with (
+            patch.object(chat, "chat_job_registry", registry),
+            patch.object(chat, "inference_queue", queue),
+            patch.object(chat, "ask_the_helper", return_value="durable response"),
+        ):
+            response = await chat.create_chat_job(
+                chat.ChatRequest(prompt="hello", model="gemma2:2b"),
+                FakeRequest(),
+                current_user="owner@example.com",
+            )
+            created = json.loads(response.body)
+            self.assertEqual(response.status_code, 202)
+            self.assertTrue(created["job_id"])
+
+            stream = await chat.stream_chat_job_events(created["job_id"], current_user="owner@example.com")
+            lines = await response_lines(stream)
+
+            with self.assertRaises(HTTPException) as raised:
+                await chat.get_chat_job(created["job_id"], current_user="other@example.com")
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertTrue(any(item.get("final") for item in lines))
+        self.assertEqual(lines[-1]["content"], "durable response")
 
 
 if __name__ == "__main__":

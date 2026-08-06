@@ -51,7 +51,9 @@ async def lifespan(app: FastAPI):
     try:
         from app.diagnostics import run_startup_diagnostics
         from app.logic.memory import prune_stale_memories
+        from app.logic.chat_job_registry import chat_job_registry
 
+        chat_job_registry.prune()
         run_startup_diagnostics()
         prune_stale_memories(days=30)
     except Exception as exc:

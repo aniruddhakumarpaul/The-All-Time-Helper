@@ -26,38 +26,79 @@ function ensureDeletedChatIds() {
     return state.deletedChatIds;
 }
 
-const ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_job_v1';
-let recoveryJobInFlight = false;
-let recoveryRevision = 0;
-
 function syncWindowState() {
     window.chats = state.chats;
     window.activeId = state.activeId;
 }
 
-function readActiveJob() {
+const ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_jobs_v2';
+const LEGACY_ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_job_v1';
+const recoveryJobsInFlight = new Set();
+const recoveryRevisions = new Map();
+let activeJobChannel = null;
+try {
+    activeJobChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('helper-chat-jobs') : null;
+} catch (_) { activeJobChannel = null; }
+
+function readActiveJobs() {
     try {
         const raw = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
-        const job = raw ? JSON.parse(raw) : null;
-        return job && typeof job.id === 'string' && typeof job.chatId === 'string' ? job : null;
+        const parsed = raw ? JSON.parse(raw) : {};
+        const jobs = Array.isArray(parsed) ? parsed : Object.values(parsed || {});
+        const valid = jobs.filter(job => job && typeof job.id === 'string' && typeof job.chatId === 'string');
+        if (valid.length) return valid;
+        const legacyRaw = localStorage.getItem(LEGACY_ACTIVE_JOB_STORAGE_KEY);
+        const legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
+        if (legacy?.id && legacy?.chatId) {
+            const migrated = [{ ...legacy, after: 0, migratedAt: Date.now() }];
+            localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify(migrated));
+            localStorage.removeItem(LEGACY_ACTIVE_JOB_STORAGE_KEY);
+            return migrated;
+        }
+        return [];
     } catch (_) {
-        return null;
+        return [];
     }
 }
 
-function rememberActiveJob(jobId, chatId, model) {
-    if (!jobId || !chatId) return;
-    localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify({
-        id: jobId,
-        chatId,
-        email: state.user?.email || '',
-        model: model || 'AI Assistant',
-    }));
+function writeActiveJobs(jobs) {
+    const deduped = [];
+    const seen = new Set();
+    for (const job of jobs || []) {
+        if (!job?.id || !job?.chatId || seen.has(job.id)) continue;
+        seen.add(job.id);
+        deduped.push(job);
+    }
+    localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify(deduped.slice(-32)));
+    activeJobChannel?.postMessage({ type: 'jobs-updated', email: state.user?.email || '' });
 }
 
-function forgetActiveJob(jobId = '') {
-    const current = readActiveJob();
-    if (!jobId || !current || current.id === jobId) localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+function readActiveJob(chatId = state.activeId) {
+    return readActiveJobs().find(job => job.chatId === chatId && (!job.email || job.email === state.user?.email)) || null;
+}
+
+function rememberActiveJob(jobId, chatId, model, after = 0) {
+    if (!jobId || !chatId) return;
+    const jobs = readActiveJobs().filter(job => job.chatId !== chatId && job.id !== jobId);
+    jobs.push({ id: jobId, chatId, email: state.user?.email || '', model: model || 'AI Assistant',
+        after: Math.max(0, Number(after) || 0), updatedAt: Date.now() });
+    writeActiveJobs(jobs);
+}
+
+function updateActiveJobCursor(jobId, chatId, after, model) {
+    const current = readActiveJobs();
+    const job = current.find(item => item.id === jobId && item.chatId === chatId);
+    if (!job) return;
+    job.after = Math.max(0, Number(after) || 0);
+    job.model = model || job.model;
+    job.updatedAt = Date.now();
+    writeActiveJobs(current);
+}
+
+function forgetActiveJob(jobId = '', chatId = '') {
+    const current = readActiveJobs();
+    const filtered = current.filter(job => (jobId && job.id === jobId) || (chatId && job.chatId === chatId) ? false : true);
+    if (filtered.length !== current.length) writeActiveJobs(filtered);
 }
 
 function attachJobIdToLatestUserMessage(chatId, jobId) {
@@ -72,72 +113,78 @@ function recoveredJobMessage(chat, job) {
     return chat?.ms?.some(message => message?.r === 'b' && message?.job_id === job.id);
 }
 
-async function recoverActiveChatJob() {
-    if (recoveryJobInFlight) return;
-    const pending = readActiveJob();
-    if (!pending || pending.email && pending.email !== state.user?.email) return;
+async function recoverActiveChatJob(pending = null) {
+    pending = pending || readActiveJob();
+    if (!pending || (pending.email && pending.email !== state.user?.email) || recoveryJobsInFlight.has(pending.id)) return;
     const chat = state.chats.find(item => item?.id === pending.chatId);
     if (!chat) {
-        forgetActiveJob(pending.id);
+        forgetActiveJob(pending.id, pending.chatId);
         return;
     }
-
-    recoveryJobInFlight = true;
-    const recoveryToken = ++recoveryRevision;
+    recoveryJobsInFlight.add(pending.id);
+    const token = (recoveryRevisions.get(pending.chatId) || 0) + 1;
+    recoveryRevisions.set(pending.chatId, token);
     state.set('activeJobId', pending.id);
     let statusNode = null;
+    let after = Math.max(0, Number(pending.after) || 0);
     try {
         while (true) {
-            let snapshot;
-            try {
-                snapshot = await api.getChatJob(pending.id);
-            } catch (_) {
-                await new Promise(resolve => setTimeout(resolve, 1500));
-                if (recoveryToken !== recoveryRevision) return;
-                continue;
-            }
-            if (recoveryToken !== recoveryRevision) return;
+            if (recoveryRevisions.get(pending.chatId) !== token) return;
+            const snapshot = await api.getChatJob(pending.id, after);
             if (!snapshot?.success) {
-                if (Number(snapshot?.status) === 404) forgetActiveJob(pending.id);
+                if (Number(snapshot?.status) === 404) forgetActiveJob(pending.id, pending.chatId);
                 return;
             }
-            if (!['completed', 'failed', 'cancelled'].includes(snapshot.status)) {
+            for (const item of snapshot.events || []) {
+                after = Math.max(after, Number(item.seq) || 0);
+            }
+            updateActiveJobCursor(pending.id, pending.chatId, after, pending.model);
+            const terminal = ['completed', 'failed', 'cancelled'].includes(snapshot.status);
+            if (!terminal) {
                 if (!statusNode && state.activeId === pending.chatId) {
                     const textNode = ui.addMsg('b', 'Reconnecting to your response...', null, chat.ms.length, pending.model || 'AI Assistant');
                     statusNode = textNode.closest('.msg');
                     statusNode?.classList.add('thinking-state');
                 }
                 await new Promise(resolve => setTimeout(resolve, 800));
-                if (recoveryToken !== recoveryRevision) return;
                 continue;
             }
-
             const content = String(snapshot.content || '').trim();
             if (content && !recoveredJobMessage(chat, pending)) {
-                if (statusNode) statusNode.remove();
-                if (state.activeId === pending.chatId) {
-                    ui.addMsg('b', content, null, chat.ms.length, pending.model || 'AI Assistant');
-                }
-                state.appendMessage(pending.chatId, {
-                    r: 'b',
-                    c: content,
-                    m: pending.model || 'AI Assistant',
-                    job_id: pending.id,
-                });
+                statusNode?.remove();
+                if (state.activeId === pending.chatId) ui.addMsg('b', content, null, chat.ms.length, pending.model || 'AI Assistant');
+                state.appendMessage(pending.chatId, { r: 'b', c: content, m: pending.model || 'AI Assistant', job_id: pending.id });
                 state.markChatUpdated(pending.chatId);
                 await requestChatPersist({ immediate: true });
             } else {
                 persistLocalChatCache();
             }
-            forgetActiveJob(pending.id);
+            forgetActiveJob(pending.id, pending.chatId);
             if (state.activeJobId === pending.id) state.set('activeJobId', null);
             return;
         }
+    } catch (error) {
+        if (error?.name !== 'AbortError') {
+            ui.notify('The response is still available on the server. Reconnecting...', 'info');
+        }
     } finally {
         statusNode?.remove();
-        recoveryJobInFlight = false;
+        recoveryJobsInFlight.delete(pending.id);
     }
 }
+
+async function recoverActiveChatJobs() {
+    const jobs = readActiveJobs().filter(job => !job.email || job.email === state.user?.email);
+    await Promise.all(jobs.map(job => recoverActiveChatJob(job)));
+}
+
+window.addEventListener('storage', event => {
+    if (event.key === ACTIVE_JOB_STORAGE_KEY) recoverActiveChatJobs();
+});
+activeJobChannel?.addEventListener('message', event => {
+    if (event.data?.type === 'jobs-updated') recoverActiveChatJobs();
+});
+
 function chooseActiveChatId(chats, preferredId) {
     const preferred = String(preferredId || '').trim();
     if (preferred && chats.some(chat => chat.id === preferred)) return preferred;
@@ -377,7 +424,7 @@ async function loadUserChats() {
         trackNavigation: false,
     });
     syncWindowState();
-    recoverActiveChatJob();
+    recoverActiveChatJobs();
 }
 
 async function saveUserChats() {
@@ -525,12 +572,12 @@ async function send() {
     const contextText = [attachedContextText, activeDraftContext].filter(Boolean).join(String.fromCharCode(10, 10));
     const apiPrompt = [contextText, userText].filter(Boolean).join(String.fromCharCode(10, 10));
     if (!apiPrompt && !currentAttachments.length) return;
-    const previousJobId = state.activeJobId;
-    recoveryRevision += 1;
+    const previousJobId = state.activeJobId || readActiveJob(state.activeId)?.id;
+    recoveryRevisions.set(state.activeId, (recoveryRevisions.get(state.activeId) || 0) + 1);
     if (previousJobId) {
         api.cancelInferenceJob(previousJobId).catch(() => { });
         state.abortController?.abort();
-        forgetActiveJob(previousJobId);
+        forgetActiveJob(previousJobId, state.activeId);
         state.set('activeJobId', null);
     }
     navigationRevision += 1;
@@ -606,7 +653,7 @@ async function send() {
             attachments: message.attachments || [],
             masked: Boolean(message.masked)
         }));
-        const response = await api.streamChat({
+        const requestPayload = {
             prompt: apiPrompt,
             history: historyForApi,
             model: state.selectedModel,
@@ -621,7 +668,20 @@ async function send() {
                 pers: Boolean(document.getElementById('t-pers')?.classList.contains('on')),
                 response_style: state.responseStyle || 'adaptive'
             }
-        }, state.abortController.signal);
+        };
+        const created = await api.createChatJob(requestPayload, state.abortController.signal);
+        let response;
+        if (created?.inline_ndjson) {
+            response = new Response(created.inline_ndjson, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } });
+        } else {
+            if (!created?.success || !created.job_id) throw new Error(created?.error || 'The response task could not be created.');
+            streamJobId = created.job_id;
+            state.set('activeJobId', streamJobId);
+            rememberActiveJob(streamJobId, chat.id, modelName, 0);
+            attachJobIdToLatestUserMessage(chat.id, streamJobId);
+            requestChatPersist();
+            response = await api.streamChatJob(streamJobId, 0, state.abortController.signal);
+        }
 
         if (response.status === 401) { if (!window.handleHelperUnauthorized?.(response)) ui.signOut(); return; }
         if (!response.ok) {
@@ -656,6 +716,15 @@ async function send() {
                         requestChatPersist();
                         continue;
                     }
+                    if (item.final) {
+                        fullText = String(item.content ?? item.message?.content ?? '');
+                        botText.querySelector('.typing-indicator')?.remove();
+                        botText.querySelector('.status-msg')?.remove();
+                        botText.closest('.msg')?.classList.remove('thinking-state');
+                        botText.innerHTML = window.renderMarkdown(fullText);
+                        window.hydrateRenderedMarkdown?.(botText);
+                        continue;
+                    }
                     if (item.status) {
                         let statusEl = botText.querySelector('#status-text');
                         if (!statusEl) {
@@ -686,7 +755,8 @@ async function send() {
         if (buffer.trim()) {
             try {
                 const item = JSON.parse(buffer);
-                if (item.message?.content) fullText += item.message.content;
+                if (item.final) fullText = String(item.content ?? item.message?.content ?? fullText);
+                else if (item.message?.content) fullText += item.message.content;
             } catch (_) { }
         }
         if (!fullText.trim()) {
@@ -745,7 +815,7 @@ async function send() {
         state.replaceAttachedContexts([]);
         state.replaceCurrentImages([]);
         if (!preserveJobForRecovery && (!streamJobId || state.activeJobId === streamJobId)) {
-            forgetActiveJob(streamJobId);
+            forgetActiveJob(streamJobId, chat.id);
             state.set('activeJobId', null);
         }
         syncWindowState();

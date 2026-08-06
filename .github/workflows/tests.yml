@@ -31,6 +31,6 @@ jobs:
       - name: Install Chromium
         run: python -m playwright install --with-deps chromium
       - name: Run browser workflows
-        run: python -B -m pytest app/tests/test_browser_email_workflow.py -q -p no:cacheprovider --basetemp "$RUNNER_TEMP/tah-browser"
+        run: python -B -m pytest app/tests/test_browser_email_workflow.py app/tests/test_browser_shell.py -q -p no:cacheprovider --basetemp "$RUNNER_TEMP/tah-browser"
       - name: Run Python tests
         run: python -B -m pytest -q -p no:cacheprovider --basetemp "$RUNNER_TEMP/tah-pytest"
