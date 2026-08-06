@@ -706,12 +706,20 @@ def _safe_filename(value: str, fallback: str) -> str:
 
 
 def _generated_filename(query: str) -> str:
-    words = re.findall(r"[A-Za-z0-9]+", str(query or ""))
-    slug = "-".join(words[:6]).lower() or "generated-image"
+    topic = re.sub(
+        r"(?i)^\s*(?:please\s+)?(?:edit|change|update|add|include|make|create|draft|generate|draw|show|design|illustrate)\b[\s,:-]*",
+        "",
+        str(query or ""),
+    )
+    topic = re.sub(r"(?i)^\s*(?:an?|the)\s+(?:image|picture|photo|illustration)\s+of\b[\s,:-]*", "", topic)
+    stop_words = {"a", "an", "and", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to", "with"}
+    words = [word.lower() for word in re.findall(r"[A-Za-z0-9]+", topic) if word.lower() not in stop_words]
+    slug = "-".join(words[:6]).strip("-") or "generated-image"
     return f"{slug[:72]}.png"
 
 
 def normalize_image_tool_result(raw: Any, *, source: str, query: str = "") -> ImageToolResult | None:
+
     if isinstance(raw, ImageToolResult):
         return raw
     attachment_id = None

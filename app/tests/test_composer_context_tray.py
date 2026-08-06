@@ -6,7 +6,7 @@ class ComposerContextTrayTests(unittest.TestCase):
     def test_composer_context_script_is_loaded_directly(self):
         root = Path(__file__).resolve().parents[2]
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("composer_context_tray.js?v=9", template)
+        self.assertIn("composer_context_tray.js?v=10", template)
         self.assertIn('data-helper-extension="composer-context-tray"', template)
         self.assertNotIn("context_drag_drop", template)
 

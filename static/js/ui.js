@@ -657,9 +657,43 @@ function imageMimeFromUrl(url, explicit = '') {
     return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[extension] || '';
 }
 
+function imageMetadataFromElement(img) {
+    const dataset = img?.dataset || {};
+    const sourceCandidate = String(dataset.originalUrl || dataset.modalUrl || img?.currentSrc || img?.src || '');
+    const downloadCandidate = String(dataset.downloadUrl || dataset.exportUrl || dataset.originalUrl || sourceCandidate);
+    const sourceUrl = safeImageUrl(sourceCandidate);
+    const downloadUrl = safeImageUrl(downloadCandidate)
+        || (/^blob:/i.test(downloadCandidate) ? downloadCandidate : '');
+    const source = String(dataset.imageSource || dataset.source || '').toLowerCase();
+    const generated = source === 'generated' || dataset.generated === 'true' || /pollinations\.ai/i.test(sourceUrl);
+    const mimeType = imageMimeFromUrl(downloadUrl || sourceUrl, dataset.mimeType || dataset.contentType)
+        || (generated ? 'image/png' : '');
+    const extension = mimeType === 'image/jpeg'
+        ? 'jpg'
+        : mimeType
+            ? mimeType.split('/')[1].replace('svg+xml', 'svg')
+            : 'png';
+    const rawName = String(dataset.filename || dataset.imageFilename || img?.getAttribute('alt') || '').trim();
+    const fallbackName = rawName && !/^(image|helper image|full image preview)$/i.test(rawName)
+        ? rawName
+        : 'helper-image';
+    const filename = fallbackName.replace(/[\\/:*?<>|]+/g, '-').trim().slice(0, 120)
+        + (/[.][a-z0-9]{2,8}$/i.test(fallbackName) ? '' : '.' + extension);
+    const blob = /^blob:/i.test(downloadUrl);
+    return {
+        sourceUrl,
+        downloadUrl: downloadUrl || sourceUrl,
+        mimeType,
+        filename,
+        generated,
+        copyable: Boolean(sourceUrl && !blob && /^https?:/i.test(sourceUrl)),
+        downloadable: Boolean(downloadUrl && (mimeType || blob)),
+    };
+}
+
 function imageContextFromElement(img) {
-    const rawUrl = img?.dataset?.modalUrl || img?.currentSrc || img?.src || '';
-    const url = safeImageUrl(rawUrl);
+    const metadata = imageMetadataFromElement(img);
+    const url = metadata.sourceUrl;
     const alt = String(img?.alt || 'chat image').trim().slice(0, 240);
     const text = url
         ? '[Target Image]\nUse this image as explicit context for the next request.\nImage source: ' + url + '\nImage description/context: ' + alt
@@ -670,7 +704,7 @@ function imageContextFromElement(img) {
         title: 'Image Target',
         subtitle: alt || 'Selected image',
         preview: url,
-        text
+        text,
     };
 }
 
@@ -686,15 +720,29 @@ function attachImageContext(img) {
 }
 
 function installChatImageActions(img) {
-    if (!img || img.dataset.imageActionsInstalled === 'true') return;
+    if (!img) return;
     const host = img.closest('.chat-img-preview-container, .ai-img-wrapper, .upscale-container') || img.parentElement;
     if (!host) return;
-    img.dataset.imageActionsInstalled = 'true';
-    let imagePointerStart = null;
-    img.addEventListener('pointerdown', event => { imagePointerStart = { x: event.clientX, y: event.clientY }; });
-    img.addEventListener('pointermove', event => { if (imagePointerStart && Math.hypot(event.clientX - imagePointerStart.x, event.clientY - imagePointerStart.y) > 8) img.dataset.imageDragged = 'true'; });
-    img.addEventListener('pointerup', () => { imagePointerStart = null; });
-    img.addEventListener('click', event => { if (img.dataset.imageDragged === 'true') { delete img.dataset.imageDragged; event.preventDefault(); event.stopImmediatePropagation(); } }, true);
+    const metadata = imageMetadataFromElement(img);
+    host.querySelector(':scope > .chat-image-actions')?.remove();
+    if (img.dataset.imageActionsInstalled !== 'true') {
+        img.dataset.imageActionsInstalled = 'true';
+        let imagePointerStart = null;
+        img.addEventListener('pointerdown', event => { imagePointerStart = { x: event.clientX, y: event.clientY }; });
+        img.addEventListener('pointermove', event => {
+            if (imagePointerStart && Math.hypot(event.clientX - imagePointerStart.x, event.clientY - imagePointerStart.y) > 8) {
+                img.dataset.imageDragged = 'true';
+            }
+        });
+        img.addEventListener('pointerup', () => { imagePointerStart = null; });
+        img.addEventListener('click', event => {
+            if (img.dataset.imageDragged === 'true') {
+                delete img.dataset.imageDragged;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        }, true);
+    }
     host.classList.add('has-image-actions');
     const rail = document.createElement('div');
     rail.className = 'chat-image-actions';
@@ -714,35 +762,40 @@ function installChatImageActions(img) {
         });
         rail.appendChild(button);
     };
-    const url = safeImageUrl(img.dataset.modalUrl || img.currentSrc || img.src);
-    const mimeType = imageMimeFromUrl(url, img.dataset.mimeType);
     addAction('Use in prompt', () => attachImageContext(img));
-    addAction('Open preview', () => openImageModal(url || img.currentSrc || img.src, {
-        filename: img.alt || 'Helper image',
-        mimeType,
+    addAction('Open preview', () => openImageModal(metadata.sourceUrl || metadata.downloadUrl || img.currentSrc || img.src, {
+        filename: metadata.filename,
+        mimeType: metadata.mimeType,
         imageElement: img,
-        context: imageContextFromElement(img)
+        context: imageContextFromElement(img),
+        sourceUrl: metadata.sourceUrl,
+        downloadUrl: metadata.downloadUrl,
+        downloadable: metadata.downloadable,
+        copyable: metadata.copyable,
     }));
     addAction('Download', () => {
-        if (!url) return notify('Download is unavailable for this image.', 'error');
+        if (!metadata.downloadUrl) return notify('Download is unavailable for this image.', 'error');
         const link = document.createElement('a');
-        link.href = url;
-        link.download = 'helper-image' + (mimeType === 'image/jpeg' ? '.jpg' : mimeType ? '.' + mimeType.split('/')[1] : '.png');
+        link.href = metadata.downloadUrl;
+        link.download = metadata.filename;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
         link.click();
-    }, Boolean(url && mimeType));
+    }, metadata.downloadable);
     addAction('Copy image link', async () => {
-        if (!url || !navigator.clipboard?.writeText) return notify('Copy link is unavailable for this image.', 'error');
+        if (!metadata.copyable || !navigator.clipboard?.writeText) return notify('Copy link is unavailable for this image.', 'error');
         try {
-            await navigator.clipboard.writeText(url);
+            await navigator.clipboard.writeText(metadata.sourceUrl);
             notify('Image link copied.', 'success', 1600);
         } catch (_) {
             notify('Copy link is unavailable in this browser.', 'error');
         }
-    }, Boolean(url));
+    }, metadata.copyable);
     host.appendChild(rail);
 }
+window.refreshChatImageActions = function refreshChatImageActions(root = document) {
+ root?.querySelectorAll?.('img.chat-rendered-img, img.chat-img-preview, .chat-img-preview-container img, .upscale-container img, [data-image-result] img, .generated-image-result img, .image-search-result img').forEach(installChatImageActions);
+};
 
 function openImageModal(src, options = {}) {
     const modal = document.getElementById('image-modal');
@@ -763,7 +816,7 @@ function openImageModal(src, options = {}) {
     const candidateUrl = options.downloadUrl || options.sourceUrl || src;
     const safeUrl = safeImageUrl(candidateUrl) || (options.downloadable && /^blob:/i.test(String(candidateUrl || '')) ? String(candidateUrl) : '');
     if (download) download.hidden = !safeUrl;
-    if (copy) copy.hidden = !safeUrl;
+    if (copy) copy.hidden = options.copyable === false || !safeImageUrl(options.sourceUrl || candidateUrl);
     if (use) use.hidden = typeof window.addComposerContext !== 'function' || !options.context;
     modal.style.display = 'flex';
     setTimeout(() => {
@@ -862,6 +915,8 @@ function handleDragEnd(e) {
 window.installChatImageActions = installChatImageActions;
 window.notify = notify;
 window.__helperSafeImageUrl = safeImageUrl;
+window.__helperImageMetadata = imageMetadataFromElement;
+window.__helperImageContextFromElement = imageContextFromElement;
 
 const ui = {
     smartFocus, switchAuth, updUI, signOut, toggleDropdown, selModel,

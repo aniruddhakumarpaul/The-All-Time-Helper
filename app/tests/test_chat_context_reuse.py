@@ -16,7 +16,7 @@ class ChatContextReuseTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         bootstrap = (root / "static" / "js" / "bootstrap.js").read_text(encoding="utf-8")
         reuse_index = bootstrap.index("injectScript('chat_context_reuse', '1', 'chat-context-reuse')")
-        tray_index = bootstrap.index("injectScript('composer_context_tray', '9', 'composer-context-tray')")
+        tray_index = bootstrap.index("injectScript('composer_context_tray', '10', 'composer-context-tray')")
         self.assertLess(reuse_index, tray_index)
 
 

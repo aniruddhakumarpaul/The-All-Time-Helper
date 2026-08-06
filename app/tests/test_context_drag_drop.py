@@ -9,7 +9,7 @@ class ContextDragDropTests(unittest.TestCase):
         template = (root / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("composer_context_tray", bootstrap)
         self.assertIn("composer-context-tray", bootstrap)
-        self.assertIn("composer_context_tray.js?v=9", template)
+        self.assertIn("composer_context_tray.js?v=10", template)
         self.assertNotIn("context_drag_drop", bootstrap)
 
     def test_composer_context_uses_attached_contexts_not_legacy_retrieve(self):

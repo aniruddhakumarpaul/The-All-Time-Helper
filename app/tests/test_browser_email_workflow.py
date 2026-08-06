@@ -11,13 +11,10 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            cls.sync_playwright = None
-            return
+            raise AssertionError('Python Playwright is required for browser interaction tests')
         cls.sync_playwright = staticmethod(sync_playwright)
 
     def setUp(self):
-        if self.sync_playwright is None:
-            self.skipTest("Python Playwright is not installed")
         self.playwright = self.sync_playwright().start()
         try:
             self.browser = self.playwright.chromium.launch(headless=True)
@@ -408,7 +405,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.page.evaluate("""() => {
             const bubble = document.createElement('article');
             bubble.className = 'msg b-msg';
-            bubble.innerHTML = '<div class="txt"><p>Generated reference</p><img class="chat-rendered-img" alt="Generated reference" data-mime-type="image/png" src="https://example.test/generated.png" style="width:180px;height:120px;display:block;"></div>';
+            bubble.innerHTML = '<div class="txt"><p>Generated reference</p><img class="chat-rendered-img" alt="Generated reference" src="https://example.test/generated.png" style="width:180px;height:120px;display:block;"></div>';
             document.getElementById('chat-area').appendChild(bubble);
             window.__dragAudit = [];
             document.addEventListener('dragstart', event => {
@@ -469,7 +466,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
             "body": "Review these files",
             "attachments": [
                 {
-                    "id": "upload-image-1",
+                    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "filename": "reference.png",
                     "mime_type": "image/png",
                     "source": "upload",
@@ -484,14 +481,14 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
                     "available": True,
                 },
                 {
-                    "id": "upload-pdf-1",
+                    "id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                     "filename": "brief.pdf",
                     "mime_type": "application/pdf",
                     "source": "upload",
                     "available": True,
                 },
                 {
-                    "id": "expired-image-1",
+                    "id": "cccccccccccccccccccccccccccccccc",
                     "filename": "expired.png",
                     "mime_type": "image/png",
                     "source": "upload",
@@ -507,10 +504,9 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         }""", draft)
         self.assertEqual(self.page.locator(".email-draft-attachment-row").count(), 4)
         self.assertEqual(self.page.locator(".email-draft-attachment-chip").count(), 4)
-        self.assertIn("edit-the-draft-change-the-tone.png", self.page.locator(".email-draft-attachment-row").nth(1).inner_text())
+        self.assertIn("tone-include-product-image.png", self.page.locator(".email-draft-attachment-row").nth(1).inner_text())
         self.assertEqual(self.page.locator("[aria-disabled='true']").count(), 1)
         self.assertNotIn("https://example.test", self.page.locator("#chat-area").inner_text())
-
         self.page.locator(".email-draft-attachment-chip").nth(0).click()
         self.page.wait_for_function("() => window.__openedImage && window.__openedImage.filename === 'reference.png'")
         opened = self.page.evaluate("() => window.__openedImage")
@@ -525,6 +521,7 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         self.assertEqual([item["kind"] for item in contexts], ["image", "document"])
         self.assertTrue(all("content" not in item["text"].lower() for item in contexts))
         self.assertIn("brief.pdf", contexts[1]["text"])
+        self.assertEqual(contexts[1]["attachmentRef"]["id"], "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         self.assertEqual(self.page.locator(".email-draft-attachment-use").count(), 3)
 if __name__ == "__main__":
     unittest.main()

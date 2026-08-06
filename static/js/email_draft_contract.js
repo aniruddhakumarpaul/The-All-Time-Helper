@@ -55,22 +55,24 @@
 
     function safeRemoteUrl(value) {
         try {
-            const url = new URL(text(value), window.location.origin);
+            const raw = text(value);
+            const url = /^https?:/i.test(raw) ? new URL(raw) : new URL(raw, window.location.origin);
             return url.protocol === 'http:' || url.protocol === 'https:' ? url.href.slice(0, 2000) : '';
         } catch (_) {
             return '';
         }
     }
     function displayFilename(value, item, index, mimeType) {
-        const clean = filename(value, `attachment-${index + 1}.bin`);
+        const clean = filename(value, 'attachment-' + (index + 1) + '.bin');
         const source = text(item?.source).toLowerCase();
         const stem = clean.replace(/\.[a-z0-9]{2,8}$/i, '');
-        const words = stem.match(/[A-Za-z0-9]+/g) || [];
-        const promptLike = source === 'generated' && (
-            clean.length > 64
-            || words.length > 7
-            || /^(edit|change|update|add|include|make|create|draft)\b/i.test(stem)
-        );
+        if (source !== 'generated') return clean;
+        const topic = stem
+            .replace(/^\s*(?:please\s+)?(?:edit|change|update|add|include|make|create|draft|generate|draw|show|design|illustrate)\b[\s,:-]*/i, '')
+            .replace(/^\s*(?:an?|the)\s+(?:image|picture|photo|illustration)\s+of\b[\s,:-]*/i, '');
+        const stopWords = new Set(['a', 'an', 'and', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'with']);
+        const words = (topic.match(/[A-Za-z0-9]+/g) || []).filter(word => !stopWords.has(word.toLowerCase()));
+        const promptLike = clean.length > 64 || words.length > 7 || /^(edit|change|update|add|include|make|create|draft|generate|draw|show|design|illustrate)\b/i.test(stem);
         if (!promptLike) return clean;
         const slug = (words.slice(0, 6).join('-').toLowerCase() || 'generated-image').slice(0, 72);
         const extension = ({
@@ -166,6 +168,7 @@
         delete next.data;
         delete next.bytes;
         delete next.attachment_content;
+        delete next.url;
         return next;
     }
 

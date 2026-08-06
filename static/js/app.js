@@ -1,6 +1,6 @@
 import { state } from './state.js?v=210';
 import { api } from './api.js?v=212';
-import { ui } from './ui.js?v=219';
+import { ui } from './ui.js?v=220';
 import { mascot } from './mascot.js?v=210';
 import { mergeChatsByRecency } from './chat_sync.js?v=203';
 
@@ -95,6 +95,29 @@ function serializeAttachedContext(ctx) {
     return String(ctx?.text || '').slice(0, MAX_CONTEXT_CHARS);
 }
 
+function contextAttachmentReference(ctx) {
+    const ref = ctx?.attachmentRef;
+    if (!ref || typeof ref !== 'object' || !/^[a-f0-9]{32}$/i.test(String(ref.id || ''))) return null;
+    return {
+        id: String(ref.id).toLowerCase(),
+        name: String(ref.name || 'attachment').slice(0, 160),
+        type: String(ref.type || 'application/octet-stream').slice(0, 100),
+        ...(Number.isInteger(Number(ref.size)) && Number(ref.size) >= 0 ? { size: Number(ref.size) } : {}),
+    };
+}
+
+function mergeAttachmentReferences(uploaded, contexts) {
+    const merged = [];
+    const seen = new Set();
+    for (const item of [...(Array.isArray(uploaded) ? uploaded : []), ...(Array.isArray(contexts) ? contexts : [])]) {
+        const ref = contextAttachmentReference({ attachmentRef: item?.attachmentRef || item });
+        if (!ref || seen.has(ref.id)) continue;
+        seen.add(ref.id);
+        merged.push(ref);
+    }
+    return merged;
+}
+
 function clearPendingComposerDrafts() {
     Object.keys(localStorage).forEach(key => {
         if (key.startsWith('helper_pending_prompt_')) localStorage.removeItem(key);
@@ -104,19 +127,6 @@ function clearPendingComposerDrafts() {
     state.setPendingImageUploads(null);
 }
 
-function handleComposerFileDrop(files) {
-    const input = document.getElementById('img-in');
-    if (!input || !files?.length) return false;
-    if (typeof DataTransfer !== 'function') {
-        ui.notify('File drop is unavailable in this browser. Use the attachment button.', 'error');
-        return false;
-    }
-    const transfer = new DataTransfer();
-    Array.from(files).slice(0, 6).forEach(file => transfer.items.add(file));
-    input.files = transfer.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-}
 function handleComposerFileDrop(files) {
     const input = document.getElementById('img-in');
     if (!input || !files?.length) return false;
@@ -435,7 +445,8 @@ async function send() {
     if (!promptEl) return;
     const userText = promptEl.value.trim();
     await waitForPendingImageUploads();
-    const currentAttachments = state.currentImages.slice();
+    const contextAttachmentRefs = state.attachedContexts.map(contextAttachmentReference).filter(Boolean);
+    const currentAttachments = mergeAttachmentReferences(state.currentImages, contextAttachmentRefs);
     const attachedContextText = state.attachedContexts.map(serializeAttachedContext).filter(Boolean)
         .map((text, index) => `[Attached Context ${index + 1}]\n"""\n${text}\n"""`).join('\n\n');
     const activeDraftContext = attachedContextText.includes('EMAIL_DRAFT_CONTEXT:')

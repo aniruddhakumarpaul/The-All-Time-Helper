@@ -58,5 +58,37 @@ class AttachmentContractTests(unittest.TestCase):
         self.assertNotIn("selModel('moondream', 'Moondream (Vision)')", ui)
 
 
+
+    def test_attachment_download_boundary_is_owner_scoped_and_private(self):
+        from fastapi import HTTPException
+        from app.logic import attachment_store
+        from app.routes import chat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
+                saved = attachment_store.save_attachment_bytes(
+                    "brief.pdf",
+                    "application/pdf",
+                    b"%PDF-1.4 minimal",
+                    "owner@example.com",
+                )
+                response = chat.get_attachment(saved["id"], "owner@example.com")
+                self.assertEqual(response.media_type, "application/pdf")
+                self.assertEqual(response.headers["cache-control"], "private, no-store")
+                self.assertIn("brief.pdf", response.headers["content-disposition"])
+                with self.assertRaises(HTTPException) as different_owner:
+                    chat.get_attachment(saved["id"], "other@example.com")
+                self.assertEqual(different_owner.exception.status_code, 404)
+                self.assertEqual(different_owner.exception.detail, "Attachment unavailable.")
+                with self.assertRaises(HTTPException):
+                    chat.get_attachment("0" * 32, "owner@example.com")
+                with patch.object(attachment_store, "ATTACHMENT_TTL_SECONDS", 1):
+                    attachment_store.cleanup_expired_attachments(now=attachment_store.time.time() + 10)
+                with self.assertRaises(HTTPException) as expired:
+                    chat.get_attachment(saved["id"], "owner@example.com")
+                self.assertEqual(expired.exception.detail, "Attachment unavailable.")
+                self.assertNotIn(tmp, str(expired.exception.detail))
+
+
 if __name__ == "__main__":
     unittest.main()

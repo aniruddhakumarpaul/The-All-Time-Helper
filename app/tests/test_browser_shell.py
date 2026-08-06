@@ -86,12 +86,15 @@ class BrowserShellTests(unittest.TestCase):
     def test_served_shell_is_responsive_and_contains_single_interaction_surfaces(self):
         page = self.browser.new_page(viewport={"width": 1280, "height": 900}, color_scheme="light")
         try:
+            # CDN assets are not part of the served-shell contract; abort them so offline browser runs reach the local DOM.
+            page.route("https://cdn.jsdelivr.net/**", lambda route: route.abort())
+            page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
             page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
             page.wait_for_selector("#settings-modal", state="attached", timeout=10000)
             self.assertEqual(page.locator("#image-modal").count(), 1)
             self.assertEqual(page.locator(".pill-bar-container").count(), 1)
 
-            for width, height in ((1280, 900), (390, 844)):
+            for width, height in ((1280, 900), (1024, 768), (412, 915), (390, 844), (360, 800), (390, 560)):
                 page.set_viewport_size({"width": width, "height": height})
                 metrics = page.evaluate("""() => {
                     const modal = document.querySelector('#settings-modal .modal-card');
@@ -110,15 +113,9 @@ class BrowserShellTests(unittest.TestCase):
                 self.assertLessEqual(bounds["x"] + bounds["width"], width + 1)
                 page.locator("#settings-modal").evaluate("element => { element.style.display = 'none'; }")
 
-            page.evaluate("""() => {
-                const bubble = document.createElement('article');
-                bubble.className = 'msg b-msg';
-                bubble.innerHTML = '<div class="txt"><img class="chat-rendered-img" alt="Served image" src="https://example.test/served.png" style="width:160px;height:100px;display:block;"></div>';
-                document.getElementById('chat-area').appendChild(bubble);
-            }""")
-            image = page.locator(".chat-rendered-img")
-            image.evaluate("element => { element.draggable = true; }")
-            self.assertEqual(image.get_attribute("draggable"), "true")
+            # Native image drag is exercised by the browser email workflow; this served-shell test verifies the responsive surface.
+            page.locator("#prompt").fill("responsive shell")
+            self.assertEqual(page.locator("#prompt").input_value(), "responsive shell")
             self.assertLessEqual(page.evaluate("() => document.documentElement.scrollWidth"), page.evaluate("() => window.innerWidth") + 1)
         finally:
             page.close()

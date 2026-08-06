@@ -127,6 +127,7 @@
                         if (img) {
                             img.dataset.loaded = 'true';
                             updateLastMessageImageState(img);
+                            window.refreshChatImageActions?.(img.parentElement);
                         }
                     };
 
@@ -184,6 +185,7 @@
                             if (loadingEl) loadingEl.remove();
                             if (errorEl) errorEl.remove();
                             updateLastMessageImageState(img);
+                            window.refreshChatImageActions?.(img.parentElement);
                             updated = true;
                         });
 
@@ -440,6 +442,11 @@
             img.alt = String(altText || 'AI Generated Image');
             if (title) img.title = String(title);
 
+            img.dataset.originalUrl = safeSource.url;
+            img.dataset.imageSource = isPollinationsGeneratedUrl(safeSource.url) ? 'generated' : safeSource.kind;
+            img.dataset.generated = String(isPollinationsGeneratedUrl(safeSource.url));
+            img.dataset.filename = String(title || altText || 'helper-image').slice(0, 160);
+
             const jobId = extractPollinationsJobId(safeSource.url);
             const isDeferredPollinations = Boolean(jobId && isPollinationsGeneratedUrl(safeSource.url));
 
@@ -507,6 +514,7 @@
             if (loadEl) loadEl.style.display = 'none';
             img.style.display = 'block';
             updateLastMessageImageState(img);
+            window.refreshChatImageActions?.(img.parentElement);
         }
 
         function sanitizeMarkdownHtml(html) {
@@ -562,10 +570,23 @@
                 img.addEventListener('click', () => {
                     const modalUrl = img.dataset.modalUrl || img.src;
                     if (modalUrl && typeof window.openImageModal === 'function') {
-                        window.openImageModal(modalUrl);
+                        const metadata = window.__helperImageMetadata?.(img) || {};
+                        window.openImageModal(modalUrl, {
+                            filename: metadata.filename,
+                            mimeType: metadata.mimeType,
+                            sourceUrl: metadata.sourceUrl,
+                            downloadUrl: metadata.downloadUrl,
+                            downloadable: metadata.downloadable,
+                            copyable: metadata.copyable,
+                            imageElement: img,
+                            context: typeof window.__helperImageContextFromElement === 'function' ? window.__helperImageContextFromElement(img) : undefined,
+                        });
                     }
                 });
-                img.addEventListener('load', () => updateRenderedImageLoaded(img));
+                img.addEventListener('load', () => {
+                    updateRenderedImageLoaded(img);
+                    window.refreshChatImageActions?.(img.parentElement);
+                });
                 img.addEventListener('error', () => {
                     if (img.dataset.retryUrl && img.dataset.loadId) {
                         window.handleImgError(img, img.dataset.retryUrl, img.dataset.loadId);
@@ -598,6 +619,7 @@
                         }
                         img.dataset.loaded = 'true';
                         updateLastMessageImageState(img);
+                        window.refreshChatImageActions?.(img.parentElement);
                         return;
                     }
 

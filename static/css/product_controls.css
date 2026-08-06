@@ -359,3 +359,23 @@ button.menu-item {
 @media (prefers-reduced-motion: reduce) {
     .chat-image-actions { transition: none; }
 }
+/* Keep preferences as a stable two-column form instead of relying on legacy flex rules. */
+#settings-modal .modal-card {
+    box-sizing: border-box;
+    display: block;
+}
+#settings-modal .set-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+}
+#settings-modal .theme-dropdown-wrapper,
+#settings-modal #response-style-setting,
+#settings-modal [data-toggle-setting] {
+    justify-self: end;
+}
+#settings-modal .settings-account {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+}

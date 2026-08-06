@@ -70,6 +70,7 @@
         delete next.data;
         delete next.bytes;
         delete next.attachment_content;
+        delete next.url;
         return next;
     }
 
@@ -112,15 +113,26 @@
         const kind = ['text', 'image', 'document', 'email', 'widget'].includes(item.kind) ? item.kind : 'text';
         const text = clip(item.text, MAX_ITEM_CHARS);
         if (!text) return null;
+        const rawRef = item.attachmentRef || item.attachment_ref;
+        const attachmentRef = rawRef && typeof rawRef === 'object' && /^[a-f0-9]{32}$/i.test(String(rawRef.id || ''))
+            ? {
+                id: String(rawRef.id).toLowerCase(),
+                name: clip(rawRef.name || '', 160),
+                type: clip(rawRef.type || '', 100),
+                size: Number.isInteger(Number(rawRef.size)) && Number(rawRef.size) >= 0 ? Number(rawRef.size) : undefined,
+            }
+            : undefined;
+        const preview = typeof item.preview === 'string' && !/^data:|^blob:/i.test(item.preview) ? item.preview : '';
         return {
             kind,
             title: clip(item.title || labelForKind(kind), 80),
             subtitle: clip(item.subtitle || '', 140),
             text,
-            preview: typeof item.preview === 'string' && !item.preview.startsWith('data:') ? item.preview : '',
+            preview,
             sourceId: clip(item.sourceId || '', 120),
             fingerprint: clip(item.fingerprint || fingerprintFor({ kind, text, sourceId: item.sourceId }), 120),
             status: ['ready', 'attaching', 'sending', 'rendering'].includes(item.status) ? item.status : 'ready',
+            ...(attachmentRef ? { attachmentRef } : {}),
         };
     }
 
@@ -335,11 +347,19 @@
                 pulseExistingContext(targetIndex);
                 return true;
             }
+            const otherTotal = totalChars(items) - String(current.text || '').length;
+            const allowed = Math.min(MAX_ITEM_CHARS, Math.max(0, MAX_TOTAL_CHARS - otherTotal));
+            const replacementText = clip(normalized.text, allowed);
+            if (!replacementText) {
+                window.notify?.('This context would exceed the prompt context limit.', 'error');
+                return false;
+            }
             const updated = {
                 ...current,
                 ...normalized,
+                text: replacementText,
                 status: 'attaching',
-                fingerprint: normalized.fingerprint,
+                fingerprint: fingerprintFor({ ...normalized, text: replacementText }),
             };
             items.splice(targetIndex, 1, updated);
             st.touch('attachedContexts');
@@ -351,7 +371,10 @@
         if (items.length >= MAX_ITEMS) return false;
         const remaining = Math.max(0, MAX_TOTAL_CHARS - totalChars(items));
         const text = clip(normalized.text, Math.min(MAX_ITEM_CHARS, remaining));
-        if (!text) return false;
+        if (!text) {
+            window.notify?.('This context would exceed the prompt context limit.', 'error');
+            return false;
+        }
         const stored = { ...normalized, text, fingerprint: fingerprintFor({ ...normalized, text }), status: 'attaching' };
         pulseTrayLoading('is-attaching', 700);
         items.push(stored);
@@ -428,9 +451,10 @@
 
     function imageContextFromElement(img) {
         if (!img) return null;
-        const rawSource = img.dataset?.modalUrl || img.currentSrc || img.src || img.getAttribute('src') || '';
+        const metadata = window.__helperImageMetadata?.(img) || {};
+        const rawSource = metadata.sourceUrl || img.dataset?.modalUrl || img.currentSrc || img.src || img.getAttribute('src') || '';
         if (!rawSource) return null;
-        const alt = img.getAttribute('alt') || img.closest('.msg')?.querySelector('[id^="msg-text-"]')?.innerText || 'chat image';
+        const alt = img.getAttribute('alt') || img.closest('.msg')?.querySelector('[id^=msg-text-]')?.innerText || 'chat image';
         let safeSource = '';
         try {
             const parsed = new URL(rawSource, window.location.href);
@@ -572,16 +596,28 @@
     }
 
     function safeImageMimeType(img, url) {
+        const shared = window.__helperImageMetadata?.(img);
+        if (shared?.mimeType) return shared.mimeType;
         const explicit = String(img?.dataset?.mimeType || img?.getAttribute?.('type') || '').toLowerCase().trim();
         if (/^image\/(?:png|jpe?g|webp|gif|bmp|svg\+xml)$/.test(explicit)) return explicit;
         const extension = String(url || '').split(/[?#]/, 1)[0].match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase();
-        return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[extension] || '';
+        return ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', bmp: 'image/bmp', svg: 'image/svg+xml' })[extension]
+            || (img?.dataset?.generated === 'true' || /pollinations\.ai/i.test(String(url || '')) ? 'image/png' : '');
     }
 
     function safeImageFilename(img, url, mimeType) {
-        const raw = String(img?.getAttribute?.('alt') || '').trim()
+        let raw = String(img?.dataset?.filename || img?.getAttribute?.('alt') || '').trim()
             || String(url || '').split(/[?#]/, 1)[0].split('/').pop()
             || 'helper-image';
+        const generated = img?.dataset?.generated === 'true' || /pollinations\.ai/i.test(String(url || ''));
+        if (generated) {
+            raw = raw.replace(/\.[A-Za-z0-9]{2,8}$/, '')
+                .replace(/^\s*(?:please\s+)?(?:edit|change|update|add|include|make|create|draft|generate|draw|show|design|illustrate)\b[\s,:-]*/i, '')
+                .replace(/^\s*(?:an?|the)\s+(?:image|picture|photo|illustration)\s+of\b[\s,:-]*/i, '');
+            const stopWords = new Set(['a', 'an', 'and', 'at', 'by', 'for', 'from', 'in', 'into', 'of', 'on', 'or', 'the', 'to', 'with']);
+            const words = (raw.match(/[A-Za-z0-9]+/g) || []).filter(word => !stopWords.has(word.toLowerCase()));
+            raw = words.slice(0, 6).join('-') || 'generated-image';
+        }
         const base = raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'helper-image';
         if (/\.[A-Za-z0-9]{2,5}$/.test(base)) return base;
         const extension = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' })[mimeType] || 'png';

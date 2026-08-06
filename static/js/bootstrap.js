@@ -58,14 +58,14 @@ window.addEventListener('unhandledrejection', function (event) {
     function inject() {
         injectScript('dialog_manager', '1', 'dialog-manager');
         injectScript('busy_states', '1', 'busy-states');
-        injectScript('email_draft_contract', '2', 'email-draft-contract');
-        injectScript('email_draft', '6', 'email-draft-core');
+        injectScript('email_draft_contract', '3', 'email-draft-contract');
+        injectScript('email_draft', '7', 'email-draft-core');
         injectScript('email_approval', '4', 'draft-send');
         injectScript('admin_dashboard', '4', 'admin-dashboard');
         injectScript('job_center', '4', 'job-center');
         injectScript('chat_context_reuse', '1', 'chat-context-reuse');
         injectScript('motion_enhancements', '3', 'premium-motion');
-        injectScript('composer_context_tray', '9', 'composer-context-tray');
+        injectScript('composer_context_tray', '10', 'composer-context-tray');
     }
 
     if (document.readyState === 'loading') {

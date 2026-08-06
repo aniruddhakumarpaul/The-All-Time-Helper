@@ -95,6 +95,7 @@
         delete next.data;
         delete next.bytes;
         delete next.attachment_content;
+        delete next.url;
         return next;
     }
 
@@ -286,7 +287,8 @@
     function safeAttachmentUrl(item) {
         const candidate = item?.url || (typeof item?.content === 'string' && /^https?:\/\//i.test(item.content) ? item.content : '');
         try {
-            const url = new URL(String(candidate || ''), window.location.origin);
+            const raw = String(candidate || '');
+            const url = /^https?:/i.test(raw) ? new URL(raw) : new URL(raw, window.location.origin);
             return url.protocol === 'http:' || url.protocol === 'https:' ? url.href.slice(0, 2000) : '';
         } catch (_) {
             return '';
@@ -340,7 +342,15 @@
         const name = String(item?.filename || item?.name || 'Attached file').slice(0, 160);
         const description = String(item?.description || '').slice(0, 320);
         const mime = String(item?.mime_type || item?.content_type || item?.type || '').slice(0, 100);
-        const sourceRef = item?.id ? 'Owner attachment reference: ' + String(item.id).slice(0, 120) : '';
+        const attachmentRef = item?.id && /^[a-f0-9]{32}$/i.test(String(item.id))
+            ? {
+                id: String(item.id).toLowerCase(),
+                name: name.slice(0, 160),
+                type: mime.slice(0, 100),
+                size: Number.isInteger(Number(item.size)) && Number(item.size) >= 0 ? Number(item.size) : undefined,
+            }
+            : undefined;
+        const sourceRef = attachmentRef ? 'Owner attachment reference: ' + attachmentRef.id : '';
         const sourceUrl = url ? (attachmentImageType(item) ? 'Image source: ' : 'Attachment source: ') + url : '';
         return {
             kind: attachmentImageType(item) ? 'image' : 'document',
@@ -348,7 +358,8 @@
             title: name,
             subtitle: [attachmentCategory(item), attachmentSourceLabel(item)].join(' / '),
             preview: url,
-            text: '[Attached File]\nFilename: ' + name + '\nMIME type: ' + mime + '\n' + [sourceRef, sourceUrl, description].filter(Boolean).join('\n')
+            text: '[Attached File]\nFilename: ' + name + '\nMIME type: ' + mime + '\n' + [sourceRef, sourceUrl, description].filter(Boolean).join('\n'),
+            ...(attachmentRef ? { attachmentRef } : {}),
         };
     }
 
@@ -389,6 +400,7 @@
             sourceUrl: originalUrl,
             downloadUrl: originalUrl || resolved.url,
             downloadable: Boolean(originalUrl || resolved.revoke),
+            copyable: Boolean(originalUrl),
             revokeUrl: resolved.revoke ? resolved.url : '',
             context: attachmentPromptContext(item, index)
         });
@@ -428,7 +440,6 @@
             type.textContent = [attachmentCategory(item), attachmentSourceLabel(item), available ? '' : 'Unavailable'].filter(Boolean).join(' / ');
             copy.append(name, type);
             chip.append(icon, copy);
-            if (available && image) chip.addEventListener('click', () => openAttachmentPreview(container.closest('.email-draft-card'), index, chip));
             row.appendChild(chip);
             if (available) {
                 const use = document.createElement('button');
@@ -666,6 +677,18 @@
             if (!card.isConnected) return;
             const draft = syncDraftFromCard(card);
             if (!draft) return;
+            if (card.__attachmentActionsBound !== 'true') {
+                card.__attachmentActionsBound = 'true';
+                card.addEventListener('click', event => {
+                    const chip = event.target?.closest?.('.email-draft-attachment-chip');
+                    if (!chip || event.target?.closest?.('.email-draft-attachment-use')) return;
+                    const index = Number(chip.dataset.attachmentIndex);
+                    const current = syncDraftFromCard(card)?.attachments?.[index];
+                    if (!current || current.available === false) return;
+                    if (attachmentImageType(current)) openAttachmentPreview(card, index, chip);
+                    else attachAttachmentToPrompt(card, index);
+                });
+            }
             supersedeEarlierDraftCards(card);
             if (card.dataset.emailDraftHydrated === 'true') return;
             card.dataset.emailDraftHydrated = 'true';

@@ -162,3 +162,9 @@ This file records the current high-level architectural decisions.
 - The attachment download route resolves metadata under the authenticated owner and returns private no-store media. Frontend attachment actions store IDs and bounded metadata, not file bytes or raw base64.
 - Settings layout is intentionally visible at normal desktop sizes, becomes a bottom-sheet surface on narrow screens, and gains bounded internal scrolling only for short or zoomed viewports. Escape and explicit close remain available independently of outside-click configuration.
 - Browser coverage separates real FastAPI shell geometry from native Playwright drag behavior. The shell test verifies the served route and single viewer/composer surfaces; the interaction test verifies native transfer types and safe URL exclusion.
+## 2026-08-06 Interaction Validation Decisions
+
+- Prompt and persistence serializers remove transient attachment URLs as well as bytes; delivery-only serializers retain the resolved URL needed for the protected send boundary.
+- Generated and uploaded image actions resolve through one metadata contract after deferred hydration, proxy/upscale replacement, and image load. Blob previews can download when safe but never expose Copy Link.
+- Use document in prompt transfers bounded owner-scoped attachment references (id, name, type, size) through the chat request’s attachments collection; it never transfers document bytes or preview URLs.
+- The settings modal explicitly overrides the legacy flex .set-row rule with a contained grid, a mobile bottom-sheet layout, and short-viewport scrolling. The served-shell test checks 1280x900, 1024x768, 412x915, 390x844, 360x800, and 390x560.
