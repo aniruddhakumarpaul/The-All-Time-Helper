@@ -388,6 +388,80 @@ class ChatJobRegistryTests(unittest.TestCase):
                 usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
             self.assertLessEqual(usage, 1200)
 
+    def test_terminalization_recalculates_retained_event_bytes_before_commit(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            store = SQLiteChatJobStore(db_file, max_storage_bytes=1000, max_event_storage_bytes=5000,
+                                       max_event_bytes=512, max_content_bytes=128, retention_seconds=10)
+            job_id = str(uuid.uuid4())
+            store.create(job_id, "owner@example.com")
+            for index in range(5):
+                self.assertTrue(store.publish(job_id, "owner@example.com",
+                                              {"message": {"role": "assistant", "content": "progress-" + "x" * 120 + str(index)},
+                                               "done": False}))
+            with store._open() as db:
+                before = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+            self.assertLess(before, 1000)
+            self.assertTrue(store.complete(job_id, "owner@example.com", "final-" + "y" * 120))
+            snapshot = store.snapshot(job_id, "owner@example.com")
+            with store._open() as db:
+                after = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+                row = db.execute("SELECT event_storage_bytes,content_bytes FROM chat_jobs WHERE job_id=?", (job_id,)).fetchone()
+            self.assertLessEqual(after, 1000)
+            self.assertEqual(snapshot["status"], "completed")
+            self.assertTrue(snapshot["content"])
+            self.assertEqual(sum(item["event"].get("final", False) for item in snapshot["events"]), 1)
+            self.assertEqual([item["seq"] for item in snapshot["events"]], sorted({item["seq"] for item in snapshot["events"]}))
+            self.assertLessEqual(row["event_storage_bytes"] + row["content_bytes"], 1000)
+
+    def test_unicode_terminalization_preserves_final_result_under_global_cap(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            store = SQLiteChatJobStore(db_file, max_storage_bytes=1000, max_event_storage_bytes=5000,
+                                       max_event_bytes=512, max_content_bytes=128, retention_seconds=10)
+            job_id = str(uuid.uuid4())
+            store.create(job_id, "owner@example.com")
+            for index in range(5):
+                store.publish(job_id, "owner@example.com", {"message": {"content": "漢字🙂" * 20 + str(index)}, "done": False})
+            self.assertTrue(store.complete(job_id, "owner@example.com", "漢字🙂" * 20))
+            snapshot = store.snapshot(job_id, "owner@example.com")
+            with store._open() as db:
+                usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+            self.assertLessEqual(usage, 1000)
+            self.assertTrue(snapshot["content"])
+            self.assertTrue(any(item["event"].get("final") for item in snapshot["events"]))
+
+    def test_two_workers_terminalize_admitted_jobs_without_crossing_global_cap(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            config = dict(max_storage_bytes=2000, max_event_storage_bytes=5000,
+                          max_event_bytes=512, max_content_bytes=64, retention_seconds=10)
+            creator = SQLiteChatJobStore(db_file, **config)
+            job_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+            for job_id in job_ids:
+                creator.create(job_id, "owner@example.com")
+                for index in range(4):
+                    creator.publish(job_id, "owner@example.com", {"message": {"content": "progress" * 20 + str(index)}, "done": False})
+            barrier = threading.Barrier(2)
+
+            def finish(job_id):
+                worker = SQLiteChatJobStore(db_file, **config)
+                barrier.wait()
+                return worker.complete(job_id, "owner@example.com", "terminal 🙂")
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [pool.submit(finish, job_id) for job_id in job_ids]
+                accepted = [future.result() for future in results]
+            self.assertTrue(all(accepted))
+            with creator._open() as db:
+                usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+                active = db.execute("SELECT COUNT(*) AS count FROM chat_jobs WHERE status IN (?,?)", (ACTIVE, CANCELLING)).fetchone()["count"]
+            self.assertLessEqual(usage, 2000)
+            self.assertEqual(active, 0)
+            for job_id in job_ids:
+                snapshot = creator.snapshot(job_id, "owner@example.com")
+                self.assertEqual(sum(item["event"].get("final", False) for item in snapshot["events"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

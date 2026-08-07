@@ -276,9 +276,24 @@ class SQLiteChatJobStore:
 
     def _fit_terminal_message_locked(self, db: sqlite3.Connection, row: sqlite3.Row,
                                      message: str, status: str, *, include_progress: bool) -> tuple[str, dict[str, Any], int, int]:
-        self._compact_non_final_locked(db)
         message = _truncate(message, min(self.max_content_chars, self.max_content_bytes))
-        base_usage = self._logical_usage_locked(db) - int(row["event_storage_bytes"] or 0) - int(row["content_bytes"] or 0)
+        probe_progress, probe_final = self._terminal_pair(message, status) if include_progress else (
+            {}, _bound_event({"final": True, "status": status, "content": message, "done": True}, self.max_event_bytes)
+        )
+        current_content_bytes = int(row["content_bytes"] or 0)
+        required_delta = (
+            len(message.encode("utf-8", "replace")) - current_content_bytes
+            + _event_size(probe_final)
+            + (_event_size(probe_progress) if include_progress else 0)
+        )
+        self._compact_non_final_locked(db, max(0, required_delta))
+        current_row = self._row(db, row["job_id"], row["owner"])
+        if not current_row:
+            raise ChatJobCapacityError("Chat job disappeared before terminalization.")
+        current_usage = self._logical_usage_locked(db)
+        existing_content_bytes = int(current_row["content_bytes"] or 0)
+        # Retained event bytes stay in logical usage; only the replaced content is removed.
+        base_usage = current_usage - existing_content_bytes
         high = len(message)
         low = 0
         best: tuple[str, dict[str, Any], int, int] | None = None
