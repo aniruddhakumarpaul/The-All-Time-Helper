@@ -27,7 +27,9 @@ MAX_JOB_CONTENT_BYTES = int(os.getenv("CHAT_JOB_MAX_CONTENT_BYTES", "2097152"))
 MAX_EVENT_STORAGE_BYTES = int(os.getenv("CHAT_JOB_MAX_EVENT_STORAGE_BYTES", "2097152"))
 JOB_LEASE_SECONDS = max(1.0, float(os.getenv("CHAT_JOB_LEASE_SECONDS", "30")))
 JOB_LEASE_RENEW_SECONDS = max(0.2, float(os.getenv("CHAT_JOB_LEASE_RENEW_SECONDS", "5")))
+JOB_LAUNCH_SECONDS = max(1.0, float(os.getenv("CHAT_JOB_LAUNCH_SECONDS", "15")))
 INTERRUPTED_MESSAGE = "The server restarted before this response completed. Please retry."
+LAUNCH_INTERRUPTED_MESSAGE = "The server stopped before this response could start. Please retry."
 
 
 class ChatJobCapacityError(RuntimeError):
@@ -59,28 +61,46 @@ def _bound_event(event: dict[str, Any], limit: int = MAX_EVENT_BYTES) -> dict[st
     if _event_size(clean) <= limit:
         return clean
 
-    message = clean.get("message") if isinstance(clean.get("message"), dict) else {}
-    content = str(message.get("content") or clean.get("content") or "")
-    compact = {
-        "status": str(clean.get("status") or "Working")[:64],
-        "final": bool(clean.get("final")),
-        "done": bool(clean.get("done")),
-        "content": "",
-    }
+    message = clean.get("message") if isinstance(clean.get("message"), dict) else None
+    content = str((message or {}).get("content") or clean.get("content") or "")
+    compact: dict[str, Any] = {}
+    for key, value in clean.items():
+        if key in {"message", "content"}:
+            continue
+        if isinstance(value, bool):
+            compact[key] = value
+        elif isinstance(value, (int, float)):
+            compact[key] = value
+        elif isinstance(value, str):
+            compact[key] = value[:64]
+    if message is not None:
+        compact["message"] = {"role": _truncate(message.get("role") or "assistant", 32), "content": ""}
+        if clean.get("final") and "content" in clean:
+            compact["content"] = ""
+    else:
+        compact["content"] = ""
     # Remove content by UTF-8 byte length; structural fields and flags survive.
     low, high = 0, len(content)
     while low < high:
         middle = (low + high + 1) // 2
-        candidate = dict(compact, content=_truncate(content, middle))
+        if message is not None:
+            candidate = dict(compact, message={"role": compact["message"]["role"], "content": _truncate(content, middle)})
+            if "content" in compact:
+                candidate["content"] = _truncate(content, middle)
+        else:
+            candidate = dict(compact, content=_truncate(content, middle))
         if _event_size(candidate) <= limit:
             low = middle
         else:
             high = middle - 1
-    compact["content"] = _truncate(content, low)
+    if message is not None:
+        compact["message"]["content"] = _truncate(content, low)
+    else:
+        compact["content"] = _truncate(content, low)
     if _event_size(compact) <= limit:
         return compact
     # A tiny limit may not fit the normal fallback keys. Return a valid JSON object.
-    return {} if limit < 2 else {"content": ""}
+    return {"message": {"content": ""}} if message is not None else {}
 
 
 @dataclass
@@ -97,6 +117,7 @@ class ChatJob:
     execution_id: str | None = None
     lease_expires_at: float = 0.0
     heartbeat_at: float = 0.0
+    claim_expires_at: float = 0.0
     events: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
     cancel_event: Any = None
 
@@ -125,7 +146,8 @@ class SQLiteChatJobStore:
                  max_content_bytes: int = MAX_JOB_CONTENT_BYTES,
                  max_event_storage_bytes: int = MAX_EVENT_STORAGE_BYTES,
                  lease_seconds: float = JOB_LEASE_SECONDS,
-                 lease_renew_seconds: float = JOB_LEASE_RENEW_SECONDS) -> None:
+                 lease_renew_seconds: float = JOB_LEASE_RENEW_SECONDS,
+                 launch_seconds: float = JOB_LAUNCH_SECONDS) -> None:
         self.db_file = Path(db_file) if db_file else Path(__file__).resolve().parents[2] / ".runtime" / "chat_jobs.db"
         self.db_file.parent.mkdir(parents=True, exist_ok=True)
         self.retention_seconds = max(1, int(retention_seconds))
@@ -138,6 +160,7 @@ class SQLiteChatJobStore:
         self.max_event_storage_bytes = max(512, int(max_event_storage_bytes))
         self.lease_seconds = max(1.0, float(lease_seconds))
         self.lease_renew_seconds = max(0.2, float(lease_renew_seconds))
+        self.launch_seconds = max(1.0, float(launch_seconds))
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -168,7 +191,8 @@ class SQLiteChatJobStore:
               content_bytes INTEGER NOT NULL DEFAULT 0,
               event_storage_bytes INTEGER NOT NULL DEFAULT 0,
               execution_id TEXT, lease_expires_at REAL NOT NULL DEFAULT 0,
-              heartbeat_at REAL NOT NULL DEFAULT 0);
+              heartbeat_at REAL NOT NULL DEFAULT 0,
+              claim_expires_at REAL NOT NULL DEFAULT 0);
             CREATE INDEX IF NOT EXISTS chat_jobs_owner_updated ON chat_jobs(owner, updated_at DESC);
             CREATE INDEX IF NOT EXISTS chat_jobs_expiry ON chat_jobs(expires_at);
             CREATE TABLE IF NOT EXISTS chat_job_events(
@@ -184,16 +208,32 @@ class SQLiteChatJobStore:
                 "execution_id": "ALTER TABLE chat_jobs ADD COLUMN execution_id TEXT",
                 "lease_expires_at": "ALTER TABLE chat_jobs ADD COLUMN lease_expires_at REAL NOT NULL DEFAULT 0",
                 "heartbeat_at": "ALTER TABLE chat_jobs ADD COLUMN heartbeat_at REAL NOT NULL DEFAULT 0",
+                "claim_expires_at": "ALTER TABLE chat_jobs ADD COLUMN claim_expires_at REAL NOT NULL DEFAULT 0",
             }
             for name, statement in migrations.items():
                 if name not in columns:
                     db.execute(statement)
             db.execute("UPDATE chat_jobs SET content_bytes=length(CAST(content AS BLOB)) WHERE content_bytes=0 AND content <> ''")
             db.execute("UPDATE chat_jobs SET event_storage_bytes=event_bytes WHERE event_storage_bytes=0 AND event_bytes <> 0")
+            db.execute("UPDATE chat_jobs SET claim_expires_at=? WHERE status IN (?,?) AND execution_id IS NULL AND claim_expires_at=0",
+                       (time.time() + self.launch_seconds, ACTIVE, CANCELLING))
 
     def _logical_usage_locked(self, db: sqlite3.Connection) -> int:
         row = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()
         return int(row["bytes"] or 0)
+
+    def _terminal_reservation_bytes(self) -> int:
+        content = "x" * min(self.max_content_chars, self.max_content_bytes)
+        event = _bound_event({"final": True, "status": COMPLETED, "content": content, "done": True}, self.max_event_bytes)
+        return len(content.encode("utf-8", "replace")) + _event_size(event)
+
+    def _reserved_admission_usage_locked(self, db: sqlite3.Connection) -> int:
+        terminal = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes "
+                              "FROM chat_jobs WHERE status IN (?,?,?)",
+                              (COMPLETED, FAILED, CANCELLED)).fetchone()["bytes"]
+        active = db.execute("SELECT COUNT(*) AS count FROM chat_jobs WHERE status IN (?,?)",
+                            (ACTIVE, CANCELLING)).fetchone()["count"]
+        return int(terminal or 0) + int(active) * self._terminal_reservation_bytes()
 
     def _append_event_locked(self, db: sqlite3.Connection, job_id: str, seq: int,
                              event: dict[str, Any], now: float) -> int:
@@ -202,30 +242,95 @@ class SQLiteChatJobStore:
         db.execute("INSERT INTO chat_job_events VALUES(?,?,?,?,?)", (job_id, seq, payload, payload_bytes, now))
         return payload_bytes
 
-    def _terminalize_locked(self, db: sqlite3.Connection, row: sqlite3.Row, status: str,
-                            content: str, now: float) -> None:
-        message = _truncate(content, self.max_content_chars)
-        final_status = CANCELLED if status != CANCELLED and bool(row["cancel_requested"]) else status
+    def _compact_non_final_locked(self, db: sqlite3.Connection, required_bytes: int = 0) -> bool:
+        """Discard optional progress events until a new write can fit."""
+        usage = self._logical_usage_locked(db)
+        if usage + required_bytes <= self.max_storage_bytes:
+            return True
+        affected: set[str] = set()
+        candidates = db.execute(
+            "SELECT job_id,seq,payload,payload_bytes FROM chat_job_events ORDER BY created_at ASC, job_id ASC, seq ASC"
+        ).fetchall()
+        for row in candidates:
+            try:
+                is_final = bool(json.loads(row["payload"]).get("final"))
+            except (TypeError, ValueError):
+                is_final = False
+            if is_final:
+                continue
+            db.execute("DELETE FROM chat_job_events WHERE job_id=? AND seq=?", (row["job_id"], row["seq"]))
+            affected.add(row["job_id"])
+            usage -= int(row["payload_bytes"])
+            if usage + required_bytes <= self.max_storage_bytes:
+                break
+        for job_id in affected:
+            self._trim(db, job_id)
+        return self._logical_usage_locked(db) + required_bytes <= self.max_storage_bytes
+
+    def _terminal_pair(self, message: str, status: str) -> tuple[dict[str, Any], dict[str, Any]]:
         progress = _bound_event({"message": {"role": "assistant", "content": message}}, self.max_event_bytes)
         final = _bound_event({"message": {"role": "assistant", "content": message},
-                              "final": True, "status": final_status, "done": True,
+                              "final": True, "status": status, "done": True,
                               "content": message}, self.max_event_bytes)
+        return progress, final
+
+    def _fit_terminal_message_locked(self, db: sqlite3.Connection, row: sqlite3.Row,
+                                     message: str, status: str, *, include_progress: bool) -> tuple[str, dict[str, Any], int, int]:
+        self._compact_non_final_locked(db)
+        message = _truncate(message, min(self.max_content_chars, self.max_content_bytes))
+        base_usage = self._logical_usage_locked(db) - int(row["event_storage_bytes"] or 0) - int(row["content_bytes"] or 0)
+        high = len(message)
+        low = 0
+        best: tuple[str, dict[str, Any], int, int] | None = None
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = _truncate(message, middle)
+            if include_progress:
+                progress, final = self._terminal_pair(candidate, status)
+            else:
+                progress = {}
+                final = _bound_event({"final": True, "status": status, "content": candidate, "done": True}, self.max_event_bytes)
+            progress_bytes = _event_size(progress) if include_progress else 0
+            final_bytes = _event_size(final)
+            projected = base_usage + len(candidate.encode("utf-8", "replace")) + progress_bytes + final_bytes
+            if projected <= self.max_storage_bytes:
+                best = (candidate, final, progress_bytes, final_bytes)
+                low = middle + 1
+            else:
+                high = middle - 1
+        if best is None:
+            raise ChatJobCapacityError("Chat job storage cannot preserve a terminal result.")
+        return best
+
+    def _terminalize_locked(self, db: sqlite3.Connection, row: sqlite3.Row, status: str,
+                            content: str, now: float, *, launch_expired: bool = False) -> None:
+        message = _truncate(content, min(self.max_content_chars, self.max_content_bytes))
+        final_status = CANCELLED if status != CANCELLED and bool(row["cancel_requested"]) else status
+        if launch_expired:
+            message = LAUNCH_INTERRUPTED_MESSAGE
+        message, final, progress_bytes, final_bytes = self._fit_terminal_message_locked(
+            db, row, message, final_status, include_progress=True
+        )
+        progress, _ = self._terminal_pair(message, final_status)
         seq = int(row["next_seq"]) + 1
-        progress_bytes = self._append_event_locked(db, row["job_id"], seq, progress, now)
-        final_bytes = self._append_event_locked(db, row["job_id"], seq + 1, final, now)
+        self._append_event_locked(db, row["job_id"], seq, progress, now)
+        self._append_event_locked(db, row["job_id"], seq + 1, final, now)
         content_bytes = len(message.encode("utf-8", "replace"))
         db.execute("UPDATE chat_jobs SET status=?,content=?,content_bytes=?,next_seq=?,updated_at=?,expires_at=?,"
                    "event_storage_bytes=event_storage_bytes+?,event_bytes=event_storage_bytes,"
-                   "execution_id=NULL,lease_expires_at=0,heartbeat_at=? WHERE job_id=?",
+                   "execution_id=NULL,lease_expires_at=0,heartbeat_at=?,claim_expires_at=0 WHERE job_id=?",
                    (final_status, message, content_bytes, seq + 1, now, now + self.retention_seconds,
                     progress_bytes + final_bytes, now, row["job_id"]))
         self._trim(db, row["job_id"])
 
     def _recover_orphans_locked(self, db: sqlite3.Connection, now: float) -> int:
-        rows = db.execute("SELECT * FROM chat_jobs WHERE status IN (?,?) AND lease_expires_at > 0 AND lease_expires_at <= ?",
-                          (ACTIVE, CANCELLING, now)).fetchall()
+        rows = db.execute("SELECT * FROM chat_jobs WHERE status IN (?,?) AND ((execution_id IS NOT NULL AND lease_expires_at > 0 AND lease_expires_at <= ?) OR "
+                          "(execution_id IS NULL AND claim_expires_at > 0 AND claim_expires_at <= ?))",
+                          (ACTIVE, CANCELLING, now, now)).fetchall()
         for row in rows:
-            self._terminalize_locked(db, row, FAILED, INTERRUPTED_MESSAGE, now)
+            self._terminalize_locked(db, row, FAILED,
+                                     LAUNCH_INTERRUPTED_MESSAGE if row["execution_id"] is None else INTERRUPTED_MESSAGE,
+                                     now, launch_expired=row["execution_id"] is None)
         return len(rows)
 
     def _prune_locked(self, db: sqlite3.Connection, now: float | None = None) -> int:
@@ -249,6 +354,7 @@ class SQLiteChatJobStore:
                 usage = self._logical_usage_locked(db)
                 if usage <= self.max_storage_bytes:
                     break
+        self._compact_non_final_locked(db)
         return recovered + len(expired) + len(old)
 
     def _row(self, db: sqlite3.Connection, job_id: str, owner: str) -> sqlite3.Row | None:
@@ -278,19 +384,23 @@ class SQLiteChatJobStore:
     def create(self, job_id: str, owner: str, cancel_event: Any = None) -> ChatJob:
         now = time.time()
         expires = now + self.retention_seconds
+        claim_expires = now + self.launch_seconds
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
                 self._prune_locked(db, now)
-                if self._logical_usage_locked(db) >= self.max_storage_bytes:
+                minimum_final = _event_size(_bound_event({"final": True, "status": COMPLETED, "content": "", "done": True}, self.max_event_bytes))
+                reservation = max(minimum_final, self._terminal_reservation_bytes())
+                if (self._logical_usage_locked(db) + minimum_final > self.max_storage_bytes or
+                        self._reserved_admission_usage_locked(db) + reservation > self.max_storage_bytes):
                     raise ChatJobCapacityError("Chat job storage is temporarily full. Please retry shortly.")
-                db.execute("INSERT INTO chat_jobs(job_id,owner,created_at,updated_at,expires_at,status) VALUES(?,?,?,?,?,?)",
-                           (job_id, owner, now, now, expires, ACTIVE))
+                db.execute("INSERT INTO chat_jobs(job_id,owner,created_at,updated_at,expires_at,status,claim_expires_at) VALUES(?,?,?,?,?,?,?)",
+                           (job_id, owner, now, now, expires, ACTIVE, claim_expires))
                 db.commit()
             except Exception:
                 db.rollback()
                 raise
-        return ChatJob(job_id, owner, now, now, expires, cancel_event=cancel_event)
+        return ChatJob(job_id, owner, now, now, expires, cancel_event=cancel_event, claim_expires_at=claim_expires)
 
     def claim(self, job_id: str, owner: str, execution_id: str) -> bool:
         now = time.time()
@@ -302,11 +412,11 @@ class SQLiteChatJobStore:
                 if not row or row["status"] not in (ACTIVE, CANCELLING):
                     db.rollback()
                     return False
-                if row["execution_id"] and float(row["lease_expires_at"] or 0) > now:
+                if row["execution_id"] or float(row["claim_expires_at"] or 0) <= now:
                     db.rollback()
                     return False
                 db.execute("UPDATE chat_jobs SET execution_id=?,lease_expires_at=?,heartbeat_at=?,updated_at=?,expires_at=? "
-                           "WHERE job_id=? AND owner=? AND status IN (?,?) AND (execution_id IS NULL OR lease_expires_at <= ?)",
+                           ",claim_expires_at=0 WHERE job_id=? AND owner=? AND status IN (?,?) AND execution_id IS NULL AND claim_expires_at > ?",
                            (execution_id, now + self.lease_seconds, now, now, now + self.retention_seconds,
                             job_id, owner, ACTIVE, CANCELLING, now))
                 accepted = db.execute("SELECT changes()").fetchone()[0] == 1
@@ -336,6 +446,7 @@ class SQLiteChatJobStore:
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                self._prune_locked(db, now)
                 row = self._row(db, job_id, owner)
                 if not row or row["status"] != ACTIVE:
                     db.rollback()
@@ -344,6 +455,10 @@ class SQLiteChatJobStore:
                     db.rollback()
                     return False
                 bounded = _bound_event(event, self.max_event_bytes)
+                size = _event_size(bounded)
+                if not self._compact_non_final_locked(db, size):
+                    db.commit()
+                    return False
                 seq = int(row["next_seq"]) + 1
                 self._append_event_locked(db, job_id, seq, bounded, now)
                 db.execute("UPDATE chat_jobs SET next_seq=?,updated_at=?,expires_at=? WHERE job_id=? AND owner=? AND status=?",
@@ -381,6 +496,7 @@ class SQLiteChatJobStore:
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                self._prune_locked(db, now)
                 row = self._row(db, job_id, owner)
                 if not row or row["status"] in TERMINAL_STATUSES:
                     db.rollback()
@@ -390,12 +506,14 @@ class SQLiteChatJobStore:
                     return False
                 # Read cancellation inside the same write transaction as finalization.
                 final_status = CANCELLED if bool(row["cancel_requested"]) else status
-                event = _bound_event({"final": True, "status": final_status, "content": content, "done": True}, self.max_event_bytes)
+                content, event, _, size = self._fit_terminal_message_locked(
+                    db, row, content, final_status, include_progress=False
+                )
                 seq = int(row["next_seq"]) + 1
                 size = self._append_event_locked(db, job_id, seq, event, now)
                 content_bytes = len(content.encode("utf-8", "replace"))
                 db.execute("UPDATE chat_jobs SET status=?,content=?,content_bytes=?,next_seq=?,updated_at=?,expires_at=?,"
-                           "execution_id=NULL,lease_expires_at=0,heartbeat_at=?,event_storage_bytes=event_storage_bytes+? "
+                           "execution_id=NULL,lease_expires_at=0,heartbeat_at=?,claim_expires_at=0,event_storage_bytes=event_storage_bytes+? "
                            "WHERE job_id=? AND owner=?", (final_status, content, content_bytes, seq, now,
                            now + self.retention_seconds, now, size, job_id, owner))
                 self._trim(db, job_id)
@@ -415,6 +533,7 @@ class SQLiteChatJobStore:
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                self._prune_locked(db, now)
                 row = self._row(db, job_id, owner)
                 if not row or row["status"] in TERMINAL_STATUSES:
                     db.rollback()
@@ -422,16 +541,17 @@ class SQLiteChatJobStore:
                 if execution_id is not None and row["execution_id"] != execution_id:
                     db.rollback()
                     return False
-                progress = _bound_event({"message": {"role": "assistant", "content": message}}, self.max_event_bytes)
                 final_status = CANCELLED if bool(row["cancel_requested"]) else FAILED
-                final = _bound_event({"message": {"role": "assistant", "content": message},
-                                      "final": True, "status": final_status, "done": True, "content": message}, self.max_event_bytes)
+                message, final, progress_size, final_size = self._fit_terminal_message_locked(
+                    db, row, message, final_status, include_progress=True
+                )
+                progress, _ = self._terminal_pair(message, final_status)
                 seq = int(row["next_seq"]) + 1
-                progress_size = self._append_event_locked(db, job_id, seq, progress, now)
-                final_size = self._append_event_locked(db, job_id, seq + 1, final, now)
+                self._append_event_locked(db, job_id, seq, progress, now)
+                self._append_event_locked(db, job_id, seq + 1, final, now)
                 content_bytes = len(message.encode("utf-8", "replace"))
                 db.execute("UPDATE chat_jobs SET status=?,content=?,content_bytes=?,next_seq=?,updated_at=?,expires_at=?,"
-                           "execution_id=NULL,lease_expires_at=0,heartbeat_at=?,event_storage_bytes=event_storage_bytes+? "
+                           "execution_id=NULL,lease_expires_at=0,heartbeat_at=?,claim_expires_at=0,event_storage_bytes=event_storage_bytes+? "
                            "WHERE job_id=? AND owner=?", (final_status, message, content_bytes, seq + 1, now,
                            now + self.retention_seconds, now, progress_size + final_size, job_id, owner))
                 self._trim(db, job_id)
@@ -443,7 +563,13 @@ class SQLiteChatJobStore:
 
     def snapshot(self, job_id: str, owner: str, after: int = 0) -> dict[str, Any] | None:
         with self._open() as db:
-            self._prune_locked(db)
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                self._prune_locked(db)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             row = self._row(db, job_id, owner)
             if not row:
                 return None
@@ -453,21 +579,34 @@ class SQLiteChatJobStore:
                     "updated_at": row["updated_at"], "expires_at": row["expires_at"], "status": row["status"],
                     "content": row["content"], "cancel_requested": bool(row["cancel_requested"]),
                     "execution_id": row["execution_id"], "lease_expires_at": row["lease_expires_at"],
-                    "heartbeat_at": row["heartbeat_at"],
+                    "heartbeat_at": row["heartbeat_at"], "claim_expires_at": row["claim_expires_at"],
                     "next_seq": int(row["next_seq"]),
                     "events": [{"seq": int(item["seq"]), "event": json.loads(item["payload"])} for item in events]}
 
     def list_for_owner(self, owner: str) -> list[dict[str, Any]]:
         with self._open() as db:
-            self._prune_locked(db)
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                self._prune_locked(db)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
             rows = db.execute("SELECT job_id,owner,created_at,updated_at,expires_at,status,content,next_seq,cancel_requested,"
-                              "execution_id,lease_expires_at,heartbeat_at "
+                              "execution_id,lease_expires_at,heartbeat_at,claim_expires_at "
                               "FROM chat_jobs WHERE owner=? ORDER BY updated_at DESC", (owner,)).fetchall()
             return [dict(row) | {"cancel_requested": bool(row["cancel_requested"])} for row in rows]
 
     def prune(self) -> int:
         with self._open() as db:
-            return self._prune_locked(db)
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._prune_locked(db)
+                db.commit()
+                return result
+            except Exception:
+                db.rollback()
+                raise
 
 
 class InMemoryChatJobStore:
@@ -475,10 +614,12 @@ class InMemoryChatJobStore:
 
     def __init__(self, *, retention_seconds: int = JOB_RETENTION_SECONDS,
                  lease_seconds: float = JOB_LEASE_SECONDS,
-                 lease_renew_seconds: float = JOB_LEASE_RENEW_SECONDS) -> None:
+                 lease_renew_seconds: float = JOB_LEASE_RENEW_SECONDS,
+                 launch_seconds: float = JOB_LAUNCH_SECONDS) -> None:
         self.retention_seconds = max(1, retention_seconds)
         self.lease_seconds = max(1.0, float(lease_seconds))
         self.lease_renew_seconds = max(0.2, float(lease_renew_seconds))
+        self.launch_seconds = max(1.0, float(launch_seconds))
         self._jobs: dict[str, ChatJob] = {}
         self._lock = threading.RLock()
 
@@ -497,7 +638,8 @@ class InMemoryChatJobStore:
         with self._lock:
             self._prune_locked()
             now = time.time()
-            job = ChatJob(job_id, owner, now, now, now + self.retention_seconds, cancel_event=cancel_event)
+            job = ChatJob(job_id, owner, now, now, now + self.retention_seconds,
+                          cancel_event=cancel_event, claim_expires_at=now + self.launch_seconds)
             self._jobs[job_id] = job
             return job
 
@@ -507,10 +649,11 @@ class InMemoryChatJobStore:
             now = time.time()
             if not job or job.status not in (ACTIVE, CANCELLING):
                 return False
-            if job.execution_id and job.lease_expires_at > now:
+            if job.execution_id or job.claim_expires_at <= now:
                 return False
             job.execution_id = execution_id
             job.lease_expires_at = job.heartbeat_at = now + self.lease_seconds
+            job.claim_expires_at = 0
             job.updated_at = now
             job.expires_at = now + self.retention_seconds
             return True
@@ -613,7 +756,7 @@ class InMemoryChatJobStore:
                     "updated_at": job.updated_at, "expires_at": job.expires_at, "status": job.status,
                     "content": job.content, "cancel_requested": job.cancel_requested,
                     "execution_id": job.execution_id, "lease_expires_at": job.lease_expires_at,
-                    "heartbeat_at": job.heartbeat_at,
+                    "heartbeat_at": job.heartbeat_at, "claim_expires_at": job.claim_expires_at,
                     "next_seq": job.next_sequence,
                     "events": [{"seq": seq, "event": dict(event)} for seq, event in job.events if seq > after]}
 

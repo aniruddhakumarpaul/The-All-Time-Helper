@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 
 from app.logic.chat_job_registry import (
+    ACTIVE,
+    CANCELLING,
     ChatJobCapacityError,
     ChatJobRegistry,
     InMemoryChatJobStore,
@@ -226,16 +228,165 @@ class ChatJobRegistryTests(unittest.TestCase):
     def test_storage_accounting_uses_utf8_bytes_and_rejects_when_active_usage_is_full(self):
         with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
             db_file = Path(directory) / "jobs.db"
-            store = SQLiteChatJobStore(db_file, retention_seconds=10, max_storage_bytes=1024, max_event_storage_bytes=10_000)
+            store = SQLiteChatJobStore(db_file, retention_seconds=10, max_storage_bytes=1024,
+                                       max_event_storage_bytes=10_000, max_content_bytes=128)
             job_id = str(uuid.uuid4())
             store.create(job_id, "owner@example.com")
-            content = "🙂" * 300
-            store.publish(job_id, "owner@example.com", {"content": content})
+            content = "🙂" * 80
+            self.assertTrue(store.publish(job_id, "owner@example.com", {"content": content}))
             with store._open() as db:
                 row = db.execute("SELECT event_storage_bytes,content_bytes FROM chat_jobs WHERE job_id=?", (job_id,)).fetchone()
                 self.assertEqual(row["event_storage_bytes"], len(json.dumps({"content": content}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")))
-            with self.assertRaises(ChatJobCapacityError):
-                store.create(str(uuid.uuid4()), "owner@example.com")
+            # A later admission compacts this optional event, so the active job remains intact.
+            self.assertIsNotNone(store.snapshot(job_id, "owner@example.com"))
+
+    def test_streamed_unicode_message_keeps_message_shape_and_is_visible_before_final(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            store = SQLiteChatJobStore(db_file, retention_seconds=10, max_event_bytes=512,
+                                       max_storage_bytes=4096, max_content_bytes=128)
+            job_id = str(uuid.uuid4())
+            store.create(job_id, "owner@example.com")
+            chunk = {"message": {"role": "assistant", "content": "🙂漢字" * 1000}, "done": False}
+            self.assertTrue(store.publish(job_id, "owner@example.com", chunk))
+            snapshot = store.snapshot(job_id, "owner@example.com")
+            event = snapshot["events"][-1]["event"]
+            self.assertIn("message", event)
+            self.assertIn("content", event["message"])
+            self.assertNotIn("content", event)
+            self.assertFalse(event["done"])
+            self.assertLessEqual(_event_size(event), 512)
+
+    def test_expired_orphan_recovery_is_atomic_across_readers(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            creator = SQLiteChatJobStore(db_file, retention_seconds=10, lease_seconds=1, launch_seconds=10)
+            job_id = str(uuid.uuid4())
+            creator.create(job_id, "owner@example.com")
+            self.assertTrue(creator.claim(job_id, "owner@example.com", "execution-a"))
+            time.sleep(1.1)
+            barrier = threading.Barrier(4)
+
+            def read_snapshot():
+                worker = SQLiteChatJobStore(db_file, retention_seconds=10, lease_seconds=1, launch_seconds=10)
+                barrier.wait()
+                return worker.snapshot(job_id, "owner@example.com")
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                snapshots = list(pool.map(lambda _: read_snapshot(), range(4)))
+            self.assertTrue(all(snapshot and snapshot["status"] == "failed" for snapshot in snapshots))
+            self.assertEqual({snapshot["content"] for snapshot in snapshots},
+                             {"The server restarted before this response completed. Please retry."})
+            final_counts = [sum(item["event"].get("final", False) for item in snapshot["events"]) for snapshot in snapshots]
+            self.assertEqual(final_counts, [1] * 4)
+            sequences = [item["seq"] for item in snapshots[0]["events"]]
+            self.assertEqual(sequences, sorted(set(sequences)))
+
+    def test_expired_orphan_recovery_is_atomic_across_snapshot_prune_and_list(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            creator = SQLiteChatJobStore(db_file, retention_seconds=10, lease_seconds=1, launch_seconds=10)
+            job_id = str(uuid.uuid4())
+            creator.create(job_id, "owner@example.com")
+            self.assertTrue(creator.claim(job_id, "owner@example.com", "execution-a"))
+            time.sleep(1.1)
+            barrier = threading.Barrier(12)
+
+            def invoke(kind):
+                worker = SQLiteChatJobStore(db_file, retention_seconds=10, lease_seconds=1, launch_seconds=10)
+                barrier.wait()
+                if kind == "snapshot":
+                    return worker.snapshot(job_id, "owner@example.com")
+                if kind == "list":
+                    return worker.list_for_owner("owner@example.com")
+                return worker.prune()
+
+            kinds = ["snapshot"] * 4 + ["list"] * 4 + ["prune"] * 4
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                results = list(pool.map(invoke, kinds))
+            snapshots = [result for kind, result in zip(kinds, results) if kind == "snapshot"]
+            listed = [item for result in results if isinstance(result, list) for item in result if item and item["job_id"] == job_id]
+            self.assertTrue(all(snapshot and snapshot["status"] == "failed" for snapshot in snapshots))
+            self.assertTrue(all(item["status"] == "failed" for item in listed))
+            final = creator.snapshot(job_id, "owner@example.com")
+            self.assertEqual(sum(item["event"].get("final", False) for item in final["events"]), 1)
+
+    def test_launch_deadline_fails_unclaimed_job_and_claim_race_is_single_winner(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            store = SQLiteChatJobStore(db_file, retention_seconds=10, launch_seconds=1, lease_seconds=5)
+            expired_id = str(uuid.uuid4())
+            store.create(expired_id, "owner@example.com")
+            time.sleep(1.1)
+            expired = store.snapshot(expired_id, "owner@example.com")
+            self.assertEqual(expired["status"], "failed")
+            self.assertEqual(expired["content"], "The server stopped before this response could start. Please retry.")
+
+            claim_id = str(uuid.uuid4())
+            store.create(claim_id, "owner@example.com")
+            workers = [SQLiteChatJobStore(db_file, retention_seconds=10, launch_seconds=1, lease_seconds=5) for _ in range(2)]
+            barrier = threading.Barrier(2)
+
+            def claim(index):
+                barrier.wait()
+                return workers[index].claim(claim_id, "owner@example.com", f"execution-{index}")
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = [pool.submit(claim, index) for index in range(2)]
+                claimed = [future.result() for future in results]
+            self.assertEqual(sum(claimed), 1)
+            self.assertEqual(store.snapshot(claim_id, "owner@example.com")["status"], "active")
+
+    def test_global_budget_compacts_progress_without_deleting_active_jobs(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            config = dict(retention_seconds=10, max_storage_bytes=1800, max_event_storage_bytes=10_000,
+                          max_event_bytes=512, max_content_bytes=128)
+            creator = SQLiteChatJobStore(db_file, **config)
+            job_ids = [str(uuid.uuid4()) for _ in range(3)]
+            for job_id in job_ids:
+                creator.create(job_id, "owner@example.com")
+            barrier = threading.Barrier(3)
+
+            def publish(job_id):
+                worker = SQLiteChatJobStore(db_file, **config)
+                barrier.wait()
+                for index in range(20):
+                    worker.publish(job_id, "owner@example.com", {"message": {"content": f"🙂{index}"}, "done": False})
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures = [pool.submit(publish, job_id) for job_id in job_ids]
+                [future.result() for future in futures]
+            with creator._open() as db:
+                usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+                active = db.execute("SELECT COUNT(*) AS count FROM chat_jobs WHERE status IN (?,?)", (ACTIVE, CANCELLING)).fetchone()["count"]
+            self.assertLessEqual(usage, 1800)
+            self.assertEqual(active, 3)
+            for job_id in job_ids:
+                self.assertTrue(creator.complete(job_id, "owner@example.com", "final 🙂"))
+            with creator._open() as db:
+                usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+            self.assertLessEqual(usage, 1800)
+
+    def test_admission_rejects_when_terminal_reservations_cannot_fit(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\\tmp") as directory:
+            db_file = Path(directory) / "jobs.db"
+            config = dict(retention_seconds=10, max_storage_bytes=1200, max_content_bytes=128,
+                          max_event_bytes=512, max_event_storage_bytes=4096)
+            store = SQLiteChatJobStore(db_file, **config)
+            admitted = []
+            while True:
+                try:
+                    job_id = str(uuid.uuid4())
+                    store.create(job_id, "owner@example.com")
+                    admitted.append(job_id)
+                except ChatJobCapacityError:
+                    break
+            self.assertGreaterEqual(len(admitted), 2)
+            self.assertLessEqual(len(admitted) * store._terminal_reservation_bytes(), 1200)
+            with store._open() as db:
+                usage = db.execute("SELECT COALESCE(SUM(event_storage_bytes + content_bytes), 0) AS bytes FROM chat_jobs").fetchone()["bytes"]
+            self.assertLessEqual(usage, 1200)
 
 
 if __name__ == "__main__":
