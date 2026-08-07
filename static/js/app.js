@@ -31,8 +31,12 @@ function syncWindowState() {
     window.activeId = state.activeId;
 }
 
-const ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_jobs_v2';
+const ACTIVE_JOB_STORAGE_PREFIX = 'helper_active_chat_job_v3:';
+const LEGACY_ACTIVE_JOB_STORAGE_KEY_V2 = 'helper_active_chat_jobs_v2';
 const LEGACY_ACTIVE_JOB_STORAGE_KEY = 'helper_active_chat_job_v1';
+const ACTIVE_JOB_TTL_MS = 24 * 60 * 60 * 1000;
+const ACTIVE_JOB_MAX_RECORDS = 32;
+const ACTIVE_JOB_WRITER_ID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const recoveryJobsInFlight = new Set();
 const recoveryRevisions = new Map();
 let activeJobChannel = null;
@@ -40,65 +44,126 @@ try {
     activeJobChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('helper-chat-jobs') : null;
 } catch (_) { activeJobChannel = null; }
 
-function readActiveJobs() {
-    try {
-        const raw = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        const jobs = Array.isArray(parsed) ? parsed : Object.values(parsed || {});
-        const valid = jobs.filter(job => job && typeof job.id === 'string' && typeof job.chatId === 'string');
-        if (valid.length) return valid;
-        const legacyRaw = localStorage.getItem(LEGACY_ACTIVE_JOB_STORAGE_KEY);
-        const legacy = legacyRaw ? JSON.parse(legacyRaw) : null;
-        if (legacy?.id && legacy?.chatId) {
-            const migrated = [{ ...legacy, after: 0, migratedAt: Date.now() }];
-            localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify(migrated));
-            localStorage.removeItem(LEGACY_ACTIVE_JOB_STORAGE_KEY);
-            return migrated;
-        }
-        return [];
-    } catch (_) {
-        return [];
-    }
+function activeJobStorageKey(email, chatId) {
+    return `${ACTIVE_JOB_STORAGE_PREFIX}${encodeURIComponent(email || 'unknown')}:${encodeURIComponent(chatId || '')}`;
 }
 
-function writeActiveJobs(jobs) {
-    const deduped = [];
-    const seen = new Set();
-    for (const job of jobs || []) {
-        if (!job?.id || !job?.chatId || seen.has(job.id)) continue;
-        seen.add(job.id);
-        deduped.push(job);
+function activeJobRecord(value) {
+    if (!value || typeof value.id !== 'string' || typeof value.chatId !== 'string') return null;
+    return { ...value, after: Math.max(0, Number(value.after) || 0), updatedAt: Number(value.updatedAt) || 0,
+        expiresAt: Number(value.expiresAt) || (Date.now() + ACTIVE_JOB_TTL_MS), writerId: String(value.writerId || '') };
+}
+
+function migrateActiveJobStorage() {
+    const migrated = [];
+    try {
+        const legacyValues = [localStorage.getItem(LEGACY_ACTIVE_JOB_STORAGE_KEY_V2), localStorage.getItem(LEGACY_ACTIVE_JOB_STORAGE_KEY)];
+        for (const raw of legacyValues) {
+            if (!raw) continue;
+            const parsed = JSON.parse(raw);
+            const values = Array.isArray(parsed) ? parsed : [parsed];
+            for (const value of values) {
+                const job = activeJobRecord(value);
+                if (job?.email || state.user?.email) migrated.push({ ...job, email: job.email || state.user?.email || '', after: job.after || 0 });
+            }
+        }
+        for (const job of migrated) writeActiveJob(job, false);
+        localStorage.removeItem(LEGACY_ACTIVE_JOB_STORAGE_KEY_V2);
+        localStorage.removeItem(LEGACY_ACTIVE_JOB_STORAGE_KEY);
+    } catch (_) { /* Ignore malformed recovery records. */ }
+}
+
+function trimActiveJobRecords(email) {
+    const keys = Object.keys(localStorage).filter(key => key.startsWith(ACTIVE_JOB_STORAGE_PREFIX));
+    const records = [];
+    for (const key of keys) {
+        try {
+            const job = activeJobRecord(JSON.parse(localStorage.getItem(key) || 'null'));
+            if (!job || (email && job.email !== email)) continue;
+            if (job.expiresAt <= Date.now()) localStorage.removeItem(key);
+            else records.push({ key, job });
+        } catch (_) { localStorage.removeItem(key); }
     }
-    localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, JSON.stringify(deduped.slice(-32)));
-    activeJobChannel?.postMessage({ type: 'jobs-updated', email: state.user?.email || '' });
+    records.sort((a, b) => (b.job.updatedAt - a.job.updatedAt) || String(b.job.writerId).localeCompare(String(a.job.writerId)));
+    for (const item of records.slice(ACTIVE_JOB_MAX_RECORDS)) localStorage.removeItem(item.key);
+}
+
+function readActiveJobs() {
+    migrateActiveJobStorage();
+    const email = state.user?.email || '';
+    trimActiveJobRecords(email);
+    const jobs = [];
+    for (const key of Object.keys(localStorage).filter(item => item.startsWith(ACTIVE_JOB_STORAGE_PREFIX))) {
+        try {
+            const job = activeJobRecord(JSON.parse(localStorage.getItem(key) || 'null'));
+            if (job && (!email || job.email === email) && job.expiresAt > Date.now()) jobs.push(job);
+        } catch (_) { /* Ignore one damaged record. */ }
+    }
+    return jobs;
+}
+
+function writeActiveJob(job, announce = true) {
+    const normalized = activeJobRecord({ ...job, email: job?.email || state.user?.email || '', updatedAt: Number(job?.updatedAt) || Date.now(),
+        expiresAt: Number(job?.expiresAt) || Date.now() + ACTIVE_JOB_TTL_MS, writerId: job?.writerId || ACTIVE_JOB_WRITER_ID });
+    if (!normalized?.email || !normalized.id || !normalized.chatId) return;
+    const key = activeJobStorageKey(normalized.email, normalized.chatId);
+    try {
+        const existing = activeJobRecord(JSON.parse(localStorage.getItem(key) || 'null'));
+        if (existing && ((existing.updatedAt > normalized.updatedAt) ||
+            (existing.updatedAt === normalized.updatedAt && String(existing.writerId).localeCompare(String(normalized.writerId)) > 0))) return;
+        localStorage.setItem(key, JSON.stringify(normalized));
+        trimActiveJobRecords(normalized.email);
+        if (announce) activeJobChannel?.postMessage({ type: 'job-updated', key });
+    } catch (_) { /* Storage is an optimization; the server remains authoritative. */ }
 }
 
 function readActiveJob(chatId = state.activeId) {
-    return readActiveJobs().find(job => job.chatId === chatId && (!job.email || job.email === state.user?.email)) || null;
+    const email = state.user?.email || '';
+    if (!email || !chatId) return null;
+    try {
+        const job = activeJobRecord(JSON.parse(localStorage.getItem(activeJobStorageKey(email, chatId)) || 'null'));
+        return job && job.expiresAt > Date.now() ? job : null;
+    } catch (_) { return null; }
 }
 
 function rememberActiveJob(jobId, chatId, model, after = 0) {
     if (!jobId || !chatId) return;
-    const jobs = readActiveJobs().filter(job => job.chatId !== chatId && job.id !== jobId);
-    jobs.push({ id: jobId, chatId, email: state.user?.email || '', model: model || 'AI Assistant',
-        after: Math.max(0, Number(after) || 0), updatedAt: Date.now() });
-    writeActiveJobs(jobs);
+    writeActiveJob({ id: jobId, chatId, email: state.user?.email || '', model: model || 'AI Assistant',
+        after: Math.max(0, Number(after) || 0) });
 }
 
 function updateActiveJobCursor(jobId, chatId, after, model) {
-    const current = readActiveJobs();
-    const job = current.find(item => item.id === jobId && item.chatId === chatId);
+    const job = readActiveJob(chatId);
+    if (job && job.id !== jobId) return;
     if (!job) return;
-    job.after = Math.max(0, Number(after) || 0);
-    job.model = model || job.model;
-    job.updatedAt = Date.now();
-    writeActiveJobs(current);
+    writeActiveJob({ ...job, after: Math.max(0, Number(after) || 0), model: model || job.model });
 }
 
 function forgetActiveJob(jobId = '', chatId = '') {
-    const current = readActiveJobs();
-    const filtered = current.filter(job => (jobId && job.id === jobId) || (chatId && job.chatId === chatId) ? false : true);
-    if (filtered.length !== current.length) writeActiveJobs(filtered);
+    const email = state.user?.email || '';
+    if (email && chatId) {
+        const key = activeJobStorageKey(email, chatId);
+        try {
+            const current = activeJobRecord(JSON.parse(localStorage.getItem(key) || 'null'));
+            if (!jobId || current?.id === jobId) localStorage.removeItem(key);
+            activeJobChannel?.postMessage({ type: 'job-updated', key });
+        } catch (_) { /* Ignore malformed local state. */ }
+        return;
+    }
+    for (const key of Object.keys(localStorage).filter(item => item.startsWith(ACTIVE_JOB_STORAGE_PREFIX))) {
+        try {
+            const job = activeJobRecord(JSON.parse(localStorage.getItem(key) || 'null'));
+            if (job && (!jobId || job.id === jobId) && (!chatId || job.chatId === chatId)) localStorage.removeItem(key);
+        } catch (_) { localStorage.removeItem(key); }
+    }
+}
+
+function clearActiveJobsForAccount(email = state.user?.email || '') {
+    if (!email) return;
+    for (const key of Object.keys(localStorage).filter(item => item.startsWith(`${ACTIVE_JOB_STORAGE_PREFIX}${encodeURIComponent(email)}:`))) {
+        localStorage.removeItem(key);
+    }
+    activeJobChannel?.postMessage({ type: 'jobs-cleared', email });
 }
 
 function attachJobIdToLatestUserMessage(chatId, jobId) {
@@ -142,6 +207,10 @@ async function recoverActiveChatJob(pending = null) {
             const terminal = ['completed', 'failed', 'cancelled'].includes(snapshot.status);
             if (!terminal) {
                 if (!statusNode && state.activeId === pending.chatId) {
+                    const stopButton = document.getElementById('stop-btn');
+                    const sendButton = document.getElementById('main-send-btn');
+                    if (stopButton) { stopButton.style.display = 'flex'; stopButton.setAttribute('aria-hidden', 'false'); }
+                    if (sendButton) { sendButton.style.display = 'none'; sendButton.setAttribute('aria-hidden', 'true'); }
                     const textNode = ui.addMsg('b', 'Reconnecting to your response...', null, chat.ms.length, pending.model || 'AI Assistant');
                     statusNode = textNode.closest('.msg');
                     statusNode?.classList.add('thinking-state');
@@ -161,6 +230,12 @@ async function recoverActiveChatJob(pending = null) {
             }
             forgetActiveJob(pending.id, pending.chatId);
             if (state.activeJobId === pending.id) state.set('activeJobId', null);
+            if (state.activeId === pending.chatId) {
+                const stopButton = document.getElementById('stop-btn');
+                const sendButton = document.getElementById('main-send-btn');
+                if (stopButton) { stopButton.style.display = 'none'; stopButton.setAttribute('aria-hidden', 'true'); }
+                if (sendButton) { sendButton.style.display = 'flex'; sendButton.setAttribute('aria-hidden', 'false'); }
+            }
             return;
         }
     } catch (error) {
@@ -179,10 +254,10 @@ async function recoverActiveChatJobs() {
 }
 
 window.addEventListener('storage', event => {
-    if (event.key === ACTIVE_JOB_STORAGE_KEY) recoverActiveChatJobs();
+    if (event.key?.startsWith(ACTIVE_JOB_STORAGE_PREFIX) || event.key === LEGACY_ACTIVE_JOB_STORAGE_KEY_V2 || event.key === LEGACY_ACTIVE_JOB_STORAGE_KEY) recoverActiveChatJobs();
 });
 activeJobChannel?.addEventListener('message', event => {
-    if (event.data?.type === 'jobs-updated') recoverActiveChatJobs();
+    if (['job-updated', 'jobs-cleared'].includes(event.data?.type)) recoverActiveChatJobs();
 });
 
 function chooseActiveChatId(chats, preferredId) {
@@ -572,7 +647,7 @@ async function send() {
     const contextText = [attachedContextText, activeDraftContext].filter(Boolean).join(String.fromCharCode(10, 10));
     const apiPrompt = [contextText, userText].filter(Boolean).join(String.fromCharCode(10, 10));
     if (!apiPrompt && !currentAttachments.length) return;
-    const previousJobId = state.activeJobId || readActiveJob(state.activeId)?.id;
+    const previousJobId = readActiveJob(state.activeId)?.id;
     recoveryRevisions.set(state.activeId, (recoveryRevisions.get(state.activeId) || 0) + 1);
     if (previousJobId) {
         api.cancelInferenceJob(previousJobId).catch(() => { });
@@ -797,11 +872,11 @@ async function send() {
     } finally {
         const stopBtn = document.getElementById('stop-btn');
         const sendBtn = document.getElementById('main-send-btn');
-        if (stopBtn) {
+        if (stopBtn && !preserveJobForRecovery) {
             stopBtn.style.display = 'none';
             stopBtn.setAttribute('aria-hidden', 'true');
         }
-        if (sendBtn) {
+        if (sendBtn && !preserveJobForRecovery) {
             sendBtn.style.display = 'flex';
             sendBtn.setAttribute('aria-hidden', 'false');
         }
@@ -825,7 +900,11 @@ async function send() {
 }
 
 function stopAI() {
-    if (state.activeJobId) api.cancelInferenceJob(state.activeJobId).catch(() => { });
+    const pending = readActiveJob(state.activeId);
+    if (pending?.id) {
+        api.cancelInferenceJob(pending.id).catch(() => { });
+        forgetActiveJob(pending.id, state.activeId);
+    }
     if (state.abortController) state.abortController.abort();
 }
 
@@ -1294,6 +1373,7 @@ function installWindowBridge() {
     window.closeSettings = ui.closeSettings;
     window.handleChatKey = handleChatKey;
     window.stopAI = stopAI;
+    window.clearActiveChatJobs = clearActiveJobsForAccount;
     window.openImageModal = ui.openImageModal;
     window.closeImageModal = ui.closeImageModal;
     window.toggleSet = ui.toggleSet;

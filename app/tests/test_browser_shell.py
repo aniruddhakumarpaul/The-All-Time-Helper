@@ -132,6 +132,80 @@ class BrowserShellTests(unittest.TestCase):
         finally:
             page.close()
 
+    def test_real_composer_send_reconnects_once_after_refresh(self):
+        page = self.browser.new_page(viewport={"width": 1280, "height": 900})
+        email = "browser-real-refresh@example.com"
+        token = self._test_token(email)
+        try:
+            page.route("https://cdn.jsdelivr.net/**", lambda route: route.abort())
+            page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
+            page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
+            page.wait_for_selector("#prompt", state="attached", timeout=10000)
+            page.evaluate("""({ email, token }) => {
+                localStorage.setItem('helper_token_v2', token);
+                localStorage.setItem('helper_user_v2', JSON.stringify({ email, name: 'Browser Real' }));
+                localStorage.setItem('helper_chats_v2_' + email, JSON.stringify([
+                    { id: 'real-refresh-chat', title: 'Real refresh', ms: [], updated_at: Date.now() }
+                ]));
+                localStorage.setItem('helper_active_chat_v2', 'real-refresh-chat');
+            }""", {"email": email, "token": token})
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_function("() => window.__helperAppBridgeReady === true", timeout=10000)
+            page.locator("#prompt").fill("__test_delay__")
+            page.locator("#main-send-btn").click()
+            page.wait_for_function("""() => Object.keys(localStorage).some(key => key.startsWith('helper_active_chat_job_v3:'))""", timeout=10000)
+            page.wait_for_function("""(email) => {
+                const chats = JSON.parse(localStorage.getItem('helper_chats_v2_' + email) || '[]');
+                return chats.some(chat => chat.ms?.some(message => message.job_id));
+            }""", arg=email, timeout=10000)
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_function("() => window.__helperAppBridgeReady === true", timeout=10000)
+            page.wait_for_selector("body", state="attached", timeout=10000)
+            page.wait_for_function("() => document.querySelector('body')?.innerText.includes('server-owned delayed response')", timeout=12000)
+            self.assertEqual(page.locator("body").inner_text().count("server-owned delayed response"), 1)
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_selector("body", state="attached", timeout=10000)
+            page.wait_for_function("() => document.querySelector('body')?.innerText.includes('server-owned delayed response')", timeout=10000)
+            self.assertEqual(page.locator("body").inner_text().count("server-owned delayed response"), 1)
+        finally:
+            page.close()
+
+    def test_stop_after_refresh_cancels_the_recovered_job(self):
+        page = self.browser.new_page(viewport={"width": 1280, "height": 900})
+        email = "browser-stop-refresh@example.com"
+        token = self._test_token(email)
+        try:
+            page.route("https://cdn.jsdelivr.net/**", lambda route: route.abort())
+            page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
+            page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
+            page.wait_for_selector("#prompt", state="attached", timeout=10000)
+            page.evaluate("""({ email, token }) => {
+                localStorage.setItem('helper_token_v2', token);
+                localStorage.setItem('helper_user_v2', JSON.stringify({ email, name: 'Browser Stop' }));
+                localStorage.setItem('helper_chats_v2_' + email, JSON.stringify([
+                    { id: 'stop-refresh-chat', title: 'Stop refresh', ms: [], updated_at: Date.now() }
+                ]));
+                localStorage.setItem('helper_active_chat_v2', 'stop-refresh-chat');
+            }""", {"email": email, "token": token})
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_function("() => window.__helperAppBridgeReady === true", timeout=10000)
+            page.locator("#prompt").fill("__test_delay__")
+            page.locator("#main-send-btn").click()
+            page.wait_for_function("""() => Object.keys(localStorage).some(key => key.startsWith('helper_active_chat_job_v3:'))""", timeout=10000)
+            job_id = page.evaluate("""() => {
+                const key = Object.keys(localStorage).find(item => item.startsWith('helper_active_chat_job_v3:'));
+                return JSON.parse(localStorage.getItem(key)).id;
+            }""")
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_selector("body", state="attached", timeout=10000)
+            page.wait_for_function("() => document.querySelector('body')?.innerText.includes('Reconnecting to your response...')", timeout=10000)
+            page.locator("#stop-btn").click()
+            page.wait_for_function("""({ token, jobId }) => fetch('/chat/jobs/' + jobId, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            }).then(response => response.json()).then(snapshot => snapshot.status === 'cancelled')""", arg={"token": token, "jobId": job_id}, timeout=10000)
+        finally:
+            page.close()
+
     @staticmethod
     def _test_token(email):
         secret = os.environ.get("SECRET_KEY") or "browser-test-secret"

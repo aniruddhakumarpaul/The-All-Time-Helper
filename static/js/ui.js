@@ -176,6 +176,7 @@ function updUI() {
 }
 
 function signOut() {
+    window.clearActiveChatJobs?.(state.user?.email);
     localStorage.removeItem('helper_user_v2');
     localStorage.removeItem('helper_token_v2');
     localStorage.removeItem('helper_active_chat_v2');

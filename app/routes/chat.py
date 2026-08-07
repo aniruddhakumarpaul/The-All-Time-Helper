@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.database import classify_sqlite_error, get_db, is_transient_sqlite_error
 from app.inference_queue import inference_queue
-from app.logic.chat_job_registry import chat_job_registry
+from app.logic.chat_job_registry import ChatJobCapacityError, chat_job_registry
 from app.logger import logger
 from app.logic.agents import ask_the_helper, is_deterministic_tool_lane_request
 from app.logic.attachment_store import (
@@ -485,24 +485,40 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
         async def run_job():
             token = user_context.set(current_user)
             streamed_parts: list[str] = []
+            execution_id = str(uuid.uuid4())
+            lease_task = None
             try:
-                chat_job_registry.publish(job_id, current_user, {"status": "Starting your request..."})
+                if not chat_job_registry.claim(job_id, current_user, execution_id):
+                    return
+
+                async def lease_heartbeat():
+                    interval = max(0.2, float(getattr(
+                        chat_job_registry.store, "lease_renew_seconds",
+                        float(getattr(chat_job_registry.store, "lease_seconds", 30.0)) / 3,
+                    )))
+                    while True:
+                        await asyncio.sleep(interval)
+                        if not chat_job_registry.renew_lease(job_id, current_user, execution_id):
+                            return
+
+                lease_task = asyncio.create_task(lease_heartbeat())
+                chat_job_registry.publish(job_id, current_user, {"status": "Starting your request..."}, execution_id=execution_id)
                 if has_visual_input:
-                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached image..."})
+                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached image..."}, execution_id=execution_id)
                 elif img:
-                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached document..."})
+                    chat_job_registry.publish(job_id, current_user, {"status": "Reading the attached document..."}, execution_id=execution_id)
                 else:
-                    chat_job_registry.publish(job_id, current_user, {"status": "Checking relevant context..."})
+                    chat_job_registry.publish(job_id, current_user, {"status": "Checking relevant context..."}, execution_id=execution_id)
 
                 def status_callback(msg):
                     logger.debug("[Chat] Status Update (chars=%d)", len(str(msg)))
-                    chat_job_registry.publish(job_id, current_user, {"status": str(msg)[:4000]})
+                    chat_job_registry.publish(job_id, current_user, {"status": str(msg)[:4000]}, execution_id=execution_id)
 
                 def chunk_callback(value):
                     chunk = str(value or "")
                     if chunk:
                         streamed_parts.append(chunk)
-                        chat_job_registry.publish(job_id, current_user, {"message": {"content": chunk[:12000]}, "done": False})
+                        chat_job_registry.publish(job_id, current_user, {"message": {"content": chunk[:12000]}, "done": False}, execution_id=execution_id)
 
                 from app.logic.bus import job_id_context
                 def thread_target():
@@ -529,17 +545,20 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
                 content = "Request cancelled." if cancelled else (result_text if not streamed_parts or is_tool_result else "".join(streamed_parts))
                 if not content.strip():
                     content = "I could not complete that response. Please retry or choose another route."
-                chat_job_registry.complete(job_id, current_user, content, streamed=bool(streamed_parts), cancelled=cancelled)
+                chat_job_registry.complete(job_id, current_user, content, streamed=bool(streamed_parts),
+                                           cancelled=cancelled, execution_id=execution_id)
                 logger.info("[JobTrace] job=%s lane=%s state=%s", job_id, execution_lane,
                             "cancelled" if cancelled else "completed")
             except asyncio.CancelledError:
                 abort_event.set()
-                chat_job_registry.fail(job_id, current_user, "The server stopped this request before it completed.")
+                chat_job_registry.fail(job_id, current_user, "The server stopped this request before it completed.", execution_id=execution_id)
                 raise
             except Exception:
                 logger.error("[Chat] Assistant task failed (background job)")
-                chat_job_registry.fail(job_id, current_user, "I could not complete that response. Please retry or choose another route.")
+                chat_job_registry.fail(job_id, current_user, "I could not complete that response. Please retry or choose another route.", execution_id=execution_id)
             finally:
+                if lease_task is not None and not lease_task.done():
+                    lease_task.cancel()
                 try:
                     user_context.reset(token)
                 except ValueError:
@@ -557,6 +576,9 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
             return JSONResponse({"success": True, "job_id": job_id}, status_code=202, headers=NO_STORE_HEADERS)
         return StreamingResponse(_legacy_job_stream(job_id, current_user),
                                  media_type="application/x-ndjson", headers=NO_STORE_HEADERS)
+    except ChatJobCapacityError as exc:
+        logger.warning("[Chat] Job capacity reached")
+        raise HTTPException(status_code=503, detail="The assistant is temporarily at capacity. Please retry shortly.") from exc
     except Exception as exc:
         logger.error("[Chat] Failed to start assistant request (%s)", type(exc).__name__)
         raise HTTPException(status_code=500, detail="The assistant request could not be started.") from exc
