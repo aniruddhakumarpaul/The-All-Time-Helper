@@ -532,7 +532,8 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
                         return "server-owned delayed response"
                     if workflow_plan is not None:
                         return execute_workflow_for_chat(workflow_plan, admin_key=workflow_admin_key,
-                                                         abort_event=abort_event, status_callback=status_callback)
+                                                         abort_event=abort_event, status_callback=status_callback,
+                                                         job_id=job_id)
                     return ask_the_helper(prompt, img, target_model, sys_config, history, req.persona, abort_event,
                                           current_user, status_callback=status_callback, chunk_callback=chunk_callback,
                                           intent=direct_tool_intent)

@@ -11,6 +11,7 @@
 - Owner-scoped attachment IDs, size/type validation, bounded PDF/text extraction, and metadata-only frontend persistence.
 - NDJSON streaming with job IDs, status updates, heartbeats, cancellation, disconnect handling, and separate inference/tool lanes.
 - Deterministic typed email/image workflow planning, explicit approval-only delivery, request-scoped admin-key verification, owner-scoped pending state, and delivery idempotency.
+- Durable owner-scoped workflow/action/approval state with cross-worker claims, restart-safe interruption handling, bounded storage, and no automatic side-effect replay.
 - Centralized frontend API errors, dialog focus isolation, explicit context drag handles, and reduced-motion support.
 
 ## Prioritized work
@@ -50,6 +51,7 @@
 - Live OpenRouter, Ollama, SMTP, and Ngrok behavior remains intentionally unexercised by deterministic tests.
 - `/chat` route extraction remains deferred; known compound workflows are isolated behind the planner/executor, but legacy direct-tool and fallback branches still share the route facade.
 - Browser automation currently covers the email workflow surface, not a complete responsive visual regression matrix.
+- Browser-level workflow restart/resume remains deferred until the UI exposes a stable workflow ID; authenticated HTTP recovery is covered in Phase 1.
 
 ## Dependencies and Risks
 
@@ -67,3 +69,11 @@
 - Added source-aware context fingerprints, bounded metadata-only transfer, duplicate pulse, material email-draft updates, invalid/leave/dragend/Escape cleanup, and all composer drop surfaces.
 - Added a dedicated responsive email widget stylesheet with attachment chips, accessible labels, preview presentation, mobile touch targets, reduced-motion, and forced-colors support.
 - Expanded installed-Chromium coverage to 14 browser tests for handle routing, duplicate/update behavior, non-draggable controls/iframe, metadata redaction, cleanup, and mobile fallback.
+
+## Completed In Phase 1: Durable Workflow State
+
+- Replaced process-local pending approval authority with a dedicated schema-versioned SQLite-WAL workflow store and compatibility facade.
+- Added durable run, action, approval, and bounded event records; owner-scoped workflow/action leases; exactly-once action claims; stale-worker rejection; durable cancellation; and safe interruption/unknown-delivery outcomes.
+- Added explicit reviewed workflow serialization using the metadata-only email draft contract, request-scoped pre-claim authorization, bounded logical storage, startup-only pruning, and low-cardinality `[WorkflowTrace]` logs.
+- Added authenticated private/no-store workflow list/detail/cancel routes without exposing plans, arguments, outputs, recipients, or credentials.
+- Added deterministic multi-instance, restart, race, cancellation, expiry, capacity, secret-persistence, and served HTTP recovery tests without real SMTP or provider mutations.

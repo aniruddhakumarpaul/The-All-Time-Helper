@@ -1,7 +1,9 @@
 import json
+import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.contracts.email_draft import draft_marker, normalize_email_draft
@@ -61,10 +63,19 @@ class FakeDeliveryService:
             mode="simulated",
         )
 
+    @staticmethod
+    def is_authorized(admin_key):
+        return admin_key == "valid-key"
+
 
 class WorkflowPlannerTests(unittest.TestCase):
     def setUp(self):
-        self.store = PendingWorkflowStore(ttl_seconds=60)
+        self.tempdir = tempfile.TemporaryDirectory(dir=r"C:\tmp")
+        self.addCleanup(self.tempdir.cleanup)
+        self.store = PendingWorkflowStore(
+            ttl_seconds=60,
+            db_file=Path(self.tempdir.name) / "workflows.db",
+        )
         self.planner = WorkflowPlanner(pending_store=self.store)
 
     def test_scenario_a_write_mail_defaults_to_draft_and_resolves_owner(self):
@@ -218,7 +229,12 @@ class WorkflowPlannerTests(unittest.TestCase):
 
 class WorkflowExecutorTests(unittest.TestCase):
     def setUp(self):
-        self.store = PendingWorkflowStore(ttl_seconds=60)
+        self.tempdir = tempfile.TemporaryDirectory(dir=r"C:\tmp")
+        self.addCleanup(self.tempdir.cleanup)
+        self.store = PendingWorkflowStore(
+            ttl_seconds=60,
+            db_file=Path(self.tempdir.name) / "workflows.db",
+        )
         self.planner = WorkflowPlanner(pending_store=self.store)
 
     def test_scenario_d_independent_searches_overlap_and_update_waits(self):

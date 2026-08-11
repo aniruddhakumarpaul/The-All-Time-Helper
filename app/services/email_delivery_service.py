@@ -117,6 +117,10 @@ class EmailDeliveryService:
         self._sender = sender
         self._completed: OrderedDict[str, str] = OrderedDict()
 
+    def is_authorized(self, admin_key: str | None) -> bool:
+        """Validate a request-scoped approval candidate without retaining it."""
+        return bool(self._key_verifier(admin_key))
+
     def send_approved_email(
         self,
         *,
@@ -125,7 +129,7 @@ class EmailDeliveryService:
         admin_key: str | None,
         request_id: str | None = None,
     ) -> EmailDeliveryResult:
-        if not self._key_verifier(admin_key):
+        if not self.is_authorized(admin_key):
             raise EmailAuthorizationError("Authorization is required before email delivery.")
 
         canonical = normalize_email_draft(draft)

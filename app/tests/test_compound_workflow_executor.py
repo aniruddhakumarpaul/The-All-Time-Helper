@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.contracts.email_draft import draft_marker, normalize_email_draft
@@ -15,7 +17,12 @@ def payload(message):
 
 class CompoundWorkflowExecutorTests(unittest.TestCase):
     def setUp(self):
-        self.store = workflow.PendingWorkflowStore(ttl_seconds=60)
+        self.tempdir = tempfile.TemporaryDirectory(dir=r"C:\tmp")
+        self.addCleanup(self.tempdir.cleanup)
+        self.store = workflow.PendingWorkflowStore(
+            ttl_seconds=60,
+            db_file=Path(self.tempdir.name) / "workflows.db",
+        )
         self.planner = workflow.WorkflowPlanner(pending_store=self.store)
 
     def test_new_draft_build_and_generation_are_independent_before_attachment(self):

@@ -18,7 +18,7 @@ from app.services.email_widget_intercept import email_widget_chat_middleware
 
 apply_cloud_token_budget()
 
-from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy
+from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy, workflows
 
 
 def get_allowed_origins() -> list[str]:
@@ -52,8 +52,10 @@ async def lifespan(app: FastAPI):
         from app.diagnostics import run_startup_diagnostics
         from app.logic.memory import prune_stale_memories
         from app.logic.chat_job_registry import chat_job_registry
+        from app.logic.workflow_orchestrator import pending_workflow_store
 
         chat_job_registry.prune()
+        pending_workflow_store.backend.prune()
         run_startup_diagnostics()
         prune_stale_memories(days=30)
     except Exception as exc:
@@ -85,6 +87,7 @@ def create_app() -> FastAPI:
     app.include_router(proxy.router)
     app.include_router(admin.router)
     app.include_router(jobs.router)
+    app.include_router(workflows.router)
     app.include_router(health.router)
     init_db()
     return app

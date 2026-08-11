@@ -80,6 +80,7 @@ class ExtendedChatCharacterizationTests(unittest.IsolatedAsyncioTestCase):
                     admin_key=None,
                     abort_event=ANY,
                     status_callback=ANY,
+                    job_id=ANY,
                 )
 
     async def test_masked_key_is_sent_only_to_pending_workflow_executor(self):

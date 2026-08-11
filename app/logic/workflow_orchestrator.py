@@ -8,6 +8,7 @@ existing router.
 from __future__ import annotations
 
 import copy
+import json
 import mimetypes
 import os
 import re
@@ -29,9 +30,23 @@ from app.contracts.email_draft import (
     draft_marker,
     normalize_email_draft,
     serialize_full_transient,
+    serialize_persistable,
 )
 from app.logger import logger
 from app.logic.agent_intent import is_compound_email_media_request
+from app.logic.workflow_store import (
+    BLOCKED_ACTION,
+    CANCELLED,
+    CANCELLED_ACTION,
+    COMPLETED,
+    COMPLETED_ACTION,
+    FAILED,
+    FAILED_ACTION,
+    INTERRUPTED_ACTION,
+    SQLiteWorkflowStore,
+    UNKNOWN_EXTERNAL_RESULT,
+    WORKFLOW_SCHEMA_VERSION,
+)
 from app.services.email_delivery_service import (
     EmailAuthorizationError,
     EmailDeliveryService,
@@ -70,11 +85,15 @@ class WorkflowApprovalState(str, Enum):
 
 
 class WorkflowActionState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
     PAUSED = "paused"
+    INTERRUPTED = "interrupted"
+    UNKNOWN_EXTERNAL_RESULT = "unknown_external_result"
 
 
 class WorkflowAction(BaseModel):
@@ -144,84 +163,187 @@ class WorkflowCancelled(RuntimeError):
     pass
 
 
-class _PendingEntry:
-    def __init__(self, plan: WorkflowPlan) -> None:
-        self.plan = plan.model_copy(deep=True)
-        self.claimed = False
+_SECRET_FIELD_RE = re.compile(
+    r"(?i)(admin[_ -]?key|smtp[_ -]?(?:password|pwd)|authorization|api[_ -]?key|access[_ -]?token|bearer)"
+)
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)(?:admin[_ -]?key|smtp[_ -]?(?:password|pwd)|authorization|api[_ -]?key|access[_ -]?token)"
+    r"\s*[:=]\s*(?:bearer\s+)?[^\s,;]+|\bbearer\s+[^\s,;]+"
+)
+_URL_RE = re.compile(r"(?i)\b(?:https?|file)://[^\s]+")
+_TOKEN_VALUE_RE = re.compile(
+    r"(?i)\b(?:sk-or-v1|sk|ghp|github_pat|xoxb|xoxp)[-_][a-z0-9_-]{8,}"
+)
+
+
+def _safe_persisted_text(value: Any, *, limit: int = 2000) -> str:
+    text = str(value or "").replace("\x00", " ")[: max(0, int(limit))]
+    for name in ("ADMIN_KEY", "SENDER_PWD", "OPENROUTER_API_KEY", "NGROK_TOKEN", "SECRET_KEY"):
+        configured = str(os.getenv(name) or "")
+        if len(configured) >= 4:
+            text = text.replace(configured, "[redacted-secret]")
+    text = _SECRET_VALUE_RE.sub("[redacted-secret]", text)
+    text = _TOKEN_VALUE_RE.sub("[redacted-secret]", text)
+    return _URL_RE.sub("[redacted-url]", text)
+
+
+def _safe_action_arguments(action: WorkflowAction) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in action.arguments.items():
+        if _SECRET_FIELD_RE.search(str(key)):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[str(key)[:80]] = _safe_persisted_text(value) if isinstance(value, str) else value
+    return safe
+
+
+def _safe_persistable_draft(draft: EmailDraft) -> dict[str, Any]:
+    raw = serialize_persistable(draft)
+    for field, limit in (
+        ("recipient", 2000),
+        ("subject", 998),
+        ("body", 50_000),
+        ("attachment_description", 2000),
+    ):
+        if raw.get(field) is not None:
+            raw[field] = _safe_persisted_text(raw[field], limit=limit)
+    for attachment in raw.get("attachments") or []:
+        for field, limit in (("id", 160), ("filename", 160), ("sha256", 64), ("source", 32)):
+            if attachment.get(field) is not None:
+                attachment[field] = _safe_persisted_text(
+                    attachment[field], limit=limit
+                )
+    return raw
+
+
+def serialize_workflow_for_persistence(plan: WorkflowPlan) -> dict[str, Any]:
+    """Serialize the reviewed, versioned workflow subset used for recovery."""
+    safe_draft = _safe_persistable_draft(plan.active_draft) if plan.active_draft is not None else None
+    return {
+        "schema_version": WORKFLOW_SCHEMA_VERSION,
+        "workflow_id": plan.workflow_id,
+        "owner": plan.owner,
+        "intent": plan.intent.value,
+        "approval_state": plan.approval_state.value,
+        "topic": _safe_persisted_text(plan.topic, limit=500),
+        "created_at": float(plan.created_at),
+        "expires_at": float(plan.expires_at),
+        "completed_action_ids": [str(item)[:120] for item in plan.completed_action_ids],
+        "active_draft": safe_draft,
+        "actions": [
+            {
+                "id": action.id[:120],
+                "action_type": action.action_type.value,
+                "arguments": _safe_action_arguments(action),
+                "depends_on": [str(item)[:120] for item in action.depends_on],
+                "optional_depends_on": [str(item)[:120] for item in action.optional_depends_on],
+                "can_run_parallel": bool(action.can_run_parallel),
+                "sensitive": bool(action.sensitive),
+                "terminal": bool(action.terminal),
+            }
+            for action in plan.actions
+        ],
+    }
+
+
+def restore_workflow_from_persistence(raw: dict[str, Any]) -> WorkflowPlan:
+    """Restore only the current reviewed workflow schema; future versions fail closed."""
+    if int(raw.get("schema_version") or 0) != WORKFLOW_SCHEMA_VERSION:
+        raise ValueError("Unsupported persisted workflow schema version.")
+    draft = normalize_email_draft(raw["active_draft"]) if raw.get("active_draft") else None
+    return WorkflowPlan(
+        workflow_id=str(raw["workflow_id"]),
+        owner=str(raw["owner"]),
+        intent=WorkflowIntent(str(raw["intent"])),
+        actions=[WorkflowAction.model_validate(item) for item in raw.get("actions") or []],
+        approval_state=WorkflowApprovalState(str(raw.get("approval_state") or "not_required")),
+        active_draft=draft,
+        topic=str(raw.get("topic") or ""),
+        completed_action_ids=[str(item) for item in raw.get("completed_action_ids") or []],
+        created_at=float(raw.get("created_at") or time.time()),
+        expires_at=float(raw.get("expires_at") or time.time()),
+    )
+
+
+def _safe_action_output(result: WorkflowActionResult) -> dict[str, Any] | None:
+    output = result.output
+    if output is None:
+        return None
+    if isinstance(output, EmailDraft):
+        return {"kind": "email_draft", "value": _safe_persistable_draft(output)}
+    if isinstance(output, ImageToolResult):
+        return {
+            "kind": "image_metadata",
+            "value": {
+                "source": output.source,
+                "attachment_id": output.attachment_id,
+                "filename": output.filename,
+                "mime_type": output.mime_type,
+                "title": _safe_persisted_text(output.title, limit=300),
+            },
+        }
+    if hasattr(output, "success") and hasattr(output, "mode"):
+        return {
+            "kind": "delivery_receipt",
+            "value": {
+                "success": bool(output.success),
+                "mode": str(output.mode)[:32],
+                "duplicate": bool(getattr(output, "duplicate", False)),
+            },
+        }
+    return {"kind": "text", "value": _safe_persisted_text(output, limit=4000)}
 
 
 class PendingWorkflowStore:
-    """Short-lived owner-scoped workflow state; credentials are never stored."""
+    """Compatibility facade backed exclusively by durable SQLite state."""
 
-    def __init__(self, ttl_seconds: int = 600, max_entries: int = 256) -> None:
-        self.ttl_seconds = max(1, int(ttl_seconds))
-        self.max_entries = max(1, int(max_entries))
-        self._entries: dict[str, _PendingEntry] = {}
-        self._lock = threading.RLock()
+    def __init__(
+        self,
+        ttl_seconds: int = 600,
+        max_entries: int = 256,
+        *,
+        db_file: str | os.PathLike[str] | None = None,
+        backend: SQLiteWorkflowStore | None = None,
+    ) -> None:
+        self.ttl_seconds = max(30, int(ttl_seconds))
+        self.backend = backend or SQLiteWorkflowStore(
+            db_file=db_file,
+            approval_ttl_seconds=self.ttl_seconds,
+            max_retained_runs=max_entries,
+        )
 
-    def _cleanup_locked(self, now: float | None = None) -> None:
-        current = time.time() if now is None else now
-        expired = [owner for owner, entry in self._entries.items() if entry.plan.expires_at <= current]
-        for owner in expired:
-            self._entries.pop(owner, None)
+    def ensure(self, plan: WorkflowPlan, *, job_id: str | None = None) -> WorkflowPlan:
+        self.backend.create(serialize_workflow_for_persistence(plan), job_id=job_id)
+        return plan.model_copy(deep=True)
 
     def put(self, plan: WorkflowPlan) -> WorkflowPlan:
-        with self._lock:
-            self._cleanup_locked()
-            if len(self._entries) >= self.max_entries and plan.owner not in self._entries:
-                oldest_owner = min(self._entries, key=lambda owner: self._entries[owner].plan.created_at)
-                self._entries.pop(oldest_owner, None)
-            safe_plan = plan.model_copy(deep=True)
-            safe_plan.expires_at = min(safe_plan.expires_at, time.time() + self.ttl_seconds)
-            safe_plan.active_draft = _safe_pending_draft(safe_plan.active_draft)
-            self._entries[plan.owner] = _PendingEntry(safe_plan)
-            return safe_plan.model_copy(deep=True)
+        record = serialize_workflow_for_persistence(plan)
+        if not self.backend.create(record):
+            self.backend.replace_paused_plan(
+                plan.workflow_id,
+                plan.owner,
+                record,
+            )
+        return plan.model_copy(deep=True)
 
     def peek(self, owner: str) -> WorkflowPlan | None:
-        with self._lock:
-            self._cleanup_locked()
-            entry = self._entries.get(owner)
-            if not entry or entry.claimed:
-                return None
-            return entry.plan.model_copy(deep=True)
+        snapshot = self.backend.find_paused_for_owner(owner)
+        return restore_workflow_from_persistence(snapshot["plan"]) if snapshot else None
 
-    def claim(self, owner: str, workflow_id: str) -> WorkflowPlan | None:
-        with self._lock:
-            self._cleanup_locked()
-            entry = self._entries.get(owner)
-            if not entry or entry.claimed or entry.plan.workflow_id != workflow_id:
-                return None
-            entry.claimed = True
-            return entry.plan.model_copy(deep=True)
+    def claim(self, owner: str, workflow_id: str, execution_id: str) -> WorkflowPlan | None:
+        if not self.backend.claim(workflow_id, owner, execution_id):
+            return None
+        snapshot = self.backend.get(workflow_id, owner)
+        return restore_workflow_from_persistence(snapshot["plan"]) if snapshot else None
 
-    def release(self, owner: str, workflow_id: str) -> None:
-        with self._lock:
-            entry = self._entries.get(owner)
-            if entry and entry.plan.workflow_id == workflow_id:
-                entry.claimed = False
+    def release(self, owner: str, workflow_id: str, execution_id: str) -> bool:
+        return self.backend.release(workflow_id, owner, execution_id)
 
-    def complete(self, owner: str, workflow_id: str) -> None:
-        with self._lock:
-            entry = self._entries.get(owner)
-            if entry and entry.plan.workflow_id == workflow_id:
-                self._entries.pop(owner, None)
+    def complete(self, owner: str, workflow_id: str, execution_id: str, *, status: str = COMPLETED) -> bool:
+        return self.backend.finish_workflow(workflow_id, owner, execution_id, status=status)
 
     def clear(self) -> None:
-        with self._lock:
-            self._entries.clear()
-
-
-def _safe_pending_draft(draft: EmailDraft | None) -> EmailDraft | None:
-    if draft is None:
-        return None
-    raw = serialize_full_transient(draft)
-    for attachment in raw.get("attachments", []):
-        content = str(attachment.get("content") or "").strip()
-        if content and not content.startswith(("http://", "https://")):
-            attachment.pop("content", None)
-    primary = raw.get("attachments", [{}])[0] if raw.get("attachments") else {}
-    raw["attachment_content"] = primary.get("content")
-    return normalize_email_draft(raw)
+        self.backend.delete_all_for_tests()
 
 
 def _message_role(message: dict) -> str:
@@ -928,7 +1050,12 @@ class WorkflowExecutor:
             raise WorkflowCancelled()
         started = time.monotonic()
         self._status(action.action_type, status_callback)
-        logger.info("[Workflow] action=%s state=started", action.action_type.value)
+        logger.info(
+            "[WorkflowTrace] workflow=%s intent=%s state=running action=%s duration_ms=0",
+            plan.workflow_id,
+            plan.intent.value,
+            action.action_type.value,
+        )
         output: Any = None
         state = WorkflowActionState.COMPLETED
         error_category = None
@@ -983,7 +1110,11 @@ class WorkflowExecutor:
                 )
             elif action.action_type == WorkflowActionType.GENERAL_RESPONSE:
                 output = str(action.arguments.get("message") or "I need a little more context to continue.")
-            if abort_event and abort_event.is_set():
+            if (
+                action.action_type != WorkflowActionType.DELIVER_EMAIL
+                and abort_event
+                and abort_event.is_set()
+            ):
                 raise WorkflowCancelled()
         except WorkflowCancelled:
             state = WorkflowActionState.CANCELLED
@@ -1003,9 +1134,11 @@ class WorkflowExecutor:
             error_category = category[:80]
         duration_ms = int((time.monotonic() - started) * 1000)
         logger.info(
-            "[Workflow] action=%s state=%s duration_ms=%d failure=%s",
-            action.action_type.value,
+            "[WorkflowTrace] workflow=%s intent=%s state=%s action=%s duration_ms=%d failure=%s",
+            plan.workflow_id,
+            plan.intent.value,
             state.value,
+            action.action_type.value,
             duration_ms,
             error_category or "none",
         )
@@ -1025,8 +1158,66 @@ class WorkflowExecutor:
         admin_key: str | None = None,
         abort_event: threading.Event | None = None,
         status_callback: Callable[[str], None] | None = None,
+        job_id: str | None = None,
     ) -> WorkflowExecutionResult:
         current = plan.model_copy(deep=True)
+        resuming_approval = current.approval_state == WorkflowApprovalState.REQUIRED
+
+        if resuming_approval:
+            verifier = getattr(self.delivery_service, "is_authorized", None)
+            if not admin_key or not callable(verifier) or not verifier(admin_key):
+                return WorkflowExecutionResult(
+                    message="ERROR: AUTH_REQUIRED. Incorrect Admin Key. The pending email is unchanged.",
+                    plan=current,
+                    paused=True,
+                )
+
+        self.pending_store.ensure(current, job_id=job_id)
+        execution_id = str(uuid.uuid4())
+        if not self.pending_store.backend.claim(current.workflow_id, current.owner, execution_id):
+            return WorkflowExecutionResult(
+                message="This workflow is unavailable or already being processed.",
+                plan=current,
+            )
+        if resuming_approval:
+            if not self.pending_store.backend.approve(
+                current.workflow_id, current.owner, execution_id
+            ):
+                self.pending_store.backend.release(
+                    current.workflow_id, current.owner, execution_id
+                )
+                return WorkflowExecutionResult(
+                    message="This pending email delivery is unavailable or already being processed.",
+                    plan=current,
+                )
+            current.approval_state = WorkflowApprovalState.APPROVED
+
+        execution_abort = abort_event or threading.Event()
+        heartbeat_stop = threading.Event()
+        lease_lost = threading.Event()
+
+        def heartbeat() -> None:
+            interval = self.pending_store.backend.lease_renew_seconds
+            while not heartbeat_stop.wait(interval):
+                if self.pending_store.backend.is_cancel_requested(
+                    current.workflow_id, current.owner
+                ):
+                    execution_abort.set()
+                    return
+                if not self.pending_store.backend.renew_lease(
+                    current.workflow_id, current.owner, execution_id
+                ):
+                    lease_lost.set()
+                    execution_abort.set()
+                    return
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat,
+            name=f"workflow-lease-{current.workflow_id[:8]}",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
         results: dict[str, WorkflowActionResult] = {}
         successful: set[str] = set(current.completed_action_ids)
         settled: set[str] = set(successful)
@@ -1034,17 +1225,119 @@ class WorkflowExecutor:
         blocked: set[str] = set()
         cancelled: set[str] = set()
         paused: set[str] = set()
-        pending = {action.id: action for action in current.actions if action.id not in successful}
+        pending = {
+            action.id: action
+            for action in current.actions
+            if action.id not in successful
+        }
         draft = current.active_draft
         original_active_draft = current.active_draft
-        claimed = False
+
+        def finish_workflow(
+            result: WorkflowExecutionResult,
+            status: str,
+        ) -> WorkflowExecutionResult:
+            if lease_lost.is_set() or not self.pending_store.backend.finish_workflow(
+                current.workflow_id,
+                current.owner,
+                execution_id,
+                status=status,
+            ):
+                return WorkflowExecutionResult(
+                    message=(
+                        "This workflow was interrupted before its final state could be "
+                        "confirmed. It was not replayed automatically."
+                    ),
+                    plan=current,
+                    actions=results,
+                )
+            logger.info(
+                "[WorkflowTrace] workflow=%s intent=%s state=%s action=none duration_ms=0",
+                current.workflow_id,
+                current.intent.value,
+                status,
+            )
+            return result
+
+        def cancel_remaining() -> None:
+            self.pending_store.backend.request_cancel(
+                current.workflow_id, current.owner
+            )
+            for action in list(pending.values()):
+                self.pending_store.backend.settle_unstarted_action(
+                    current.workflow_id,
+                    current.owner,
+                    action.id,
+                    execution_id,
+                    state=CANCELLED_ACTION,
+                    error_category="cancelled",
+                )
+
+        def interrupted_result(*, external: bool = False) -> WorkflowExecutionResult:
+            message = (
+                "The delivery outcome could not be confirmed, so it will not be "
+                "retried automatically."
+                if external
+                else "This workflow was interrupted and was not replayed automatically."
+            )
+            return WorkflowExecutionResult(
+                message=message,
+                plan=current,
+                actions=results,
+            )
+
+        def persist_action_result(result: WorkflowActionResult) -> bool:
+            if result.state == WorkflowActionState.PAUSED:
+                current.active_draft = draft
+                current.completed_action_ids = sorted(successful)
+                current.approval_state = WorkflowApprovalState.REQUIRED
+                return self.pending_store.backend.pause_for_approval(
+                    current.workflow_id,
+                    current.owner,
+                    result.action_id,
+                    execution_id,
+                    serialize_workflow_for_persistence(current),
+                )
+            state_map = {
+                WorkflowActionState.COMPLETED: COMPLETED_ACTION,
+                WorkflowActionState.FAILED: FAILED_ACTION,
+                WorkflowActionState.BLOCKED: BLOCKED_ACTION,
+                WorkflowActionState.CANCELLED: CANCELLED_ACTION,
+                WorkflowActionState.INTERRUPTED: INTERRUPTED_ACTION,
+                WorkflowActionState.UNKNOWN_EXTERNAL_RESULT: UNKNOWN_EXTERNAL_RESULT,
+            }
+            stored_state = state_map.get(result.state)
+            if not stored_state:
+                return False
+            return self.pending_store.backend.finish_action(
+                current.workflow_id,
+                current.owner,
+                result.action_id,
+                execution_id,
+                state=stored_state,
+                output=_safe_action_output(result),
+                error_category=result.error_category,
+                duration_ms=result.duration_ms,
+            )
 
         def block_dependents() -> bool:
             blocking = failed | blocked | cancelled | paused
             blocked_any = False
             for action in list(pending.values()):
-                if not any(dependency in blocking for dependency in action.depends_on):
+                if not any(
+                    dependency in blocking for dependency in action.depends_on
+                ):
                     continue
+                if not self.pending_store.backend.settle_unstarted_action(
+                    current.workflow_id,
+                    current.owner,
+                    action.id,
+                    execution_id,
+                    state=BLOCKED_ACTION,
+                    error_category="required_dependency_failed",
+                ):
+                    lease_lost.set()
+                    return False
                 result = WorkflowActionResult(
                     action_id=action.id,
                     action_type=action.action_type,
@@ -1056,195 +1349,416 @@ class WorkflowExecutor:
                 settled.add(action.id)
                 blocked.add(action.id)
                 blocked_any = True
-                logger.info("[Workflow] action=%s state=blocked failure=required_dependency_failed", action.action_type.value)
+                logger.info(
+                    "[WorkflowTrace] workflow=%s intent=%s state=blocked action=%s duration_ms=0",
+                    current.workflow_id,
+                    current.intent.value,
+                    action.action_type.value,
+                )
             return blocked_any
 
-        while pending:
-            if abort_event and abort_event.is_set():
-                if claimed:
-                    self.pending_store.release(current.owner, current.workflow_id)
-                return WorkflowExecutionResult(
-                    message="Request cancelled.", plan=current, actions=results, cancelled=True,
-                )
-            if block_dependents():
-                current.completed_action_ids = sorted(successful)
-                continue
-            ready = [
-                action for action in pending.values()
-                if set(action.depends_on).issubset(successful)
-                and set(action.optional_depends_on).issubset(settled)
-            ]
-            if not ready:
-                return WorkflowExecutionResult(
-                    message="I could not complete the workflow because its dependencies are invalid.",
-                    plan=current,
-                    actions=results,
-                )
-
-            sensitive = next((action for action in ready if action.sensitive), None)
-            if sensitive and not admin_key:
-                current.active_draft = draft
-                current.completed_action_ids = sorted(successful)
-                current.approval_state = WorkflowApprovalState.REQUIRED
-                self.pending_store.put(current)
-                if status_callback:
-                    status_callback("Approval is required before delivery.")
-                results[sensitive.id] = WorkflowActionResult(
-                    action_id=sensitive.id,
-                    action_type=sensitive.action_type,
-                    state=WorkflowActionState.PAUSED,
-                    error_category="authorization_required",
-                )
-                return WorkflowExecutionResult(
-                    message="ERROR: AUTH_REQUIRED. Please provide your Admin Key in the next message using the Masked input to authorize this delivery.",
-                    plan=current,
-                    actions=results,
-                    paused=True,
-                )
-            if sensitive and admin_key and current.approval_state == WorkflowApprovalState.REQUIRED:
-                claimed_plan = self.pending_store.claim(current.owner, current.workflow_id)
-                if claimed_plan is None:
-                    return WorkflowExecutionResult(
-                        message="This pending email delivery is unavailable or already being processed.",
-                        plan=current,
-                        actions=results,
+        try:
+            while pending:
+                if execution_abort.is_set():
+                    cancel_remaining()
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message="Request cancelled.",
+                            plan=current,
+                            actions=results,
+                            cancelled=True,
+                        ),
+                        CANCELLED,
                     )
-                current = claimed_plan
-                draft = current.active_draft
-                successful = set(current.completed_action_ids)
-                settled = set(successful)
-                failed = set()
-                blocked = set()
-                cancelled = set()
-                paused = set()
-                pending = {action.id: action for action in current.actions if action.id not in successful}
+                if block_dependents():
+                    current.completed_action_ids = sorted(successful)
+                    continue
+                if lease_lost.is_set():
+                    return interrupted_result()
+
                 ready = [
-                    action for action in pending.values()
+                    action
+                    for action in pending.values()
                     if set(action.depends_on).issubset(successful)
                     and set(action.optional_depends_on).issubset(settled)
                 ]
-                sensitive = next((action for action in ready if action.sensitive), sensitive)
-                claimed = True
-
-            parallel = [action for action in ready if action.can_run_parallel and not action.sensitive]
-            serial = [action for action in ready if action not in parallel]
-            action_results: list[WorkflowActionResult] = []
-            if len(parallel) > 1:
-                with ThreadPoolExecutor(max_workers=min(self.max_parallel_actions, len(parallel))) as pool:
-                    futures = {
-                        pool.submit(
-                            self._run_action, action, current, results, draft, abort_event,
-                            status_callback, admin_key,
-                        ): action
-                        for action in parallel
-                    }
-                    for future in as_completed(futures):
-                        action_results.append(future.result())
-            else:
-                serial = parallel + serial
-            for action in serial:
-                result = self._run_action(
-                    action, current, results, draft, abort_event, status_callback, admin_key,
-                )
-                action_results.append(result)
-                if result.state == WorkflowActionState.COMPLETED and isinstance(result.output, EmailDraft):
-                    draft = result.output
-
-            for result in action_results:
-                results[result.action_id] = result
-                pending.pop(result.action_id, None)
-                settled.add(result.action_id)
-                if result.state == WorkflowActionState.COMPLETED:
-                    successful.add(result.action_id)
-                    if isinstance(result.output, EmailDraft):
-                        draft = result.output
-                elif result.state == WorkflowActionState.FAILED:
-                    failed.add(result.action_id)
-                elif result.state == WorkflowActionState.BLOCKED:
-                    blocked.add(result.action_id)
-                elif result.state == WorkflowActionState.CANCELLED:
-                    cancelled.add(result.action_id)
-                elif result.state == WorkflowActionState.PAUSED:
-                    paused.add(result.action_id)
-                current.completed_action_ids = sorted(successful)
-                if result.state == WorkflowActionState.CANCELLED:
-                    if claimed:
-                        self.pending_store.release(current.owner, current.workflow_id)
-                    return WorkflowExecutionResult(
-                        message="Request cancelled.", plan=current, actions=results, cancelled=True,
+                if not ready:
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message=(
+                                "I could not complete the workflow because its "
+                                "dependencies are invalid."
+                            ),
+                            plan=current,
+                            actions=results,
+                        ),
+                        FAILED,
                     )
-                if result.action_type == WorkflowActionType.DELIVER_EMAIL:
+
+                sensitive = next(
+                    (action for action in ready if action.sensitive), None
+                )
+                if sensitive and not resuming_approval:
+                    current.active_draft = draft
+                    current.completed_action_ids = sorted(successful)
+                    current.approval_state = WorkflowApprovalState.REQUIRED
+                    if not self.pending_store.backend.pause_for_approval(
+                        current.workflow_id,
+                        current.owner,
+                        sensitive.id,
+                        execution_id,
+                        serialize_workflow_for_persistence(current),
+                    ):
+                        return interrupted_result()
+                    if status_callback:
+                        status_callback("Approval is required before delivery.")
+                    results[sensitive.id] = WorkflowActionResult(
+                        action_id=sensitive.id,
+                        action_type=sensitive.action_type,
+                        state=WorkflowActionState.PAUSED,
+                        error_category="authorization_required",
+                    )
+                    return WorkflowExecutionResult(
+                        message=(
+                            "ERROR: AUTH_REQUIRED. Please provide your Admin Key in "
+                            "the next message using the Masked input to authorize this "
+                            "delivery."
+                        ),
+                        plan=current,
+                        actions=results,
+                        paused=True,
+                    )
+
+                parallel = [
+                    action
+                    for action in ready
+                    if action.can_run_parallel and not action.sensitive
+                ]
+                serial = [action for action in ready if action not in parallel]
+                if len(parallel) <= 1:
+                    serial = parallel + serial
+                    parallel = []
+
+                claimed_actions: list[WorkflowAction] = []
+                for action in parallel:
+                    if not self.pending_store.backend.claim_action(
+                        current.workflow_id,
+                        current.owner,
+                        action.id,
+                        execution_id,
+                    ):
+                        execution_abort.set()
+                        break
+                    claimed_actions.append(action)
+                if execution_abort.is_set():
+                    for action in claimed_actions:
+                        self.pending_store.backend.finish_action(
+                            current.workflow_id,
+                            current.owner,
+                            action.id,
+                            execution_id,
+                            state=CANCELLED_ACTION,
+                            error_category="cancelled",
+                        )
+                    cancel_remaining()
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message="Request cancelled.",
+                            plan=current,
+                            actions=results,
+                            cancelled=True,
+                        ),
+                        CANCELLED,
+                    )
+
+                action_results: list[WorkflowActionResult] = []
+                if parallel:
+                    with ThreadPoolExecutor(
+                        max_workers=min(
+                            self.max_parallel_actions, len(claimed_actions)
+                        )
+                    ) as pool:
+                        futures = {
+                            pool.submit(
+                                self._run_action,
+                                action,
+                                current,
+                                results,
+                                draft,
+                                execution_abort,
+                                status_callback,
+                                admin_key,
+                            ): action
+                            for action in claimed_actions
+                        }
+                        for future in as_completed(futures):
+                            action_results.append(future.result())
+
+                for action in serial:
+                    if execution_abort.is_set():
+                        break
+                    if not self.pending_store.backend.claim_action(
+                        current.workflow_id,
+                        current.owner,
+                        action.id,
+                        execution_id,
+                    ):
+                        if self.pending_store.backend.is_cancel_requested(
+                            current.workflow_id, current.owner
+                        ):
+                            execution_abort.set()
+                            break
+                        lease_lost.set()
+                        break
+                    action_results.append(
+                        self._run_action(
+                            action,
+                            current,
+                            results,
+                            draft,
+                            execution_abort,
+                            status_callback,
+                            admin_key,
+                        )
+                    )
+
+                if lease_lost.is_set():
+                    return interrupted_result()
+                if execution_abort.is_set() and not action_results:
+                    cancel_remaining()
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message="Request cancelled.",
+                            plan=current,
+                            actions=results,
+                            cancelled=True,
+                        ),
+                        CANCELLED,
+                    )
+
+                for result in action_results:
+                    if not persist_action_result(result):
+                        return interrupted_result(
+                            external=result.action_type
+                            == WorkflowActionType.DELIVER_EMAIL
+                        )
+                    results[result.action_id] = result
+                    pending.pop(result.action_id, None)
+                    settled.add(result.action_id)
+                    if result.state == WorkflowActionState.COMPLETED:
+                        successful.add(result.action_id)
+                        if isinstance(result.output, EmailDraft):
+                            draft = result.output
+                            current.active_draft = draft
+                    elif result.state == WorkflowActionState.FAILED:
+                        failed.add(result.action_id)
+                    elif result.state == WorkflowActionState.BLOCKED:
+                        blocked.add(result.action_id)
+                    elif result.state == WorkflowActionState.CANCELLED:
+                        cancelled.add(result.action_id)
+                    elif result.state == WorkflowActionState.PAUSED:
+                        paused.add(result.action_id)
+                    current.completed_action_ids = sorted(successful)
+
+                    if isinstance(result.output, EmailDraft):
+                        if not self.pending_store.backend.update_plan(
+                            current.workflow_id,
+                            current.owner,
+                            execution_id,
+                            serialize_workflow_for_persistence(current),
+                        ):
+                            return interrupted_result()
+
                     if result.state == WorkflowActionState.PAUSED:
-                        if claimed:
-                            self.pending_store.release(current.owner, current.workflow_id)
                         return WorkflowExecutionResult(
-                            message="ERROR: AUTH_REQUIRED. Incorrect Admin Key. The pending email is unchanged.",
+                            message=(
+                                "ERROR: AUTH_REQUIRED. Incorrect Admin Key. The "
+                                "pending email is unchanged."
+                            ),
                             plan=current,
                             actions=results,
                             paused=True,
                         )
-                    if result.state == WorkflowActionState.COMPLETED and result.output.success:
-                        current.approval_state = WorkflowApprovalState.APPROVED
-                        self.pending_store.complete(current.owner, current.workflow_id)
-                        mode = "simulated" if result.output.mode == "simulated" else "sent"
-                        return WorkflowExecutionResult(
-                            message=f"Email {mode} successfully.", plan=current, actions=results,
+                    if result.state == WorkflowActionState.CANCELLED:
+                        cancel_remaining()
+                        return finish_workflow(
+                            WorkflowExecutionResult(
+                                message="Request cancelled.",
+                                plan=current,
+                                actions=results,
+                                cancelled=True,
+                            ),
+                            CANCELLED,
                         )
-                    if claimed:
-                        self.pending_store.release(current.owner, current.workflow_id)
-                    return WorkflowExecutionResult(
-                        message="The approved email could not be delivered. The draft remains available to retry.",
+                    if result.action_type == WorkflowActionType.DELIVER_EMAIL:
+                        if (
+                            result.state == WorkflowActionState.COMPLETED
+                            and result.output.success
+                        ):
+                            current.approval_state = WorkflowApprovalState.APPROVED
+                            mode = (
+                                "simulated"
+                                if result.output.mode == "simulated"
+                                else "sent"
+                            )
+                            return finish_workflow(
+                                WorkflowExecutionResult(
+                                    message=f"Email {mode} successfully.",
+                                    plan=current,
+                                    actions=results,
+                                ),
+                                COMPLETED,
+                            )
+                        return finish_workflow(
+                            WorkflowExecutionResult(
+                                message=(
+                                    "The approved email could not be delivered. "
+                                    "The draft remains available for a controlled "
+                                    "retry."
+                                ),
+                                plan=current,
+                                actions=results,
+                            ),
+                            FAILED,
+                        )
+
+            current.active_draft = draft
+            general = next(
+                (
+                    item.output
+                    for item in results.values()
+                    if item.action_type == WorkflowActionType.GENERAL_RESPONSE
+                ),
+                None,
+            )
+            if general:
+                return finish_workflow(
+                    WorkflowExecutionResult(
+                        message=str(general), plan=current, actions=results
+                    ),
+                    COMPLETED,
+                )
+            new_draft_created = original_active_draft is None and any(
+                item.action_type == WorkflowActionType.BUILD_EMAIL_DRAFT
+                and item.state == WorkflowActionState.COMPLETED
+                and isinstance(item.output, EmailDraft)
+                for item in results.values()
+            )
+            if draft:
+                generated_failure = any(
+                    item.action_type == WorkflowActionType.IMAGE_GENERATE
+                    and item.state
+                    in {
+                        WorkflowActionState.FAILED,
+                        WorkflowActionState.BLOCKED,
+                    }
+                    for item in results.values()
+                )
+                if generated_failure:
+                    message = (
+                        "I could not generate the image, so it was not attached."
+                    )
+                    if new_draft_created:
+                        message += (
+                            " The email draft was created without an image.\n\n"
+                            + draft_marker(draft)
+                        )
+                    else:
+                        message = (
+                            "I could not generate the image, so the existing email "
+                            "draft was not changed. Please retry."
+                        )
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message=message, plan=current, actions=results
+                        ),
+                        COMPLETED,
+                    )
+                attachment_failure = any(
+                    item.action_type == WorkflowActionType.ATTACH_IMAGE
+                    and item.state == WorkflowActionState.FAILED
+                    for item in results.values()
+                )
+                if attachment_failure:
+                    message = (
+                        "I could not attach the generated image, so the existing "
+                        "email draft was not changed. Please retry."
+                    )
+                    if new_draft_created:
+                        message = (
+                            "I could not attach the generated image, but the email "
+                            "draft was created without it.\n\n"
+                            + draft_marker(draft)
+                        )
+                    return finish_workflow(
+                        WorkflowExecutionResult(
+                            message=message, plan=current, actions=results
+                        ),
+                        COMPLETED,
+                    )
+                failed_media = any(
+                    item.state == WorkflowActionState.FAILED
+                    and item.action_type
+                    in {
+                        WorkflowActionType.IMAGE_SEARCH,
+                        WorkflowActionType.IMAGE_GENERATE,
+                    }
+                    for item in results.values()
+                )
+                prefix = (
+                    "I could not add an image, so the draft is unchanged.\n\n"
+                    if failed_media
+                    else ""
+                )
+                return finish_workflow(
+                    WorkflowExecutionResult(
+                        message=prefix + draft_marker(draft),
                         plan=current,
                         actions=results,
-                    )
+                    ),
+                    COMPLETED,
+                )
+            return finish_workflow(
+                WorkflowExecutionResult(
+                    message="I could not complete that email workflow safely.",
+                    plan=current,
+                    actions=results,
+                ),
+                FAILED,
+            )
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1.0)
 
-        current.active_draft = draft
-        general = next(
-            (item.output for item in results.values() if item.action_type == WorkflowActionType.GENERAL_RESPONSE),
-            None,
-        )
-        if general:
-            return WorkflowExecutionResult(message=str(general), plan=current, actions=results)
-        new_draft_created = original_active_draft is None and any(
-            item.action_type == WorkflowActionType.BUILD_EMAIL_DRAFT
-            and item.state == WorkflowActionState.COMPLETED
-            and isinstance(item.output, EmailDraft)
-            for item in results.values()
-        )
-        if draft:
-            generated_failure = any(
-                item.action_type == WorkflowActionType.IMAGE_GENERATE
-                and item.state in {WorkflowActionState.FAILED, WorkflowActionState.BLOCKED}
-                for item in results.values()
-            )
-            if generated_failure:
-                message = "I could not generate the image, so it was not attached."
-                if new_draft_created:
-                    message += " The email draft was created without an image.\n\n" + draft_marker(draft)
-                else:
-                    message = "I could not generate the image, so the existing email draft was not changed. Please retry."
-                return WorkflowExecutionResult(message=message, plan=current, actions=results)
-            attachment_failure = any(
-                item.action_type == WorkflowActionType.ATTACH_IMAGE
-                and item.state == WorkflowActionState.FAILED
-                for item in results.values()
-            )
-            if attachment_failure:
-                message = "I could not attach the generated image, so the existing email draft was not changed. Please retry."
-                if new_draft_created:
-                    message = "I could not attach the generated image, but the email draft was created without it.\n\n" + draft_marker(draft)
-                return WorkflowExecutionResult(message=message, plan=current, actions=results)
-            failed_media = any(
-                item.state == WorkflowActionState.FAILED
-                and item.action_type in {WorkflowActionType.IMAGE_SEARCH, WorkflowActionType.IMAGE_GENERATE}
-                for item in results.values()
-            )
-            prefix = "I could not add an image, so the draft is unchanged.\n\n" if failed_media else ""
-            return WorkflowExecutionResult(message=prefix + draft_marker(draft), plan=current, actions=results)
-        return WorkflowExecutionResult(
-            message="I could not complete that email workflow safely.", plan=current, actions=results,
-        )
-pending_workflow_store = PendingWorkflowStore()
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_workflow_backend = SQLiteWorkflowStore(
+    db_file=os.getenv("WORKFLOW_DB_FILE") or None,
+    retention_seconds=_env_int("WORKFLOW_RETENTION_SECONDS", 86_400),
+    approval_ttl_seconds=_env_int("WORKFLOW_APPROVAL_TTL_SECONDS", 600),
+    lease_seconds=_env_float("WORKFLOW_LEASE_SECONDS", 30.0),
+    lease_renew_seconds=_env_float("WORKFLOW_LEASE_RENEW_SECONDS", 5.0),
+    max_events=_env_int("WORKFLOW_MAX_EVENTS", 200),
+    max_retained_runs=_env_int("WORKFLOW_MAX_RETAINED_RUNS", 500),
+    max_result_bytes=_env_int("WORKFLOW_MAX_RESULT_BYTES", 65_536),
+    max_storage_bytes=_env_int("WORKFLOW_MAX_STORAGE_BYTES", 67_108_864),
+)
+pending_workflow_store = PendingWorkflowStore(
+    ttl_seconds=_env_int("WORKFLOW_APPROVAL_TTL_SECONDS", 600),
+    backend=_workflow_backend,
+)
 workflow_planner = WorkflowPlanner(pending_store=pending_workflow_store)
 workflow_executor = WorkflowExecutor(pending_store=pending_workflow_store)
 
@@ -1265,10 +1779,12 @@ def execute_workflow_for_chat(
     admin_key: str | None = None,
     abort_event: threading.Event | None = None,
     status_callback: Callable[[str], None] | None = None,
+    job_id: str | None = None,
 ) -> str:
     return workflow_executor.execute(
         plan,
         admin_key=admin_key,
         abort_event=abort_event,
         status_callback=status_callback,
+        job_id=job_id,
     ).message
