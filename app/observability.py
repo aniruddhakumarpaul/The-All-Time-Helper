@@ -13,6 +13,19 @@ from functools import wraps
 from typing import Any, Iterator, Mapping
 
 from app.logger import logger
+from app.logic.telemetry_metadata import (
+    provider_from_model,
+    safe_error_category,
+    safe_fallback_reason,
+    safe_memory_operation,
+    safe_operation_outcome,
+    safe_provider_label,
+    safe_source_label,
+    safe_telemetry_model_label,
+    safe_workflow_action,
+    safe_workflow_intent,
+    safe_workflow_state,
+)
 from app.logic.usage_ledger import UsageEvent, get_usage_ledger
 
 
@@ -285,28 +298,34 @@ def increment_counter(name: str, attributes: Mapping[str, Any] | None = None, am
 def record_provider_fallback(from_provider: str, to_provider: str, reason: str) -> None:
     increment_counter(
         "helper.gen_ai.provider_fallbacks",
-        {"from_provider": from_provider, "to_provider": to_provider, "reason": reason},
+        {
+            "from_provider": safe_provider_label(from_provider),
+            "to_provider": safe_provider_label(to_provider),
+            "reason": safe_fallback_reason(reason),
+        },
     )
 
 
 def trace_memory_operation(operation: str):
+    safe_operation = safe_memory_operation(operation)
+
     def decorate(fn: Any) -> Any:
         @wraps(fn)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             started = time.perf_counter()
             outcome = "completed"
             try:
-                with start_span(f"helper.memory.{operation}", {"helper.memory.operation": operation}):
+                with start_span(f"helper.memory.{safe_operation}", {"helper.memory.operation": safe_operation}):
                     return fn(*args, **kwargs)
             except Exception:
                 outcome = "failed"
-                increment_counter("helper.memory.operation.failures", {"operation": operation})
+                increment_counter("helper.memory.operation.failures", {"operation": safe_operation})
                 raise
             finally:
                 record_histogram(
                     "helper.memory.operation.duration",
                     time.perf_counter() - started,
-                    {"operation": operation, "outcome": outcome},
+                    {"operation": safe_operation, "outcome": safe_operation_outcome(outcome)},
                 )
 
         return wrapped
@@ -320,7 +339,7 @@ def trace_workflow_execution(fn: Any) -> Any:
         started = time.perf_counter()
         state = "failed"
         workflow_id = str(getattr(plan, "workflow_id", ""))
-        intent = str(getattr(getattr(plan, "intent", None), "value", "unknown"))
+        intent = safe_workflow_intent(getattr(getattr(plan, "intent", None), "value", "unknown"))
         with telemetry_scope(workflow_id=workflow_id, source="workflow"):
             with start_span(
                 "helper.workflow.execute",
@@ -344,7 +363,7 @@ def trace_workflow_execution(fn: Any) -> Any:
                     record_histogram(
                         "helper.workflow.operation.duration",
                         time.perf_counter() - started,
-                        {"intent": intent, "state": state},
+                        {"intent": intent, "state": safe_workflow_state(state)},
                     )
 
     return wrapped
@@ -354,7 +373,7 @@ def trace_workflow_action(fn: Any) -> Any:
     @wraps(fn)
     def wrapped(self: Any, action: Any, plan: Any, *args: Any, **kwargs: Any) -> Any:
         started = time.perf_counter()
-        action_type = str(getattr(getattr(action, "action_type", None), "value", "unknown"))
+        action_type = safe_workflow_action(getattr(getattr(action, "action_type", None), "value", "unknown"))
         state = "failed"
         with start_span(
             "helper.workflow.action",
@@ -371,23 +390,14 @@ def trace_workflow_action(fn: Any) -> Any:
                 record_histogram(
                     "helper.workflow.action.duration",
                     time.perf_counter() - started,
-                    {"action_type": action_type, "state": state},
+                    {"action_type": action_type, "state": safe_workflow_state(state)},
                 )
 
     return wrapped
 
 
 def _provider_name(model: str) -> str:
-    lowered = str(model or "").lower()
-    if lowered.startswith("openrouter/"):
-        return "openrouter"
-    if lowered.startswith("ollama/"):
-        return "ollama"
-    if lowered.startswith("groq/"):
-        return "groq"
-    if lowered.startswith("gemini/"):
-        return "gemini"
-    return "unknown"
+    return provider_from_model(model)
 
 
 def _read_value(value: Any, *names: str) -> Any:
@@ -445,10 +455,11 @@ class GenAIAttempt:
         local_cost: bool = False,
     ) -> None:
         self.event_id = str(uuid.uuid4())
-        self.model = str(model or "unknown")[:160]
-        self.provider = str(provider or _provider_name(self.model))[:40]
+        raw_model = model
+        self.provider = safe_provider_label(provider or _provider_name(raw_model))
+        self.model = safe_telemetry_model_label(raw_model, provider=self.provider)
         self.attempt = max(1, int(attempt))
-        self.source = str(source)[:40]
+        self.source = safe_source_label(source)
         self.local_cost = local_cost
         self.started_wall = time.time()
         self.started = time.perf_counter()
@@ -481,17 +492,18 @@ class GenAIAttempt:
                 return
             self._finished = True
         duration_ms = (time.perf_counter() - self.started) * 1000
-        response_model = _read_value(response, "model")
-        try:
-            response_model = str(response_model)[:160] if response_model else None
-        except Exception:
-            response_model = None
+        raw_response_model = _read_value(response, "model")
+        response_model = (
+            safe_telemetry_model_label(raw_response_model, provider=self.provider)
+            if raw_response_model
+            else None
+        )
         input_tokens, output_tokens = _response_usage(response)
         if self.local_cost:
             cost_usd, cost_source = 0.0, "local"
         else:
             cost_usd, cost_source = _response_cost(response)
-        error_type = type(error).__name__ if error is not None else None
+        error_type = safe_error_category(error)
         attributes = {
             "gen_ai.operation.name": "chat",
             "gen_ai.provider.name": self.provider,

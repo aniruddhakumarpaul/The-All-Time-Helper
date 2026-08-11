@@ -92,3 +92,5 @@
 - Connected chat, queue, workflow/action, capability, memory, fallback, durable job, LiteLLM, and Ollama boundaries without exporting user content or high-cardinality metric labels.
 - Added a dedicated bounded SQLite-WAL usage ledger with pseudonymous owners, per-attempt deduplication, reported token/cost semantics, concurrency coverage, and locked-database fail-open behavior.
 - Added authenticated aggregate-only usage summaries for fixed windows. A frontend dashboard, raw-event API, remote telemetry backend, and multi-host ledger remain explicitly deferred.
+- Closed the final metadata privacy/cardinality boundary with central request-model validation, registry-backed request/response labels, finite provider/fallback/error/workflow/capability dimensions, and provider-specific `custom` buckets for intentionally dynamic routes.
+- Made usage-cap accounting exact for multibyte UTF-8 metadata and added transaction-by-transaction cap, malicious model, provider-response injection, metric-cardinality, raw database/WAL sentinel, and LiteLLM/token-budget double-wrap regressions.

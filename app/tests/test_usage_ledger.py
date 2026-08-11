@@ -36,6 +36,56 @@ def event(index: int, *, owner: str = "owner@example.test", cost=0.01) -> UsageE
 
 
 class UsageLedgerTests(unittest.TestCase):
+    def test_logical_storage_uses_exact_utf8_bytes(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
+            path = Path(tmp) / "usage.db"
+            ledger = UsageLedger(path)
+            unicode_event = event(1)
+            object.__setattr__(unicode_event, "event_id", "event-日本語-😀😀😀-é")
+            self.assertTrue(ledger.record(unicode_event))
+            with closing(sqlite3.connect(path)) as db:
+                row = db.execute(
+                    "SELECT event_id,owner_scope,job_id,workflow_id,operation,provider,request_model,"
+                    "response_model,status,cost_source,error_category,source FROM usage_events"
+                ).fetchone()
+            expected = sum(len((value or "").encode("utf-8")) for value in row) + 96
+            self.assertEqual(ledger.logical_usage_bytes(), expected)
+
+    def test_multibyte_storage_cap_holds_after_every_record_and_prunes_oldest(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
+            path = Path(tmp) / "usage.db"
+            ledger = UsageLedger(path, max_storage_bytes=560, max_events=100)
+            for index in range(6):
+                item = event(index)
+                object.__setattr__(item, "event_id", f"event-{index}-日本語-😀😀😀-é")
+                object.__setattr__(item, "occurred_at", time.time() + index)
+                self.assertTrue(ledger.record(item))
+                self.assertLessEqual(ledger.logical_usage_bytes(), ledger.max_storage_bytes)
+            with closing(sqlite3.connect(path)) as db:
+                retained = [row[0] for row in db.execute(
+                    "SELECT event_id FROM usage_events ORDER BY occurred_at,event_id"
+                ).fetchall()]
+            self.assertTrue(retained)
+            self.assertNotIn("event-0-日本語-😀😀😀-é", retained)
+            self.assertEqual(retained[-1], "event-5-日本語-😀😀😀-é")
+
+    def test_ledger_defensively_buckets_untrusted_metadata(self):
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
+            path = Path(tmp) / "usage.db"
+            ledger = UsageLedger(path)
+            unsafe = event(1)
+            object.__setattr__(unsafe, "provider", "PROVIDER_SECRET")
+            object.__setattr__(unsafe, "request_model", "MODEL_SECRET_9382")
+            object.__setattr__(unsafe, "response_model", "RESPONSE_MODEL_SECRET_9382")
+            object.__setattr__(unsafe, "operation", "PROMPT_SECRET_9382")
+            object.__setattr__(unsafe, "source", "DOCUMENT_SECRET_9382")
+            self.assertTrue(ledger.record(unsafe))
+            with closing(sqlite3.connect(path)) as db:
+                row = db.execute(
+                    "SELECT operation,provider,request_model,response_model,source FROM usage_events"
+                ).fetchone()
+            self.assertEqual(row, ("unknown", "unknown", "unknown", "unknown", "unknown"))
+
     def test_owner_is_pseudonymous_and_summary_is_scoped(self):
         with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
             path = Path(tmp) / "usage.db"

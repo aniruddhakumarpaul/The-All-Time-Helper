@@ -342,7 +342,12 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
 
 
 async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: str = Depends(get_current_user), *, create_only: bool = False):
-    target_model = req.model
+    from app.logic.agent_model_registry import validate_requested_model
+
+    try:
+        target_model = validate_requested_model(req.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Unsupported assistant model.") from exc
     prompt = req.prompt
     try:
         with capability_scope(CapabilityContext(owner=current_user, source=CapabilitySource.HTTP)):

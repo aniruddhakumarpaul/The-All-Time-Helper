@@ -13,6 +13,16 @@ from pathlib import Path
 from typing import Any
 
 from app.logger import logger
+from app.logic.telemetry_metadata import (
+    safe_cost_source_label,
+    safe_error_category,
+    safe_error_category_label,
+    safe_operation_label,
+    safe_provider_label,
+    safe_source_label,
+    safe_status_label,
+    safe_telemetry_model_label,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -81,7 +91,7 @@ class UsageLedger:
         self.enabled = _enabled(os.getenv("HELPER_USAGE_LEDGER_ENABLED"), True) if enabled is None else enabled
         self.retention_days = max(1, retention_days) if retention_days is not None else _positive_int("USAGE_RETENTION_DAYS", 30, 1)
         self.max_events = max(1, max_events) if max_events is not None else _positive_int("USAGE_MAX_EVENTS", 100000, 1)
-        self.max_storage_bytes = max(4096, max_storage_bytes) if max_storage_bytes is not None else _positive_int("USAGE_MAX_STORAGE_BYTES", 67108864, 4096)
+        self.max_storage_bytes = max(256, max_storage_bytes) if max_storage_bytes is not None else _positive_int("USAGE_MAX_STORAGE_BYTES", 67108864, 4096)
         self.busy_timeout_ms = max(1, int(busy_timeout_ms))
         self.write_retries = max(1, int(write_retries))
         self._schema_lock = threading.Lock()
@@ -159,7 +169,20 @@ class UsageLedger:
             "event_id", "owner_scope", "job_id", "workflow_id", "operation", "provider",
             "request_model", "response_model", "status", "cost_source", "error_category", "source",
         )
-        return " + ".join(f"length(COALESCE({column},''))" for column in columns) + " + 96"
+        return " + ".join(
+            f"length(CAST(COALESCE({column},'') AS BLOB))" for column in columns
+        ) + " + 96"
+
+    def logical_usage_bytes(self) -> int:
+        if not self.enabled or not self._initialized:
+            return 0
+        try:
+            with closing(self._open()) as db:
+                return int(db.execute(
+                    f"SELECT COALESCE(SUM({self._event_bytes_sql()}),0) FROM usage_events"
+                ).fetchone()[0])
+        except Exception:
+            return 0
 
     def _prune_locked(self, db: sqlite3.Connection, now: float) -> None:
         cutoff = now - self.retention_days * 86400
@@ -176,7 +199,7 @@ class UsageLedger:
         while usage > self.max_storage_bytes:
             removed = db.execute(
                 "DELETE FROM usage_events WHERE event_id IN "
-                "(SELECT event_id FROM usage_events ORDER BY occurred_at,event_id LIMIT 250)"
+                "(SELECT event_id FROM usage_events ORDER BY occurred_at,event_id LIMIT 1)"
             ).rowcount
             if not removed:
                 break
@@ -194,20 +217,21 @@ class UsageLedger:
                 pseudonymous_owner_scope(event.owner),
                 event.job_id,
                 event.workflow_id,
-                str(event.operation)[:40],
-                str(event.provider)[:40],
-                str(event.request_model)[:160],
-                str(event.response_model)[:160] if event.response_model else None,
-                str(event.status)[:24],
+                safe_operation_label(event.operation),
+                safe_provider_label(event.provider),
+                safe_telemetry_model_label(event.request_model, provider=event.provider),
+                safe_telemetry_model_label(event.response_model, provider=event.provider) if event.response_model else None,
+                safe_status_label(event.status),
                 event.input_tokens,
                 event.output_tokens,
                 event.cost_usd,
-                str(event.cost_source)[:24],
+                safe_cost_source_label(event.cost_source),
                 event.duration_ms,
                 event.time_to_first_chunk_ms,
                 max(1, int(event.attempt)),
-                str(event.error_category)[:80] if event.error_category else None,
-                str(event.source)[:40],
+                safe_error_category(event.error_category) if isinstance(event.error_category, BaseException)
+                else safe_error_category_label(event.error_category),
+                safe_source_label(event.source),
             )
         except Exception as exc:
             self._healthy = False

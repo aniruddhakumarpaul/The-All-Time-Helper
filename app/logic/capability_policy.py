@@ -250,13 +250,7 @@ class CapabilityPolicy:
     ) -> PolicyDecision:
         spec = decision.capability
         source = context.source.value if isinstance(context.source, CapabilitySource) else "unknown"
-        safe_capability_id = (
-            spec.capability_id
-            if spec
-            else str(capability_id or "unknown").strip().lower()
-        )
-        if not _CAPABILITY_ID_RE.fullmatch(safe_capability_id):
-            safe_capability_id = "unknown"
+        safe_capability_id = spec.capability_id if spec else "unknown"
         logger.info(
             "[CapabilityTrace] capability=%s source=%s decision=%s reason=%s risk=%s effect=%s has_workflow=%s has_job=%s",
             safe_capability_id,

@@ -26,6 +26,7 @@ from app.observability import GenAIAttempt, instrument_litellm
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
 from app.logic.agent_model_registry import (
+    AUTO_MODEL_ID,
     CLOUD_MODEL_CONFIG,
     cloud_candidate_models as _cloud_candidate_models,
     cloud_runtime_available as _cloud_runtime_available,
@@ -37,6 +38,7 @@ from app.logic.agent_model_registry import (
     mark_cloud_runtime_failure as _mark_cloud_runtime_failure,
     mark_cloud_runtime_success as _mark_cloud_runtime_success,
     supports_native_vision as _supports_native_vision,
+    validate_requested_model as _validate_requested_model,
 )
 from app.logic.agent_hardening import harden_result
 from app.logic.agent_intent import (
@@ -379,10 +381,8 @@ def _extract_crew_result(crew: Crew) -> str:
 _llm_cache = {}
 _llm_cache_lock = threading.Lock()
 
-AUTO_MODEL_ID = "helper-auto"
-
-
 def _resolve_auto_model(model_id: str) -> str:
+    model_id = _validate_requested_model(model_id)
     if model_id != AUTO_MODEL_ID:
         return model_id
     try:

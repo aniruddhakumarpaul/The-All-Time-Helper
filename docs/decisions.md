@@ -227,3 +227,12 @@ This file records the current high-level architectural decisions.
 - Provider usage is stored separately in `.runtime/usage.db`, schema version 1, with WAL, busy timeout, bounded retry, retention, event-count, and logical-storage pruning. Raw owners are normalized and SHA-256 pseudonymized; this is pseudonymous, not anonymous.
 - `GET /usage/summary` accepts only `24h`, `7d`, or `30d`, derives owner scope from authentication, returns aggregates only, and uses `Cache-Control: private, no-store`. Raw telemetry HTTP surfaces are prohibited.
 - Telemetry failure is fail-open. OTLP/exporter errors, invalid telemetry configuration, callback/instrument failures, usage-database locks, and bounded shutdown expiration cannot fail or change application work.
+
+## 2026-08-12 Telemetry Metadata Trust Decisions
+
+- Telemetry metadata is not trusted merely because a field is named `model`, `provider`, `source`, or `error`. Application route IDs and provider model IDs are attributable only when they match the code-defined registry; provider-returned response models pass through the same boundary as request models.
+- The public chat boundary accepts registered application/local routes and a deliberately bounded dynamic Gemini namespace. Unknown strings are rejected with HTTP 400 before attachment hydration, queue admission, or model execution, so arbitrary text is no longer silently interpreted as an Ollama tag.
+- Intentionally dynamic provider models are useful but not safe metric dimensions. Unregistered OpenRouter, Ollama, and Gemini values become `openrouter/custom`, `ollama/custom`, or `gemini/custom`; other unknown models and providers become `unknown`. Hashing attacker-controlled labels is prohibited because it preserves attacker-controlled cardinality.
+- Provider fallback reasons, usage operation/source/status/cost/error fields, memory operations, workflow intents/actions/states, queue lanes/outcomes, and unknown capability IDs use explicit finite taxonomies. Regex-safe unknown capability text is not exported.
+- Random job and workflow UUIDs remain available on spans and the internal usage ledger for correlation, never on metric points. Owner identity remains absent from spans and pseudonymous in the ledger.
+- Usage-ledger size enforcement measures SQLite text as UTF-8 blob bytes with a fixed 96-byte row overhead. Oldest telemetry events are pruned transactionally until `logical_usage_bytes <= USAGE_MAX_STORAGE_BYTES`; telemetry may be discarded, but business persistence is never touched.

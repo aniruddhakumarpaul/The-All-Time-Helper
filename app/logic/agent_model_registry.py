@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -29,6 +30,17 @@ _CLOUD_FAILURE_REASONS = {
     "timed_out",
     "provider_unavailable",
 }
+
+AUTO_MODEL_ID = "helper-auto"
+LOCAL_MODEL_IDS = frozenset({
+    "gemma4:e2b",
+    "gemma2:2b",
+    "dolphin-mistral",
+    "helper",
+    "phi3",
+    "moondream",
+})
+_DYNAMIC_GEMINI_MODEL_RE = re.compile(r"^gemini(?:/|-)[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}$")
 
 
 def _cloud_circuit_cooldown_seconds() -> float:
@@ -124,6 +136,40 @@ CLOUD_MODEL_CONFIG = {
         "key_envs": OPENROUTER_KEY_ENVS,
     },
 }
+
+
+def supported_request_model_ids() -> frozenset[str]:
+    """Return the finite application routes exposed by the product."""
+    return frozenset({AUTO_MODEL_ID, *LOCAL_MODEL_IDS, *CLOUD_MODEL_CONFIG})
+
+
+def validate_requested_model(model_id: object) -> str:
+    """Validate a request route without treating arbitrary text as an Ollama tag."""
+    cleaned = str(model_id or AUTO_MODEL_ID).strip()
+    if cleaned in supported_request_model_ids() or _DYNAMIC_GEMINI_MODEL_RE.fullmatch(cleaned):
+        return cleaned
+    raise ValueError("unsupported_model")
+
+
+def trusted_telemetry_model_ids() -> frozenset[str]:
+    """Return only code-defined application and provider model identifiers."""
+    trusted = set(supported_request_model_ids())
+    trusted.update(f"ollama/{model}" for model in LOCAL_MODEL_IDS)
+    for config in CLOUD_MODEL_CONFIG.values():
+        provider = str(config.get("provider") or "")
+        for key in ("model", "classifier_model"):
+            model = str(config.get(key) or "")
+            if model:
+                trusted.add(model)
+                if provider == "openrouter" and model.startswith("openrouter/"):
+                    trusted.add(model.removeprefix("openrouter/"))
+        for model_value in config.get("fallback_models", ()):
+            model = str(model_value or "")
+            if model:
+                trusted.add(model)
+                if provider == "openrouter" and model.startswith("openrouter/"):
+                    trusted.add(model.removeprefix("openrouter/"))
+    return frozenset(trusted)
 
 
 def _looks_fake_key(value: str | None) -> bool:
