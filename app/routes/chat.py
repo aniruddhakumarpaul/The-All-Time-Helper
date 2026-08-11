@@ -488,12 +488,27 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
                 await asyncio.sleep(0.4)
 
         async def run_job():
+            from contextlib import ExitStack
+            from app.observability import start_span, telemetry_scope
+
+            telemetry_stack = ExitStack()
+            telemetry_stack.enter_context(
+                telemetry_scope(owner=current_user, job_id=job_id, source="chat_job")
+            )
+            chat_span = telemetry_stack.enter_context(
+                start_span(
+                    "helper.chat.execute",
+                    {"helper.job.id": job_id, "helper.execution.lane": execution_lane},
+                )
+            )
             token = user_context.set(current_user)
             streamed_parts: list[str] = []
             execution_id = str(uuid.uuid4())
             lease_task = None
             try:
                 if not chat_job_registry.claim(job_id, current_user, execution_id):
+                    if chat_span is not None:
+                        chat_span.set_attribute("helper.chat.state", "unclaimed")
                     return
 
                 async def lease_heartbeat():
@@ -553,13 +568,19 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
                     content = "I could not complete that response. Please retry or choose another route."
                 chat_job_registry.complete(job_id, current_user, content, streamed=bool(streamed_parts),
                                            cancelled=cancelled, execution_id=execution_id)
+                if chat_span is not None:
+                    chat_span.set_attribute("helper.chat.state", "cancelled" if cancelled else "completed")
                 logger.info("[JobTrace] job=%s lane=%s state=%s", job_id, execution_lane,
                             "cancelled" if cancelled else "completed")
             except asyncio.CancelledError:
                 abort_event.set()
+                if chat_span is not None:
+                    chat_span.set_attribute("helper.chat.state", "interrupted")
                 chat_job_registry.fail(job_id, current_user, "The server stopped this request before it completed.", execution_id=execution_id)
                 raise
             except Exception:
+                if chat_span is not None:
+                    chat_span.set_attribute("helper.chat.state", "failed")
                 logger.error("[Chat] Assistant task failed (background job)")
                 chat_job_registry.fail(job_id, current_user, "I could not complete that response. Please retry or choose another route.", execution_id=execution_id)
             finally:
@@ -569,6 +590,7 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
                     user_context.reset(token)
                 except ValueError:
                     logger.debug("[Chat] User context reset skipped after background job context switch.")
+                telemetry_stack.close()
 
         watch_task = asyncio.create_task(cancellation_watcher())
         job_task = asyncio.create_task(run_job())

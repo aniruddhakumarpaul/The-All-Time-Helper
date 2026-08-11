@@ -1,4 +1,5 @@
 import re
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -263,8 +264,8 @@ def assemble_context(
         return "\n<neural_context>\n" + "".join(f"- {item['content']}\n" for item in memories) + "</neural_context>\n"
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        vision_future = executor.submit(task_vision)
-        memory_future = executor.submit(task_memory)
+        vision_future = executor.submit(contextvars.copy_context().run, task_vision)
+        memory_future = executor.submit(contextvars.copy_context().run, task_memory)
         final_prompt, image_description, image_inputs = vision_future.result()
         try:
             memory_block = memory_future.result()

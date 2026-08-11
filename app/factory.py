@@ -14,11 +14,12 @@ load_dotenv(BASE_DIR / ".env", override=True)
 from app.database import init_db
 from app.logger import logger
 from app.logic.cloud_token_budget import apply_cloud_token_budget
+from app.observability import initialize_observability, shutdown_observability
 from app.services.email_widget_intercept import email_widget_chat_middleware
 
 apply_cloud_token_budget()
 
-from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy, workflows
+from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy, usage, workflows
 
 
 def get_allowed_origins() -> list[str]:
@@ -48,6 +49,7 @@ def append_cors_origin(app: FastAPI, public_url: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    initialize_observability()
     try:
         from app.diagnostics import run_startup_diagnostics
         from app.logic.memory import prune_stale_memories
@@ -61,7 +63,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("Diagnostics/pruning failed (%s)", type(exc).__name__)
 
-    yield
+    try:
+        yield
+    finally:
+        shutdown_observability()
 
 
 def create_app() -> FastAPI:
@@ -88,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(jobs.router)
     app.include_router(workflows.router)
+    app.include_router(usage.router)
     app.include_router(health.router)
     init_db()
     return app

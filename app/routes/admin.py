@@ -12,6 +12,7 @@ from app.database import DB_FILE, get_db
 from app.inference_queue import inference_queue
 from app.logic.agent_model_registry import CLOUD_MODEL_CONFIG, cloud_runtime_status
 from app.logic.cloud_token_budget import cloud_output_token_budget
+from app.observability import observability_status
 from app.security import get_current_user
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -202,5 +203,6 @@ async def admin_status(current_user: str = Depends(get_current_user), db: sqlite
         "overall": overall,
         "user": current_user,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "observability": observability_status(),
         "components": components,
     }

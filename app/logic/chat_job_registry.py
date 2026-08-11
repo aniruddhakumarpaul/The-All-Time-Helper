@@ -346,6 +346,10 @@ class SQLiteChatJobStore:
             self._terminalize_locked(db, row, FAILED,
                                      LAUNCH_INTERRUPTED_MESSAGE if row["execution_id"] is None else INTERRUPTED_MESSAGE,
                                      now, launch_expired=row["execution_id"] is None)
+        if rows:
+            from app.observability import increment_counter
+
+            increment_counter("helper.chat_job.recovered", {"reason": "expired_lease"}, amount=len(rows))
         return len(rows)
 
     def _prune_locked(self, db: sqlite3.Connection, now: float | None = None) -> int:
@@ -805,10 +809,14 @@ class ChatJobRegistry:
         self._lock = threading.RLock()
 
     def create(self, job_id: str, owner: str, cancel_event: Any = None) -> ChatJob:
+        from app.observability import increment_counter
+
         with self._lock:
             if cancel_event is not None:
                 self._local_cancel_events[job_id] = cancel_event
-            return self.store.create(job_id, owner, cancel_event)
+            job = self.store.create(job_id, owner, cancel_event)
+            increment_counter("helper.chat_job.created", {"status": "created"})
+            return job
 
     def claim(self, job_id: str, owner: str, execution_id: str) -> bool:
         return self.store.claim(job_id, owner, execution_id)
@@ -820,9 +828,13 @@ class ChatJobRegistry:
         return self.store.publish(job_id, owner, event, execution_id=execution_id)
 
     def cancel(self, job_id: str, owner: str) -> bool:
+        from app.observability import increment_counter
+
         accepted = self.store.request_cancel(job_id, owner)
         if accepted and (event := self._local_cancel_events.get(job_id)) is not None:
             event.set()
+        if accepted:
+            increment_counter("helper.chat_job.cancelled", {"reason": "user_requested"})
         return accepted
 
     def is_cancel_requested(self, job_id: str, owner: str) -> bool:
@@ -833,7 +845,12 @@ class ChatJobRegistry:
         return self.store.complete(job_id, owner, content, cancelled=cancelled, execution_id=execution_id)
 
     def fail(self, job_id: str, owner: str, safe_message: str, *, execution_id: str | None = None) -> bool:
-        return self.store.fail(job_id, owner, safe_message, execution_id=execution_id)
+        from app.observability import increment_counter
+
+        failed = self.store.fail(job_id, owner, safe_message, execution_id=execution_id)
+        if failed:
+            increment_counter("helper.chat_job.interrupted", {"reason": "execution_failed"})
+        return failed
 
     def snapshot(self, job_id: str, owner: str, after: int = 0) -> dict[str, Any] | None:
         return self.store.snapshot(job_id, owner, after)

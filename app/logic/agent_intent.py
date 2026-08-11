@@ -3,6 +3,8 @@ import re
 
 import requests
 
+from app.observability import GenAIAttempt, instrument_litellm
+
 CODE_KEYWORDS = [
     "code", "bug", "logic", "python", "javascript", "html", "css", "develop", "compile", "debug", "git",
     "refactor", "function", "class", "typescript", "react", "node", "sql", "bash", "powershell",
@@ -140,6 +142,7 @@ def analyze_prompt_via_llm(
     try:
         if is_cloud_model(target_model):
             import litellm
+            instrument_litellm()
 
             config = get_cloud_config(target_model)
             response = litellm.completion(
@@ -152,19 +155,24 @@ def analyze_prompt_via_llm(
             )
             raw = _clean_classifier_text(getattr(response.choices[0].message, "content", None))
         else:
-            response = requests.post(
-                f"{ollama_url}/api/chat",
-                json={
-                    "model": target_model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": 0.0, "num_predict": 40},
-                },
-                timeout=6.0,
-                verify=False,
-            )
-            response.raise_for_status()
-            raw = _clean_classifier_text(response.json().get("message", {}).get("content"))
+            with GenAIAttempt(
+                model=f"ollama/{target_model}", provider="ollama", source="intent_classifier", local_cost=True
+            ) as observed:
+                response = requests.post(
+                    f"{ollama_url}/api/chat",
+                    json={
+                        "model": target_model,
+                        "messages": messages,
+                        "stream": False,
+                        "options": {"temperature": 0.0, "num_predict": 40},
+                    },
+                    timeout=6.0,
+                    verify=False,
+                )
+                response.raise_for_status()
+                response_json = response.json()
+                observed.finish(response_json)
+                raw = _clean_classifier_text(response_json.get("message", {}).get("content"))
         if not raw:
             return None
         data = json.loads(raw)

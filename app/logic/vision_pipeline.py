@@ -14,6 +14,7 @@ import requests
 from PIL import Image, ImageStat
 
 from app.logger import logger
+from app.observability import GenAIAttempt
 from app.logic.attachment_store import ATTACHMENT_ROOT
 from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
 
@@ -240,15 +241,22 @@ class VisionPipeline:
                     "images": [prepared["base64"]],
                     "stream": False,
                 }
-                response = requests.post(
-                    f"{self.ollama_url}/api/generate",
-                    json=payload,
-                    timeout=self.timeout_seconds,
-                )
-                if response.status_code != 200:
-                    logger.warning("[Vision] Model %s returned HTTP %s", model, response.status_code)
-                    return None, time.perf_counter() - started
-                content = self._clean_model_description(response.json().get("response"))
+                with GenAIAttempt(
+                    model=f"ollama/{model}", provider="ollama", attempt=attempt + 1,
+                    source="vision", local_cost=True,
+                ) as observed:
+                    response = requests.post(
+                        f"{self.ollama_url}/api/generate",
+                        json=payload,
+                        timeout=self.timeout_seconds,
+                    )
+                    if response.status_code != 200:
+                        observed.finish(error=RuntimeError("provider_http_error"))
+                        logger.warning("[Vision] Model %s returned HTTP %s", model, response.status_code)
+                        return None, time.perf_counter() - started
+                    response_json = response.json()
+                    observed.finish(response_json)
+                    content = self._clean_model_description(response_json.get("response"))
                 if content:
                     return content, time.perf_counter() - started
                 if attempt == 0:
@@ -266,12 +274,18 @@ class VisionPipeline:
             "stream": False,
             "options": {"num_predict": 384, "temperature": 0.1},
         }
-        response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=self.timeout_seconds)
-        elapsed = time.perf_counter() - started
-        if response.status_code != 200:
-            logger.warning("[Vision] Model %s returned HTTP %s", model, response.status_code)
-            return None, elapsed
-        message = response.json().get("message", {})
+        with GenAIAttempt(
+            model=f"ollama/{model}", provider="ollama", source="vision", local_cost=True
+        ) as observed:
+            response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=self.timeout_seconds)
+            elapsed = time.perf_counter() - started
+            if response.status_code != 200:
+                observed.finish(error=RuntimeError("provider_http_error"))
+                logger.warning("[Vision] Model %s returned HTTP %s", model, response.status_code)
+                return None, elapsed
+            response_json = response.json()
+            observed.finish(response_json)
+        message = response_json.get("message", {})
         content = self._clean_model_description(message.get("content"))
         return content, elapsed
 

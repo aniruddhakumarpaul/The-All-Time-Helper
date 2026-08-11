@@ -8,6 +8,7 @@ existing router.
 from __future__ import annotations
 
 import copy
+import contextvars
 import json
 import mimetypes
 import os
@@ -33,6 +34,7 @@ from app.contracts.email_draft import (
     serialize_persistable,
 )
 from app.logger import logger
+from app.observability import trace_workflow_action, trace_workflow_execution
 from app.logic.agent_intent import is_compound_email_media_request
 from app.logic.capability_policy import (
     CAPABILITY_POLICY,
@@ -1048,6 +1050,7 @@ class WorkflowExecutor:
         if action_type in messages:
             callback(messages[action_type])
 
+    @trace_workflow_action
     def _run_action(
         self,
         action: WorkflowAction,
@@ -1178,6 +1181,7 @@ class WorkflowExecutor:
             duration_ms=duration_ms,
         )
 
+    @trace_workflow_execution
     def execute(
         self,
         plan: WorkflowPlan,
@@ -1565,8 +1569,11 @@ class WorkflowExecutor:
                             self.max_parallel_actions, len(claimed_actions)
                         )
                     ) as pool:
-                        futures = {
-                            pool.submit(
+                        futures = {}
+                        for action in claimed_actions:
+                            context = contextvars.copy_context()
+                            future = pool.submit(
+                                context.run,
                                 self._run_action,
                                 action,
                                 current,
@@ -1576,9 +1583,8 @@ class WorkflowExecutor:
                                 status_callback,
                                 admin_key,
                                 action_contexts[action.id],
-                            ): action
-                            for action in claimed_actions
-                        }
+                            )
+                            futures[future] = action
                         for future in as_completed(futures):
                             action_results.append(future.result())
 

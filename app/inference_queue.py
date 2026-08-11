@@ -10,11 +10,13 @@ Features:
 - Graceful abort propagation
 """
 import asyncio
+import contextvars
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 from app.logger import logger
+from app.observability import record_histogram, start_span
 
 
 DEFAULT_INFERENCE_TIMEOUT = 180.0
@@ -30,6 +32,7 @@ class InferenceJob:
     created_at: float = field(default_factory=time.time)
     timeout: float = DEFAULT_INFERENCE_TIMEOUT
     lane: str = "inference"
+    trace_context: Any = None
 
 
 class InferenceQueue:
@@ -75,10 +78,16 @@ class InferenceQueue:
             self._queue = asyncio.Queue(maxsize=self._max_queue_depth)
             self._fast_queue = asyncio.Queue(maxsize=self._max_fast_queue_depth)
             for i in range(self._max_workers):
-                task = asyncio.create_task(self._worker(f"inference-worker-{i}", self._queue))
+                task = asyncio.create_task(
+                    self._worker(f"inference-worker-{i}", self._queue),
+                    context=contextvars.Context(),
+                )
                 self._workers.append(task)
             for i in range(self._max_fast_workers):
-                task = asyncio.create_task(self._worker(f"tool-worker-{i}", self._fast_queue))
+                task = asyncio.create_task(
+                    self._worker(f"tool-worker-{i}", self._fast_queue),
+                    context=contextvars.Context(),
+                )
                 self._fast_workers.append(task)
             self._started = True
             logger.info(
@@ -95,9 +104,25 @@ class InferenceQueue:
             if job is None:
                 work_queue.task_done()
                 break
+            otel_token = None
+            started_at = None
+            queued_for = None
             try:
+                if job.trace_context is not None:
+                    try:
+                        from opentelemetry import context as otel_context
+
+                        otel_token = otel_context.attach(job.trace_context)
+                    except Exception:
+                        otel_token = None
                 # Skip if already cancelled before we even start
                 if getattr(job, 'abort_event', None) and job.abort_event.is_set():
+                    queued_for = time.time() - job.created_at
+                    record_histogram(
+                        "helper.inference.queue.wait.duration",
+                        queued_for,
+                        {"lane": job.lane, "outcome": "cancelled"},
+                    )
                     if not job.result_future.done():
                         job.result_future.set_result("Operation cancelled.")
                     continue
@@ -112,10 +137,17 @@ class InferenceQueue:
                 # Execute the blocking function in a thread with timeout
                 token = job_id_context.set(job.id)
                 try:
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(job.fn),
-                        timeout=job.timeout
-                    )
+                    with start_span(
+                        "helper.queue.wait",
+                        {"helper.job.id": job.id, "helper.queue.lane": job.lane, "helper.queue.wait_ms": round(queued_for * 1000)},
+                        start_time_ns=int(job.created_at * 1_000_000_000),
+                    ):
+                        pass
+                    with start_span("helper.inference.execute", {"helper.job.id": job.id, "helper.queue.lane": job.lane}):
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(job.fn),
+                            timeout=job.timeout
+                        )
                 finally:
                     job_id_context.reset(token)
                 
@@ -125,10 +157,31 @@ class InferenceQueue:
                     "[JobTrace] job=%s lane=%s state=completed execution_ms=%d",
                     job.id, job.lane, round((time.perf_counter() - started_at) * 1000),
                 )
+                record_histogram(
+                    "helper.inference.execution.duration",
+                    time.perf_counter() - started_at,
+                    {"lane": job.lane, "outcome": "completed"},
+                )
+                record_histogram(
+                    "helper.inference.queue.wait.duration",
+                    queued_for,
+                    {"lane": job.lane, "outcome": "completed"},
+                )
                     
             except asyncio.TimeoutError:
                 job.abort_event.set()  # Signal the blocking thread to stop
                 logger.warning("[JobTrace] job=%s lane=%s state=timed_out timeout_s=%d", job.id, job.lane, round(job.timeout))
+                record_histogram(
+                    "helper.inference.execution.duration",
+                    time.perf_counter() - started_at,
+                    {"lane": job.lane, "outcome": "timed_out"},
+                )
+                if queued_for is not None:
+                    record_histogram(
+                        "helper.inference.queue.wait.duration",
+                        queued_for,
+                        {"lane": job.lane, "outcome": "timed_out"},
+                    )
                 
                 # FLAW 1 FIX: Check ToolResultBus for 'Ghost Success'
                 from app.logic.bus import tool_result_bus
@@ -145,15 +198,46 @@ class InferenceQueue:
                         )
             except asyncio.CancelledError:
                 logger.info("[JobTrace] job=%s lane=%s state=cancelled reason=worker_cancelled", job.id, job.lane)
+                if started_at is not None:
+                    record_histogram(
+                        "helper.inference.execution.duration",
+                        time.perf_counter() - started_at,
+                        {"lane": job.lane, "outcome": "cancelled"},
+                    )
+                if queued_for is not None:
+                    record_histogram(
+                        "helper.inference.queue.wait.duration",
+                        queued_for,
+                        {"lane": job.lane, "outcome": "cancelled"},
+                    )
                 if not job.result_future.done():
                     job.result_future.set_result("Operation cancelled.")
             except Exception as e:
                 logger.error("[JobTrace] job=%s lane=%s state=failed error_type=%s", job.id, job.lane, type(e).__name__)
+                if started_at is not None:
+                    record_histogram(
+                        "helper.inference.execution.duration",
+                        time.perf_counter() - started_at,
+                        {"lane": job.lane, "outcome": "failed"},
+                    )
+                if queued_for is not None:
+                    record_histogram(
+                        "helper.inference.queue.wait.duration",
+                        queued_for,
+                        {"lane": job.lane, "outcome": "failed"},
+                    )
                 if not job.result_future.done():
                     job.result_future.set_exception(e)
             finally:
                 if self._active_jobs.get(job.id) is job:
                     self._active_jobs.pop(job.id, None)
+                if otel_token is not None:
+                    try:
+                        from opentelemetry import context as otel_context
+
+                        otel_context.detach(otel_token)
+                    except Exception:
+                        pass
                 work_queue.task_done()
 
     async def submit(
@@ -197,7 +281,6 @@ class InferenceQueue:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         
-        import contextvars
         ctx = contextvars.copy_context()
         def context_wrapper():
             return ctx.run(fn)
@@ -211,6 +294,12 @@ class InferenceQueue:
             timeout=timeout,
             lane=lane,
         )
+        try:
+            from opentelemetry import context as otel_context
+
+            job.trace_context = otel_context.get_current()
+        except Exception:
+            job.trace_context = None
         self._active_jobs[job_id] = job
         try:
             work_queue.put_nowait(job)

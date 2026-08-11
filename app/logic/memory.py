@@ -7,6 +7,7 @@ from chromadb.config import Settings
 from typing import List, Dict, Optional
 from contextvars import ContextVar
 from app.logger import logger
+from app.observability import trace_memory_operation
 from app.logic.capability_policy import CapabilitySource, capability_handler
 
 # Context variable to store the current user_id for multi-tenancy isolation
@@ -65,6 +66,7 @@ def memory_runtime_status() -> Dict:
         _clear_memory_failure()
         return {"healthy": True, "degraded": False, "retry_after_seconds": 0}
 
+@trace_memory_operation("write")
 def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: str = None):
     """Adds or updates a document in the semantic memory with forced user isolation."""
     # Use provided user_id or fallback to context
@@ -91,6 +93,7 @@ def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: st
     default_source=CapabilitySource.SYSTEM,
     on_denied=lambda _exc: [],
 )
+@trace_memory_operation("query")
 def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, threshold: float = 0.65, user_id: str = None) -> List[Dict]:
     """
     Retrieves relevant snippets with STRICT user-level isolation and semantic thresholding.
@@ -169,6 +172,7 @@ def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, 
                 })
     return formatted_results
 
+@trace_memory_operation("delete")
 def delete_memory(doc_id: str, user_id: str = None, clear: bool = False):
     """Prune memory while enforcing ownership when a user context exists."""
     uid = user_id or user_context.get()

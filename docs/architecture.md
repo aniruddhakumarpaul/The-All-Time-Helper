@@ -14,6 +14,9 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `app/routes/chat.py`: streaming chat transport, bounded request models, owner-scoped attachment hydration, sync, context retrieval, and final result yielding.
 - `app/routes/jobs.py`: owner-scoped active-task visibility and cancellation.
 - `app/routes/admin.py`: authenticated, sanitized user-facing system readiness; it does not expose raw runtime configuration.
+- `app/observability.py`: opt-in application-owned OpenTelemetry providers, trace/metric instruments, context propagation, LiteLLM attempt accounting, and fail-open lifecycle handling. It never captures prompt, response, tool, attachment, recipient, credential, or owner content.
+- `app/logic/usage_ledger.py`: dedicated schema-version-1 SQLite-WAL provider-attempt ledger with pseudonymous owner scopes, unique event IDs, bounded retention/count/logical storage, short retrying writes, and aggregate-only reads.
+- `app/routes/usage.py`: authenticated owner-scoped `GET /usage/summary` aggregates for the fixed `24h`, `7d`, and `30d` windows; responses are private/no-store and raw usage rows are not exposed.
 - `app/logic/agents.py`: compatibility facade, direct-tool routing, and top-level agent orchestration.
 - `app/logic/agent_model_registry.py`: cloud model registry, API-key selection, fallback candidates, and the short-lived provider health circuit used by Helper Auto.
 - `app/logic/cloud_token_budget.py`: cloud output caps plus package-level offline metadata, telemetry defaults, repository-local CrewAI storage, and bundled HTTPS trust roots applied before LiteLLM, CrewAI, or Ngrok imports.
@@ -65,6 +68,12 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - Document attachments are extracted as bounded text context and are never classified as visual inputs; only validated image MIME types enter vision analysis.
 
 ## Workflow And Persistence Reliability
+
+- Phase 3 trace hierarchy starts at `helper.chat.execute`, retains context through the bounded queue and `asyncio.to_thread`, and adds queue, workflow, action, capability, memory, and GenAI provider spans. Random job/workflow IDs may be trace attributes for correlation; owner identity is never exported.
+- OpenTelemetry export is disabled by default (`HELPER_OTEL_ENABLED=false`). When enabled, the application uses OTLP HTTP/protobuf and low-cardinality service Resource attributes. CrewAI telemetry remains disabled; no console exporter is installed.
+- Provider attempt metrics and ledger writes are finalized exactly once. Tokens are recorded only from provider/LiteLLM usage, cloud cost remains null when unreported, and known local Ollama operations use cost source `local` with cost `0.0`.
+- The usage ledger is disposable operational evidence, not business state. A lock, storage pressure, schema/exporter error, or shutdown timeout drops telemetry with a sanitized warning and cannot alter chat, workflow, capability-policy, approval, or delivery outcomes.
+- The SQLite usage ledger is a single-host implementation. Multi-host aggregation and a frontend analytics dashboard are intentionally outside this phase.
 - `ChatJob` owns durable assistant-response transport and browser reconnect. `WorkflowRun` owns durable multi-step business/action execution; a chat job may link to a workflow by `job_id`, but neither replaces or owns the other's lifecycle.
 - Workflow schema version 1 uses a dedicated `WORKFLOW_DB_FILE` with WAL, foreign keys, idempotent initialization, owner-scoped run/action/approval/event rows, bounded UTF-8 logical storage, and no migration of the main chat database.
 - Before an action runs, the store atomically verifies owner, workflow lease, cancellation, dependencies, and pending state. Only the winning claimant invokes the tool. Results are written under the same execution identity, and stale workers cannot complete actions or workflows after lease loss.

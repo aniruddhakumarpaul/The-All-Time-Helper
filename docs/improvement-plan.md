@@ -85,3 +85,10 @@
 - Classified active search, image generation/search/upscale/proxy, memory, attachment, email draft/update/attachment, delivery, and internal workflow response behavior. Active CrewAI tool and workflow action inventories are exhaustively tested.
 - Replaced planner `sensitive` authority with registry-derived workflow policy before atomic claims. Fake model approval flags have no effect, and durable cancellation blocks a new delivery after approval without invoking the sender.
 - Enforced the same policy at direct-tool and CrewAI handler execution and at HTTP/workflow email delivery while retaining Admin Key verification, owner isolation, SSRF controls, idempotency, leases, and bounded persistence.
+
+## Completed In Phase 3: Observability And Usage Accounting
+
+- Added opt-in OpenTelemetry trace/metric providers with in-memory test injection, bounded shutdown, application context propagation, no console exporter, and sanitized readiness.
+- Connected chat, queue, workflow/action, capability, memory, fallback, durable job, LiteLLM, and Ollama boundaries without exporting user content or high-cardinality metric labels.
+- Added a dedicated bounded SQLite-WAL usage ledger with pseudonymous owners, per-attempt deduplication, reported token/cost semantics, concurrency coverage, and locked-database fail-open behavior.
+- Added authenticated aggregate-only usage summaries for fixed windows. A frontend dashboard, raw-event API, remote telemetry backend, and multi-host ledger remain explicitly deferred.

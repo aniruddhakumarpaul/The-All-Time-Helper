@@ -8,7 +8,6 @@ import certifi
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("CREWAI_TRACING_ENABLED", "false")
-os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("CREWAI_STORAGE_DIR", str(Path(__file__).resolve().parents[2] / ".runtime" / "crewai"))
 _BUNDLED_CA_FILE = certifi.where()
@@ -72,6 +71,9 @@ def apply_cloud_token_budget() -> None:
                 return original_completion(*args, **_cap_kwargs(kwargs))
 
             completion_with_budget.__helper_token_budget_patched__ = True
+            completion_with_budget.__helper_observability_patched__ = bool(
+                getattr(original_completion, "__helper_observability_patched__", False)
+            )
             litellm.completion = completion_with_budget
     except Exception:
         pass

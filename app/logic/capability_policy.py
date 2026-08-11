@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Iterator, Mapping
 
 from app.logger import logger
+from app.observability import increment_counter, start_span, telemetry_scope
 
 
 CAPABILITY_POLICY_VERSION = 1
@@ -267,6 +268,17 @@ class CapabilityPolicy:
             bool(context.workflow_id),
             bool(context.job_id),
         )
+        increment_counter(
+            "helper.capability.invocations",
+            {
+                "capability": safe_capability_id,
+                "source": source,
+                "decision": decision.decision.value,
+                "reason": decision.reason,
+                "risk": spec.risk.value if spec else "unknown",
+                "effect": spec.effect.value if spec else "unknown",
+            },
+        )
         return decision
 
 
@@ -345,7 +357,17 @@ class CapabilityGateway:
             raise CapabilityDeniedError(capability_id, decision)
         token = _ACTIVE_CAPABILITY_CONTEXT.set(context)
         try:
-            return handler(**invocation_arguments)
+            with telemetry_scope(job_id=context.job_id, workflow_id=context.workflow_id, source="capability"):
+                with start_span(
+                    "helper.capability.invoke",
+                    {
+                        "helper.capability.id": capability_id,
+                        "helper.capability.source": context.source.value,
+                        "helper.capability.risk": spec.risk.value if spec else "unknown",
+                        "helper.capability.effect": spec.effect.value if spec else "unknown",
+                    },
+                ):
+                    return handler(**invocation_arguments)
         finally:
             _ACTIVE_CAPABILITY_CONTEXT.reset(token)
 

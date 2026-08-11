@@ -307,14 +307,14 @@ class FlagshipExperienceTests(unittest.TestCase):
         self.assertIn("https://docs.python.org/3.12/", local_result)
         self.assertIn("https://docs.python.org/3.12/", cloud_result)
 
-    def test_agent_dependencies_use_bundled_metadata_and_disable_telemetry(self):
+    def test_agent_dependencies_keep_crewai_telemetry_disabled_without_disabling_otel(self):
         root = Path(__file__).resolve().parents[2]
         source = (root / "app" / "logic" / "agents.py").read_text(encoding="utf-8")
         crew_import = source.index("from crewai import")
         for setting in (
             "LITELLM_LOCAL_MODEL_COST_MAP",
             "CREWAI_DISABLE_TELEMETRY",
-            "OTEL_SDK_DISABLED",
+            "CREWAI_TRACING_ENABLED",
             "ANONYMIZED_TELEMETRY",
             "CREWAI_STORAGE_DIR",
         ):
@@ -325,7 +325,7 @@ class FlagshipExperienceTests(unittest.TestCase):
         for setting in (
             "LITELLM_LOCAL_MODEL_COST_MAP",
             "CREWAI_DISABLE_TELEMETRY",
-            "OTEL_SDK_DISABLED",
+            "CREWAI_TRACING_ENABLED",
             "ANONYMIZED_TELEMETRY",
             "CREWAI_STORAGE_DIR",
             "SSL_CERT_FILE",
@@ -333,6 +333,8 @@ class FlagshipExperienceTests(unittest.TestCase):
             "CURL_CA_BUNDLE",
         ):
             self.assertLess(budget_source.index(setting), litellm_import)
+        self.assertNotIn("OTEL_SDK_DISABLED", source)
+        self.assertNotIn("OTEL_SDK_DISABLED", budget_source)
 
     def test_runtime_status_reports_hybrid_and_offline_modes(self):
         from app.routes import health

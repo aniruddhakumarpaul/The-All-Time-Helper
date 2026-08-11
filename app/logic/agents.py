@@ -5,7 +5,6 @@ from pathlib import Path
 os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
 os.environ.setdefault('CREWAI_DISABLE_TELEMETRY', 'true')
 os.environ.setdefault('CREWAI_TRACING_ENABLED', 'false')
-os.environ.setdefault('OTEL_SDK_DISABLED', 'true')
 os.environ.setdefault('ANONYMIZED_TELEMETRY', 'False')
 os.environ.setdefault('CREWAI_STORAGE_DIR', str(Path(__file__).resolve().parents[2] / '.runtime' / 'crewai'))
 
@@ -23,6 +22,7 @@ from typing import List, Optional, Any
 from app.logic import tools
 from app.contracts.email_draft import draft_marker
 from app.logger import logger, log_agent_step
+from app.observability import GenAIAttempt, instrument_litellm
 from app.logic.memory import query_memory, log_insight
 from app.logic.vision_pipeline import vision_sys
 from app.logic.agent_model_registry import (
@@ -1134,6 +1134,7 @@ def _classify_complexity_via_llm(user_prompt: str, target_model: str) -> str:
         if _is_cloud_model(target_model):
             # Cloud fast model call
             import litellm
+            instrument_litellm()
             cfg = _get_cloud_config(target_model)
             key = _get_cloud_api_key(target_model)
             res = litellm.completion(
@@ -1156,9 +1157,14 @@ def _classify_complexity_via_llm(user_prompt: str, target_model: str) -> str:
                     "num_predict": 5
                 }
             }
-            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=6.0, verify=False)
-            res.raise_for_status()
-            raw = res.json().get("message", {}).get("content", "").strip().lower()
+            with GenAIAttempt(
+                model=f"ollama/{target_model}", provider="ollama", source="complexity_classifier", local_cost=True
+            ) as observed:
+                res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=6.0, verify=False)
+                res.raise_for_status()
+                response_json = res.json()
+                observed.finish(response_json)
+                raw = response_json.get("message", {}).get("content", "").strip().lower()
         
         # Parse output
         for choice in ["direct", "single", "swarm"]:
@@ -2261,9 +2267,14 @@ def _try_direct_tool_execution(user_prompt: str, intent: dict, history: list, ta
                     "temperature": 0.3
                 }
             }
-            res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=25, verify=False)
-            res.raise_for_status()
-            content = res.json().get("message", {}).get("content", "").strip()
+            with GenAIAttempt(
+                model=f"ollama/{model_name}", provider="ollama", source="email_draft", local_cost=True
+            ) as observed:
+                res = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=25, verify=False)
+                res.raise_for_status()
+                response_json = res.json()
+                observed.finish(response_json)
+                content = response_json.get("message", {}).get("content", "").strip()
             
             # Clean potential markdown wrappers
             if content.startswith("```"):

@@ -15,6 +15,7 @@ from app.logic.email_draft_image_workflow import (
 from app.logic.exceptions import AgentFastExit
 from app.logic.profile_links import resolve_public_profile_link_request
 from app.logic.response_policy import build_assistant_system_prompt
+from app.observability import instrument_litellm, record_provider_fallback
 
 
 @dataclass(frozen=True)
@@ -219,10 +220,14 @@ def execute_cloud(
                     return exc.result
 
             import litellm
+            instrument_litellm()
 
             messages = _conversation_messages(context_data, history, sys_config)
             if chunk_callback:
-                response = litellm.completion(model=active_model, messages=messages, api_key=current_key, stream=True)
+                response = litellm.completion(
+                    model=active_model, messages=messages, api_key=current_key,
+                    stream=True, stream_options={"include_usage": True}, helper_attempt=attempt + 1,
+                )
                 full_response = ""
                 for chunk in response:
                     content = chunk.choices[0].delta.content
@@ -230,7 +235,10 @@ def execute_cloud(
                         full_response += content
                         chunk_callback(content)
                 return full_response
-            response = litellm.completion(model=active_model, messages=messages, api_key=current_key)
+            response = litellm.completion(
+                model=active_model, messages=messages, api_key=current_key,
+                helper_attempt=attempt + 1,
+            )
             return response.choices[0].message.content
         except Exception as exc:
             error_category = _provider_error_category(exc)
@@ -245,6 +253,7 @@ def execute_cloud(
                 return "Operation cancelled."
             if retryable and is_groq:
                 if attempt < max_attempts - 1:
+                    record_provider_fallback("groq", "groq", error_category)
                     for _ in range(30):
                         if abort_event and abort_event.is_set():
                             return "Operation cancelled."
@@ -252,6 +261,7 @@ def execute_cloud(
                     continue
             if retryable and not is_groq:
                 if attempt < max_attempts - 1:
+                    record_provider_fallback(cloud_cfg["provider"], cloud_cfg["provider"], error_category)
                     runtime.logger.warning(f"Cloud model {active_model} unavailable. Trying fallback {candidate_models[attempt + 1]}...")
                     continue
                 return runtime.rate_limit_message(target_model)

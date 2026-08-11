@@ -11,6 +11,7 @@ from app.logic.email_draft_image_workflow import build_email_draft_body_update_p
 from app.logic.exceptions import AgentFastExit
 from app.logic.profile_links import resolve_public_profile_link_request
 from app.logic.response_policy import build_assistant_system_prompt
+from app.observability import GenAIAttempt, record_provider_fallback
 
 
 @dataclass(frozen=True)
@@ -142,36 +143,56 @@ def execute_local(
             "stream": bool(chunk_callback),
         }
         if chunk_callback:
-            response = requests.post(
-                f"{runtime.ollama_url}/api/chat", json=payload, stream=True, timeout=120, verify=False
+            observed = GenAIAttempt(
+                model=f"ollama/{target_model}", provider="ollama", source="ollama", local_cost=True
             )
-            response.raise_for_status()
-            full_response = ""
-            for line in response.iter_lines():
-                if abort_event and abort_event.is_set():
-                    return "Operation cancelled."
-                if not line:
-                    continue
-                try:
-                    chunk = json.loads(line.decode("utf-8"))
-                except json.JSONDecodeError:
-                    continue
-                if "error" in chunk:
-                    raise ValueError(f"Ollama streaming error: {chunk['error']}")
-                content = chunk.get("message", {}).get("content", "")
-                if content:
-                    full_response += content
-                    chunk_callback(content)
-                if chunk.get("done"):
-                    break
-            return full_response
+            try:
+                response = requests.post(
+                    f"{runtime.ollama_url}/api/chat", json=payload, stream=True, timeout=120, verify=False
+                )
+                response.raise_for_status()
+                full_response = ""
+                last_chunk = None
+                for line in response.iter_lines():
+                    if abort_event and abort_event.is_set():
+                        observed.finish(last_chunk, RuntimeError("cancelled"))
+                        return "Operation cancelled."
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        continue
+                    last_chunk = chunk
+                    if "error" in chunk:
+                        raise ValueError("ollama_streaming_error")
+                    content = chunk.get("message", {}).get("content", "")
+                    if content:
+                        observed.observe_chunk(chunk)
+                        full_response += content
+                        chunk_callback(content)
+                    if chunk.get("done"):
+                        break
+                observed.finish(last_chunk)
+                return full_response
+            except Exception as exc:
+                observed.finish(error=exc)
+                raise
 
-        response = requests.post(f"{runtime.ollama_url}/api/chat", json=payload, timeout=120, verify=False)
-        response.raise_for_status()
-        response_json = response.json()
-        if "error" in response_json:
-            raise ValueError(f"Ollama error: {response_json['error']}")
-        return response_json.get("message", {}).get("content", "Error parsing response.")
+        observed = GenAIAttempt(
+            model=f"ollama/{target_model}", provider="ollama", source="ollama", local_cost=True
+        )
+        try:
+            response = requests.post(f"{runtime.ollama_url}/api/chat", json=payload, timeout=120, verify=False)
+            response.raise_for_status()
+            response_json = response.json()
+            if "error" in response_json:
+                raise ValueError("ollama_error")
+            observed.finish(response_json)
+            return response_json.get("message", {}).get("content", "Error parsing response.")
+        except Exception as exc:
+            observed.finish(error=exc)
+            raise
     except Exception as exc:
         if abort_event and abort_event.is_set():
             return "Operation cancelled."
@@ -182,6 +203,7 @@ def execute_local(
             return "Local Engine Error: The local assistant is temporarily unavailable."
 
         runtime.logger.warning("Local Engine Timeout/Error (%s). Attempting Cloud Fallback...", type(exc).__name__)
+        record_provider_fallback("ollama", "openrouter", "provider_unavailable")
         warning = (
             "The local model could not complete this request. Falling back to Cloud engine...\n\n"
         )
