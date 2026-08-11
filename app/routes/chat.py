@@ -27,6 +27,7 @@ from app.logic.attachment_store import (
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.logic.memory import query_memory, user_context
 from app.logic.agent_intent import is_compound_email_media_request
+from app.logic.capability_policy import CapabilityContext, CapabilitySource, capability_scope
 from app.logic.neural_explainer import explain_neural_context
 from app.logic.workflow_orchestrator import execute_workflow_for_chat, plan_known_workflow, resolve_workflow_context
 from app.repository import ChatRepository
@@ -223,9 +224,10 @@ async def upload_attachments(
         raise HTTPException(status_code=400, detail="Attach no more than 6 files at once.")
     saved = []
     try:
-        for upload in files:
-            data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
-            saved.append(save_attachment_bytes(upload.filename or "attachment", upload.content_type or "", data, current_user))
+        with capability_scope(CapabilityContext(owner=current_user, source=CapabilitySource.HTTP)):
+            for upload in files:
+                data = await upload.read(MAX_ATTACHMENT_BYTES + 1)
+                saved.append(save_attachment_bytes(upload.filename or "attachment", upload.content_type or "", data, current_user))
         return {"success": True, "attachments": saved}
     except AttachmentStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -233,7 +235,8 @@ async def upload_attachments(
 @router.get("/attachments/{attachment_id}")
 def get_attachment(attachment_id: str, current_user: str = Depends(get_current_user)):
     try:
-        metadata = resolve_attachment_metadata(attachment_id, current_user)
+        with capability_scope(CapabilityContext(owner=current_user, source=CapabilitySource.HTTP)):
+            metadata = resolve_attachment_metadata(attachment_id, current_user)
     except AttachmentStoreError as exc:
         raise HTTPException(status_code=404, detail="Attachment unavailable.") from exc
     return FileResponse(
@@ -322,7 +325,8 @@ def retrieve_context(req: RetrieveRequest, current_user: str = Depends(get_curre
                 raise HTTPException(status_code=400, detail="Invalid email draft context")
     token = user_context.set(current_user)
     try:
-        results = query_memory(req.text, n_results=req.n)
+        with capability_scope(CapabilityContext(owner=current_user, source=CapabilitySource.HTTP)):
+            results = query_memory(req.text, n_results=req.n)
         snippet_list = [r['content'] for r in results]
         explanation = explain_neural_context(req.text, snippet_list)
         return {
@@ -341,8 +345,9 @@ async def _chat_endpoint_impl(req: ChatRequest, request: Request, current_user: 
     target_model = req.model
     prompt = req.prompt
     try:
-        img = _hydrate_current_image_payload(_normalize_chat_image_payload(req), current_user)
-        history = _hydrate_history_attachment_references(req.history, current_user)
+        with capability_scope(CapabilityContext(owner=current_user, source=CapabilitySource.HTTP)):
+            img = _hydrate_current_image_payload(_normalize_chat_image_payload(req), current_user)
+            history = _hydrate_history_attachment_references(req.history, current_user)
     except AttachmentStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     document_blocks = []

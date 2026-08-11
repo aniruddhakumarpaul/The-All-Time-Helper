@@ -24,6 +24,10 @@ from app.contracts.email_draft import draft_marker, normalize_email_draft, seria
 from app.logic.attachment_store import detect_file_type, resolve_attachment_reference
 from app.logic.exceptions import AgentFastExit
 from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
+from app.logic.capability_policy import (
+    CapabilitySource,
+    capability_handler,
+)
 
 
 active_history_context: ContextVar[list] = ContextVar("active_history_context", default=[])
@@ -170,6 +174,7 @@ def _openrouter_grounded_search(query: str) -> str | None:
 
 @tool("web_search_text")
 @_trace_tool("web_search_text")
+@capability_handler("web.search", default_source=CapabilitySource.DIRECT_TOOL)
 def search_tool(query: str) -> str:
     """Useful for searching the web for text-based information, news, and technical questions."""
     try:
@@ -484,6 +489,7 @@ def _normalize_draft_attachment_content(content):
 
 @tool("build_email_draft_tool")
 @_trace_tool("build_email_draft_tool")
+@capability_handler("email.draft.build", default_source=CapabilitySource.DIRECT_TOOL)
 def build_email_draft_tool(
     recipient: str,
     subject: str,
@@ -601,8 +607,14 @@ POLLINATIONS_IMAGE_MODEL = "flux"
 POLLINATIONS_IMAGE_HOST = "image.pollinations.ai"
 
 
+@capability_handler("image.upscale", default_source=CapabilitySource.SYSTEM)
+def _start_image_upscale(source_url: str) -> str:
+    return UpscaleManager.start_upscale(source_url)
+
+
 @tool("image_generate_tool")
 @_trace_tool("image_generate_tool")
+@capability_handler("image.generate", default_source=CapabilitySource.DIRECT_TOOL)
 def image_generate_tool(description: str) -> str:
     """AI image generator for fictional, conceptual, fantasy, and creative requests."""
     import urllib.parse
@@ -614,7 +626,7 @@ def image_generate_tool(description: str) -> str:
 
     try:
         base_url = f"https://{POLLINATIONS_IMAGE_HOST}/prompt/{encoded}?model={POLLINATIONS_IMAGE_MODEL}&width=1024&height=1024&nologo=true&seed={seed}"
-        upscale_id = UpscaleManager.start_upscale(base_url)
+        upscale_id = _start_image_upscale(base_url)
         image_url_with_uid = f"{base_url}&uid={upscale_id}"
         logger.info("[ART ENGINE] Upscale job queued (model=%s, job_id=%s)", POLLINATIONS_IMAGE_MODEL, upscale_id)
         return f"![{clean_desc}]({image_url_with_uid})"
@@ -626,6 +638,7 @@ def image_generate_tool(description: str) -> str:
 
 @tool("image_search_tool")
 @_trace_tool("image_search_tool")
+@capability_handler("image.search", default_source=CapabilitySource.DIRECT_TOOL)
 def image_search_tool(query: str) -> str:
     """Search for a real-world image of a product, person, place, vehicle, or other real entity."""
     try:
@@ -644,6 +657,7 @@ def image_search_tool(query: str) -> str:
 
 @tool("recall_memory")
 @_trace_tool("recall_memory")
+@capability_handler("memory.read", default_source=CapabilitySource.DIRECT_TOOL)
 def recall_memory(query: str) -> str:
     """Semantically searches neural memory for code snippets, architectural decisions, and previous activity."""
     try:
@@ -663,6 +677,7 @@ def recall_memory(query: str) -> str:
 
 @tool("archive_insight")
 @_trace_tool("archive_insight")
+@capability_handler("memory.write", default_source=CapabilitySource.DIRECT_TOOL)
 def archive_insight(title: str, body: str) -> str:
     """Permanently saves an architectural decision, user preference, or project milestone to neural memory."""
     try:

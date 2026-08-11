@@ -16,6 +16,7 @@ from app.database import DB_FILE
 from app.logic.bus import job_id_context
 from app.logic.memory import user_context
 from app.logic.tools import send_or_simulate_email
+from app.logic.capability_policy import CapabilityContext, CapabilityGateway
 from app.security import verify_admin_key
 
 
@@ -116,12 +117,33 @@ class EmailDeliveryService:
         self._key_verifier = key_verifier
         self._sender = sender
         self._completed: OrderedDict[str, str] = OrderedDict()
+        self._capability_gateway = CapabilityGateway({"email.deliver": self._send_authorized_email})
 
     def is_authorized(self, admin_key: str | None) -> bool:
         """Validate a request-scoped approval candidate without retaining it."""
         return bool(self._key_verifier(admin_key))
 
     def send_approved_email(
+        self,
+        *,
+        draft: EmailDraft | dict,
+        owner: str,
+        admin_key: str | None,
+        request_id: str | None = None,
+        capability_context: CapabilityContext,
+    ) -> EmailDeliveryResult:
+        return self._capability_gateway.invoke(
+            "email.deliver",
+            context=capability_context,
+            arguments={
+                "draft": draft,
+                "owner": owner,
+                "admin_key": admin_key,
+                "request_id": request_id,
+            },
+        )
+
+    def _send_authorized_email(
         self,
         *,
         draft: EmailDraft | dict,

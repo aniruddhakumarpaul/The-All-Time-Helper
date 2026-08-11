@@ -12,6 +12,7 @@
 - NDJSON streaming with job IDs, status updates, heartbeats, cancellation, disconnect handling, and separate inference/tool lanes.
 - Deterministic typed email/image workflow planning, explicit approval-only delivery, request-scoped admin-key verification, owner-scoped pending state, and delivery idempotency.
 - Durable owner-scoped workflow/action/approval state with cross-worker claims, restart-safe interruption handling, bounded storage, and no automatic side-effect replay.
+- A frozen, fail-closed capability policy gateway shared by agent, direct-tool, workflow, HTTP, memory, attachment, image, and email-delivery execution paths.
 - Centralized frontend API errors, dialog focus isolation, explicit context drag handles, and reduced-motion support.
 
 ## Prioritized work
@@ -77,3 +78,10 @@
 - Added explicit reviewed workflow serialization using the metadata-only email draft contract, request-scoped pre-claim authorization, bounded logical storage, startup-only pruning, and low-cardinality `[WorkflowTrace]` logs.
 - Added authenticated private/no-store workflow list/detail/cancel routes without exposing plans, arguments, outputs, recipients, or credentials.
 - Added deterministic multi-instance, restart, race, cancellation, expiry, capacity, secret-persistence, and served HTTP recovery tests without real SMTP or provider mutations.
+
+## Completed In Phase 2: Capability Policy Gateway
+
+- Added policy version 1 with immutable capability specifications, structured allow/deny/approval decisions, explicit source/owner rules, immutable reviewed handler bindings, and argument-free telemetry.
+- Classified active search, image generation/search/upscale/proxy, memory, attachment, email draft/update/attachment, delivery, and internal workflow response behavior. Active CrewAI tool and workflow action inventories are exhaustively tested.
+- Replaced planner `sensitive` authority with registry-derived workflow policy before atomic claims. Fake model approval flags have no effect, and durable cancellation blocks a new delivery after approval without invoking the sender.
+- Enforced the same policy at direct-tool and CrewAI handler execution and at HTTP/workflow email delivery while retaining Admin Key verification, owner isolation, SSRF controls, idempotency, leases, and bounded persistence.

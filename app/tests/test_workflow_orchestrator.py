@@ -52,7 +52,7 @@ class FakeDeliveryService:
     def __init__(self):
         self.calls = []
 
-    def send_approved_email(self, *, draft, owner, admin_key, request_id):
+    def send_approved_email(self, *, draft, owner, admin_key, request_id, capability_context):
         if admin_key != "valid-key":
             raise EmailAuthorizationError("invalid")
         self.calls.append({"draft": draft, "owner": owner, "request_id": request_id})

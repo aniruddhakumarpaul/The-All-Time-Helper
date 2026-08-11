@@ -7,6 +7,8 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
+from app.logic.capability_policy import CapabilitySource, capability_handler
+
 
 class AttachmentStoreError(ValueError):
     pass
@@ -85,6 +87,7 @@ def cleanup_expired_attachments(now: Optional[float] = None) -> None:
                 pass
 
 
+@capability_handler("attachment.write", default_source=CapabilitySource.SYSTEM)
 def save_attachment_bytes(name: str, content_type: str, data: bytes, owner: str) -> Dict[str, Any]:
     cleanup_expired_attachments()
     if not data:
@@ -132,6 +135,7 @@ def save_attachment_bytes(name: str, content_type: str, data: bytes, owner: str)
     return {k: metadata[k] for k in ("id", "name", "type", "size", "sha256")}
 
 
+@capability_handler("attachment.read", default_source=CapabilitySource.SYSTEM)
 def resolve_attachment_metadata(attachment_id: str, owner: str) -> Dict[str, Any]:
     attachment_id = _validate_attachment_id(attachment_id)
     meta_path = os.path.join(_owner_dir(owner), f"{attachment_id}.json")

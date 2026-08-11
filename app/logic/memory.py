@@ -7,6 +7,7 @@ from chromadb.config import Settings
 from typing import List, Dict, Optional
 from contextvars import ContextVar
 from app.logger import logger
+from app.logic.capability_policy import CapabilitySource, capability_handler
 
 # Context variable to store the current user_id for multi-tenancy isolation
 user_context: ContextVar[Optional[str]] = ContextVar("user_id", default=None)
@@ -85,6 +86,11 @@ def index_document(doc_id: str, content: str, metadata: Dict = None, user_id: st
             metadatas=[metadata]
         )
 
+@capability_handler(
+    "memory.read",
+    default_source=CapabilitySource.SYSTEM,
+    on_denied=lambda _exc: [],
+)
 def query_memory(query_text: str, n_results: int = 3, filter_dict: Dict = None, threshold: float = 0.65, user_id: str = None) -> List[Dict]:
     """
     Retrieves relevant snippets with STRICT user-level isolation and semantic thresholding.
@@ -180,6 +186,11 @@ def delete_memory(doc_id: str, user_id: str = None, clear: bool = False):
         logger.debug("[Memory] Pruning failed (%s).", type(exc).__name__)
 
 
+@capability_handler(
+    "memory.write",
+    default_source=CapabilitySource.SYSTEM,
+    on_denied=lambda _exc: None,
+)
 def log_insight(insight_title: str, insight_body: str, metadata_ext: Dict = None, user_id: str = None):
     """Log a project decision or architectural insight with user isolation."""
     uid = user_id or user_context.get()

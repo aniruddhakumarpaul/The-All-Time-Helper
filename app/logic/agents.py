@@ -52,6 +52,7 @@ from app.logic.agent_context import ContextRuntime, assemble_context
 from app.logic.agent_cloud import CloudRuntime, execute_cloud
 from app.logic.agent_local import LocalRuntime, execute_local
 from app.logic.response_policy import build_agent_quality_contract, build_response_directives
+from app.logic.capability_policy import CapabilityContext, CapabilitySource, capability_scope
 import cv2
 import numpy as np
 
@@ -2428,7 +2429,9 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
 
     # 0. Set history context for active tool executions
     from app.logic.tools import active_history_context
+    from app.logic.bus import job_id_context
     active_history_context.set(history)
+    job_id = job_id_context.get() or None
 
     # Check for early abort
     if abort_event and abort_event.is_set():
@@ -2455,7 +2458,8 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
         intent = _detect_intent(intent_prompt, target_model, history)
     
     # Fast Path Direct Tool Execution (for local models to bypass ReAct loop failures)
-    direct_res = _try_direct_tool_execution(direct_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback, img_data=img_data)
+    with capability_scope(CapabilityContext(owner=user_id, source=CapabilitySource.DIRECT_TOOL, job_id=job_id)):
+        direct_res = _try_direct_tool_execution(direct_prompt, intent, history, target_model=target_model, status_callback=status_callback, chunk_callback=chunk_callback, img_data=img_data)
     if direct_res is not None:
         return direct_res
     
@@ -2534,16 +2538,17 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             if chunk_callback:
                 chunk_callback(token)
 
-        result = _execute_cloud(
-            intent,
-            context_data,
-            target_model,
-            sys_config,
-            history,
-            status_callback=status_callback,
-            chunk_callback=relay_cloud_chunk if chunk_callback else None,
-            abort_event=abort_event,
-        )
+        with capability_scope(CapabilityContext(owner=user_id, source=CapabilitySource.AGENT, job_id=job_id)):
+            result = _execute_cloud(
+                intent,
+                context_data,
+                target_model,
+                sys_config,
+                history,
+                status_callback=status_callback,
+                chunk_callback=relay_cloud_chunk if chunk_callback else None,
+                abort_event=abort_event,
+            )
         cloud_failed = _is_cloud_execution_failure(result)
         if cloud_failed:
             _mark_cloud_runtime_failure(target_model, reason=_cloud_failure_reason(result))
@@ -2557,23 +2562,26 @@ def run_helper_agent(user_prompt: str, img_data: str = None, target_model: str =
             if status_callback:
                 status_callback("Cloud route unavailable. Switching to the private local assistant...")
             local_intent = {**intent, "is_local": True}
-            result = _execute_local(
-                local_intent,
-                context_data,
-                fallback_model,
-                sys_config,
-                history,
-                status_callback=status_callback,
-                chunk_callback=chunk_callback,
-                abort_event=abort_event,
-                allow_cloud_fallback=False,
-            )
+            with capability_scope(CapabilityContext(owner=user_id, source=CapabilitySource.AGENT, job_id=job_id)):
+                result = _execute_local(
+                    local_intent,
+                    context_data,
+                    fallback_model,
+                    sys_config,
+                    history,
+                    status_callback=status_callback,
+                    chunk_callback=chunk_callback,
+                    abort_event=abort_event,
+                    allow_cloud_fallback=False,
+                )
             target_model = fallback_model
     else:
-        result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
+        with capability_scope(CapabilityContext(owner=user_id, source=CapabilitySource.AGENT, job_id=job_id)):
+            result = _execute_local(intent, context_data, target_model, sys_config, history, status_callback=status_callback, chunk_callback=chunk_callback, abort_event=abort_event)
 
     # 6. Result Hardening
-    hardened = _harden_result(result, sys_config, target_model=target_model, intent=intent, user_prompt=user_prompt)
+    with capability_scope(CapabilityContext(owner=user_id, source=CapabilitySource.AGENT, job_id=job_id)):
+        hardened = _harden_result(result, sys_config, target_model=target_model, intent=intent, user_prompt=user_prompt)
     from app.logic.bus import tool_result_bus, job_id_context
     jid = job_id_context.get()
     if jid:

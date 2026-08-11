@@ -12,11 +12,20 @@ from app.contracts.email_draft import (
     serialize_prompt_context,
 )
 from app.logic import attachment_store
+from app.logic.capability_policy import CapabilityContext, CapabilitySource
 from app.logic.email_draft_image_workflow import build_email_draft_body_update_payload_from_history
 from app.routes import email_delivery
 
 
 OWNER = "owner@example.com"
+
+
+def delivery_context(*, authorized: bool) -> CapabilityContext:
+    return CapabilityContext(
+        owner=OWNER,
+        source=CapabilitySource.HTTP,
+        request_authorization_verified=authorized,
+    )
 
 
 def png_bytes(color: bytes = b"\x10\x20\x30") -> bytes:
@@ -155,18 +164,23 @@ class EmailWorkflowTests(unittest.TestCase):
                     owner=OWNER,
                     admin_key="invalid-key",
                     request_id="same-request",
+                    # Even inconsistent trusted evidence cannot bypass the service's
+                    # final request-key verifier.
+                    capability_context=delivery_context(authorized=True),
                 )
             first = service.send_approved_email(
                 draft=draft,
                 owner=OWNER,
                 admin_key="valid-key",
                 request_id="same-request",
+                capability_context=delivery_context(authorized=True),
             )
             duplicate = service.send_approved_email(
                 draft=draft,
                 owner=OWNER,
                 admin_key="valid-key",
                 request_id="same-request",
+                capability_context=delivery_context(authorized=True),
             )
             restarted_service = service_module.EmailDeliveryService(
                 key_verifier=lambda candidate: candidate == "valid-key",
@@ -177,6 +191,7 @@ class EmailWorkflowTests(unittest.TestCase):
                 owner=OWNER,
                 admin_key="valid-key",
                 request_id="same-request",
+                capability_context=delivery_context(authorized=True),
             )
 
         self.assertTrue(first.success)
@@ -207,6 +222,7 @@ class EmailWorkflowTests(unittest.TestCase):
                 draft={"recipient": "not-an-email", "subject": "Invalid", "body": "Body"},
                 owner=OWNER,
                 admin_key="request-only-key",
+                capability_context=delivery_context(authorized=True),
             )
         self.assertEqual(sends, [])
 
@@ -215,6 +231,7 @@ class EmailWorkflowTests(unittest.TestCase):
             owner=OWNER,
             admin_key="request-only-key",
             request_id="sender-exception",
+            capability_context=delivery_context(authorized=True),
         )
         self.assertFalse(result.success)
         self.assertEqual(result.status, "Email delivery failed. The draft remains available to retry.")

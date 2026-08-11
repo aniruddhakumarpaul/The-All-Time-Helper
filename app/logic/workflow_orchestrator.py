@@ -34,6 +34,18 @@ from app.contracts.email_draft import (
 )
 from app.logger import logger
 from app.logic.agent_intent import is_compound_email_media_request
+from app.logic.capability_policy import (
+    CAPABILITY_POLICY,
+    CAPABILITY_REGISTRY,
+    CapabilityContext,
+    CapabilityDeniedError,
+    CapabilityEffect,
+    CapabilitySource,
+    PolicyDecision,
+    PolicyDecisionType,
+    capability_scope,
+    workflow_capability_id,
+)
 from app.logic.workflow_store import (
     BLOCKED_ACTION,
     CANCELLED,
@@ -1045,6 +1057,7 @@ class WorkflowExecutor:
         abort_event: threading.Event | None,
         status_callback: Callable[[str], None] | None,
         admin_key: str | None,
+        capability_context: CapabilityContext,
     ) -> WorkflowActionResult:
         if abort_event and abort_event.is_set():
             raise WorkflowCancelled()
@@ -1069,17 +1082,20 @@ class WorkflowExecutor:
                 image_generate = self._image_generate
 
             if action.action_type == WorkflowActionType.WEB_SEARCH:
-                raw = web_search(action.arguments.get("query", ""))
+                with capability_scope(capability_context):
+                    raw = web_search(action.arguments.get("query", ""))
                 if str(raw).lower().startswith(("error", "no reliable results")):
                     raise RuntimeError("tool_unavailable")
                 output = raw
             elif action.action_type == WorkflowActionType.IMAGE_SEARCH:
-                raw = image_search(action.arguments.get("query", ""))
+                with capability_scope(capability_context):
+                    raw = image_search(action.arguments.get("query", ""))
                 output = normalize_image_tool_result(raw, source="search", query=action.arguments.get("query", ""))
                 if output is None:
                     raise RuntimeError("invalid_tool_result")
             elif action.action_type == WorkflowActionType.IMAGE_GENERATE:
-                raw = image_generate(action.arguments.get("description", ""))
+                with capability_scope(capability_context):
+                    raw = image_generate(action.arguments.get("description", ""))
                 if str(raw).lower().startswith("error"):
                     raise RuntimeError("image_generation_unavailable")
                 output = normalize_image_tool_result(raw, source="generated", query=action.arguments.get("description", ""))
@@ -1107,6 +1123,7 @@ class WorkflowExecutor:
                     owner=plan.owner,
                     admin_key=admin_key,
                     request_id=plan.workflow_id,
+                    capability_context=capability_context,
                 )
             elif action.action_type == WorkflowActionType.GENERAL_RESPONSE:
                 output = str(action.arguments.get("message") or "I need a little more context to continue.")
@@ -1122,6 +1139,16 @@ class WorkflowExecutor:
         except EmailAuthorizationError:
             state = WorkflowActionState.PAUSED
             error_category = "authorization_required"
+        except CapabilityDeniedError as exc:
+            if exc.decision == PolicyDecisionType.REQUIRE_APPROVAL:
+                state = WorkflowActionState.PAUSED
+                error_category = "authorization_required"
+            elif exc.reason == "workflow_cancelled":
+                state = WorkflowActionState.CANCELLED
+                error_category = "cancelled"
+            else:
+                state = WorkflowActionState.BLOCKED
+                error_category = exc.reason
         except EmailValidationError:
             state = WorkflowActionState.FAILED
             error_category = "validation_error"
@@ -1162,6 +1189,7 @@ class WorkflowExecutor:
     ) -> WorkflowExecutionResult:
         current = plan.model_copy(deep=True)
         resuming_approval = current.approval_state == WorkflowApprovalState.REQUIRED
+        request_authorization_verified = False
 
         if resuming_approval:
             verifier = getattr(self.delivery_service, "is_authorized", None)
@@ -1171,6 +1199,7 @@ class WorkflowExecutor:
                     plan=current,
                     paused=True,
                 )
+            request_authorization_verified = True
 
         self.pending_store.ensure(current, job_id=job_id)
         execution_id = str(uuid.uuid4())
@@ -1232,6 +1261,26 @@ class WorkflowExecutor:
         }
         draft = current.active_draft
         original_active_draft = current.active_draft
+
+        def policy_for(action: WorkflowAction) -> tuple[PolicyDecision, CapabilityContext]:
+            state = self.pending_store.backend.policy_state(
+                current.workflow_id,
+                current.owner,
+                execution_id,
+            ) or {}
+            context = CapabilityContext(
+                owner=current.owner,
+                source=CapabilitySource.WORKFLOW,
+                job_id=job_id,
+                workflow_id=current.workflow_id,
+                workflow_status=state.get("workflow_status"),
+                workflow_approval_state=state.get("workflow_approval_state"),
+                workflow_lease_valid=bool(state.get("workflow_lease_valid")),
+                request_authorization_verified=request_authorization_verified,
+                cancel_requested=bool(state.get("cancel_requested")),
+            )
+            capability_id = workflow_capability_id(action.action_type)
+            return CAPABILITY_POLICY.evaluate(capability_id, context), context
 
         def finish_workflow(
             result: WorkflowExecutionResult,
@@ -1395,44 +1444,77 @@ class WorkflowExecutor:
                         FAILED,
                     )
 
-                sensitive = next(
-                    (action for action in ready if action.sensitive), None
-                )
-                if sensitive and not resuming_approval:
-                    current.active_draft = draft
-                    current.completed_action_ids = sorted(successful)
-                    current.approval_state = WorkflowApprovalState.REQUIRED
-                    if not self.pending_store.backend.pause_for_approval(
+                action_contexts: dict[str, CapabilityContext] = {}
+                policy_blocked = False
+                for action in ready:
+                    decision, context = policy_for(action)
+                    if decision.decision == PolicyDecisionType.ALLOW:
+                        action_contexts[action.id] = context
+                        continue
+                    if decision.decision == PolicyDecisionType.REQUIRE_APPROVAL:
+                        current.active_draft = draft
+                        current.completed_action_ids = sorted(successful)
+                        current.approval_state = WorkflowApprovalState.REQUIRED
+                        if not self.pending_store.backend.pause_for_approval(
+                            current.workflow_id,
+                            current.owner,
+                            action.id,
+                            execution_id,
+                            serialize_workflow_for_persistence(current),
+                        ):
+                            return interrupted_result()
+                        if status_callback:
+                            status_callback("Approval is required before delivery.")
+                        results[action.id] = WorkflowActionResult(
+                            action_id=action.id,
+                            action_type=action.action_type,
+                            state=WorkflowActionState.PAUSED,
+                            error_category="authorization_required",
+                        )
+                        return WorkflowExecutionResult(
+                            message=(
+                                "ERROR: AUTH_REQUIRED. Please provide your Admin Key in "
+                                "the next message using the Masked input to authorize this "
+                                "delivery."
+                            ),
+                            plan=current,
+                            actions=results,
+                            paused=True,
+                        )
+                    if decision.reason == "workflow_cancelled":
+                        execution_abort.set()
+                        break
+                    if not self.pending_store.backend.settle_unstarted_action(
                         current.workflow_id,
                         current.owner,
-                        sensitive.id,
+                        action.id,
                         execution_id,
-                        serialize_workflow_for_persistence(current),
+                        state=BLOCKED_ACTION,
+                        error_category=decision.reason,
                     ):
                         return interrupted_result()
-                    if status_callback:
-                        status_callback("Approval is required before delivery.")
-                    results[sensitive.id] = WorkflowActionResult(
-                        action_id=sensitive.id,
-                        action_type=sensitive.action_type,
-                        state=WorkflowActionState.PAUSED,
-                        error_category="authorization_required",
+                    results[action.id] = WorkflowActionResult(
+                        action_id=action.id,
+                        action_type=action.action_type,
+                        state=WorkflowActionState.BLOCKED,
+                        error_category=decision.reason,
                     )
-                    return WorkflowExecutionResult(
-                        message=(
-                            "ERROR: AUTH_REQUIRED. Please provide your Admin Key in "
-                            "the next message using the Masked input to authorize this "
-                            "delivery."
-                        ),
-                        plan=current,
-                        actions=results,
-                        paused=True,
-                    )
+                    pending.pop(action.id, None)
+                    settled.add(action.id)
+                    blocked.add(action.id)
+                    policy_blocked = True
+
+                if execution_abort.is_set():
+                    continue
+                if policy_blocked:
+                    continue
 
                 parallel = [
                     action
                     for action in ready
-                    if action.can_run_parallel and not action.sensitive
+                    if action.can_run_parallel
+                    and CAPABILITY_REGISTRY.get(workflow_capability_id(action.action_type)).effect
+                    != CapabilityEffect.EXTERNAL_MUTATION
                 ]
                 serial = [action for action in ready if action not in parallel]
                 if len(parallel) <= 1:
@@ -1441,6 +1523,11 @@ class WorkflowExecutor:
 
                 claimed_actions: list[WorkflowAction] = []
                 for action in parallel:
+                    decision, context = policy_for(action)
+                    if decision.decision != PolicyDecisionType.ALLOW:
+                        execution_abort.set()
+                        break
+                    action_contexts[action.id] = context
                     if not self.pending_store.backend.claim_action(
                         current.workflow_id,
                         current.owner,
@@ -1488,6 +1575,7 @@ class WorkflowExecutor:
                                 execution_abort,
                                 status_callback,
                                 admin_key,
+                                action_contexts[action.id],
                             ): action
                             for action in claimed_actions
                         }
@@ -1497,6 +1585,14 @@ class WorkflowExecutor:
                 for action in serial:
                     if execution_abort.is_set():
                         break
+                    decision, context = policy_for(action)
+                    if decision.decision != PolicyDecisionType.ALLOW:
+                        if decision.reason == "workflow_cancelled":
+                            execution_abort.set()
+                        else:
+                            lease_lost.set()
+                        break
+                    action_contexts[action.id] = context
                     if not self.pending_store.backend.claim_action(
                         current.workflow_id,
                         current.owner,
@@ -1519,6 +1615,7 @@ class WorkflowExecutor:
                             execution_abort,
                             status_callback,
                             admin_key,
+                            action_contexts[action.id],
                         )
                     )
 

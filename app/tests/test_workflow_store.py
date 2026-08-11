@@ -52,7 +52,7 @@ class FakeDeliveryService:
     def is_authorized(admin_key):
         return admin_key == "valid-key"
 
-    def send_approved_email(self, *, draft, owner, admin_key, request_id):
+    def send_approved_email(self, *, draft, owner, admin_key, request_id, capability_context):
         if not self.is_authorized(admin_key):
             raise EmailAuthorizationError("invalid")
         with self.lock:

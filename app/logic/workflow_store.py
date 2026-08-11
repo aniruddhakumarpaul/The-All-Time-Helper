@@ -16,6 +16,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.logic.capability_policy import (
+    ApprovalRequirement,
+    CAPABILITY_REGISTRY,
+    WORKFLOW_ACTION_CAPABILITY_IDS,
+)
+
 
 WORKFLOW_SCHEMA_VERSION = 1
 
@@ -93,6 +99,7 @@ class WorkflowStore(Protocol):
     def list_for_owner(self, owner: str, *, limit: int = 50) -> list[dict[str, Any]]: ...
     def claim(self, workflow_id: str, owner: str, execution_id: str) -> bool: ...
     def renew_lease(self, workflow_id: str, owner: str, execution_id: str) -> bool: ...
+    def policy_state(self, workflow_id: str, owner: str, execution_id: str) -> dict[str, Any] | None: ...
     def claim_action(self, workflow_id: str, owner: str, action_id: str, execution_id: str) -> bool: ...
     def finish_action(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> bool: ...
     def pause_for_approval(self, workflow_id: str, owner: str, action_id: str, execution_id: str, record: dict[str, Any]) -> bool: ...
@@ -605,6 +612,19 @@ class SQLiteWorkflowStore:
             row = self._row(db, workflow_id, owner)
             return bool(row and row["cancel_requested"])
 
+    def policy_state(self, workflow_id: str, owner: str, execution_id: str) -> dict[str, Any] | None:
+        now = time.time()
+        with self._open() as db:
+            row = self._row(db, workflow_id, owner)
+            if not row or row["execution_id"] != execution_id:
+                return None
+            return {
+                "workflow_status": str(row["status"]),
+                "workflow_approval_state": str(row["approval_state"]),
+                "workflow_lease_valid": bool(float(row["lease_expires_at"] or 0) > now),
+                "cancel_requested": bool(row["cancel_requested"]),
+            }
+
     def approve(self, workflow_id: str, owner: str, execution_id: str) -> bool:
         now = time.time()
         with self._open() as db:
@@ -655,18 +675,31 @@ class SQLiteWorkflowStore:
                     "SELECT * FROM workflow_actions WHERE workflow_id=? AND action_id=?",
                     (workflow_id, action_id),
                 ).fetchone()
+                capability_id = (
+                    WORKFLOW_ACTION_CAPABILITY_IDS.get(str(action["action_type"]))
+                    if action
+                    else None
+                )
+                capability = CAPABILITY_REGISTRY.get(capability_id or "")
+                approval_required = bool(
+                    capability
+                    and capability.approval
+                    in {
+                        ApprovalRequirement.WORKFLOW_APPROVAL,
+                        ApprovalRequirement.REQUEST_SCOPED_AUTHORIZATION,
+                        ApprovalRequirement.EXPLICIT_CONFIRMATION,
+                    }
+                )
                 if (
                     not row
                     or not action
+                    or capability is None
                     or row["status"] != RUNNING
                     or row["execution_id"] != execution_id
                     or float(row["lease_expires_at"] or 0) <= now
                     or bool(row["cancel_requested"])
                     or action["state"] != PENDING_ACTION
-                    or (
-                        bool(action["sensitive"])
-                        and row["approval_state"] != "approved"
-                    )
+                    or (approval_required and row["approval_state"] != "approved")
                 ):
                     db.rollback()
                     return False

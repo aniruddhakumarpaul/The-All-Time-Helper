@@ -6,8 +6,10 @@ from fastapi.responses import Response
 
 from app.logger import logger
 from app.logic.safe_fetch import SafeFetchError, safe_fetch_url
+from app.logic.capability_policy import CapabilityContext, CapabilityGateway, CapabilitySource
 
 router = APIRouter()
+_IMAGE_PROXY_GATEWAY = CapabilityGateway({"image.proxy.read": safe_fetch_url})
 
 
 POLLINATIONS_HOSTS = {"image.pollinations.ai", "pollinations.ai"}
@@ -62,7 +64,16 @@ async def image_proxy(url: str):
     }
     try:
         response = await anyio.to_thread.run_sync(
-            lambda: safe_fetch_url(normalized_url, headers=headers, timeout=60, max_bytes=8 * 1024 * 1024)
+            lambda: _IMAGE_PROXY_GATEWAY.invoke(
+                "image.proxy.read",
+                context=CapabilityContext(owner=None, source=CapabilitySource.HTTP),
+                arguments={
+                    "url": normalized_url,
+                    "headers": headers,
+                    "timeout": 60,
+                    "max_bytes": 8 * 1024 * 1024,
+                },
+            )
         )
     except SafeFetchError as exc:
         return Response(status_code=exc.status_code)
