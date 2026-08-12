@@ -51,16 +51,29 @@ def history_with_draft(draft=None):
 class FakeDeliveryService:
     def __init__(self):
         self.calls = []
+        self.outbox_store = None
 
-    def send_approved_email(self, *, draft, owner, admin_key, request_id, capability_context):
+    def send_approved_email(
+        self, *, draft, owner, admin_key, request_id, capability_context,
+        prepared_outbox_id=None, dispatch_execution_id=None,
+    ):
         if admin_key != "valid-key":
             raise EmailAuthorizationError("invalid")
+        if prepared_outbox_id:
+            if not self.outbox_store.mark_dispatch_started(
+                prepared_outbox_id, owner, dispatch_execution_id,
+            ):
+                raise RuntimeError("fake_dispatch_claim_lost")
         self.calls.append({"draft": draft, "owner": owner, "request_id": request_id})
         return EmailDeliveryResult(
             success=True,
             status="SIMULATE SUCCESS",
             request_id=request_id,
             mode="simulated",
+            outcome="succeeded",
+            outbox_id=prepared_outbox_id,
+            dispatch_execution_id=dispatch_execution_id,
+            receipt_reference="simulated",
         )
 
     @staticmethod

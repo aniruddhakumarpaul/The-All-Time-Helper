@@ -19,7 +19,19 @@ from typing import Any, Protocol
 from app.logic.capability_policy import (
     ApprovalRequirement,
     CAPABILITY_REGISTRY,
+    CapabilityEffect,
     WORKFLOW_ACTION_CAPABILITY_IDS,
+)
+from app.logic.action_outbox import (
+    CLAIMED as OUTBOX_CLAIMED,
+    DISPATCHING as OUTBOX_DISPATCHING,
+    FAILED as OUTBOX_FAILED,
+    PREPARED as OUTBOX_PREPARED,
+    SUCCEEDED as OUTBOX_SUCCEEDED,
+    UNKNOWN_EXTERNAL_RESULT as OUTBOX_UNKNOWN_EXTERNAL_RESULT,
+    SQLiteActionOutboxStore,
+    initialize_action_outbox_schema,
+    pseudonymous_owner_scope,
 )
 
 
@@ -101,7 +113,9 @@ class WorkflowStore(Protocol):
     def renew_lease(self, workflow_id: str, owner: str, execution_id: str) -> bool: ...
     def policy_state(self, workflow_id: str, owner: str, execution_id: str) -> dict[str, Any] | None: ...
     def claim_action(self, workflow_id: str, owner: str, action_id: str, execution_id: str) -> bool: ...
+    def claim_external_action_with_outbox(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> dict[str, Any] | None: ...
     def finish_action(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> bool: ...
+    def finish_external_action_with_outbox(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> bool: ...
     def pause_for_approval(self, workflow_id: str, owner: str, action_id: str, execution_id: str, record: dict[str, Any]) -> bool: ...
     def approve(self, workflow_id: str, owner: str, execution_id: str) -> bool: ...
     def request_cancel(self, workflow_id: str, owner: str) -> bool: ...
@@ -154,6 +168,7 @@ class SQLiteWorkflowStore:
         self.max_result_bytes = max(512, int(max_result_bytes))
         self.max_storage_bytes = max(4096, int(max_storage_bytes))
         self._init_schema()
+        self.action_outbox = SQLiteActionOutboxStore(self.db_file)
 
     def _connect(self) -> sqlite3.Connection:
         for attempt in range(5):
@@ -266,6 +281,7 @@ class SQLiteWorkflowStore:
                 version = db.execute("SELECT version FROM workflow_schema WHERE id=1").fetchone()
                 if not version or int(version[0]) != WORKFLOW_SCHEMA_VERSION:
                     raise WorkflowStoreError("Unsupported workflow database schema version.")
+                initialize_action_outbox_schema(db)
                 db.commit()
             except Exception:
                 db.rollback()
@@ -328,6 +344,7 @@ class SQLiteWorkflowStore:
             return self._logical_usage_locked(db)
 
     def _recover_interrupted_locked(self, db: sqlite3.Connection, now: float) -> int:
+        self.action_outbox._recover_expired_locked(db, now)
         rows = db.execute(
             "SELECT workflow_id,owner FROM workflow_runs WHERE status=? AND execution_id IS NOT NULL "
             "AND lease_expires_at>0 AND lease_expires_at<=?",
@@ -338,29 +355,69 @@ class SQLiteWorkflowStore:
                 "SELECT action_id,action_type FROM workflow_actions WHERE workflow_id=? AND state=?",
                 (row["workflow_id"], RUNNING_ACTION),
             ).fetchall()
+            reauthorization_safe = bool(actions)
             for action in actions:
                 external = (
                     ACTION_CLASSES.get(action["action_type"])
                     == WorkflowActionClass.EXTERNAL_SIDE_EFFECT
                 )
-                next_state = UNKNOWN_EXTERNAL_RESULT if external else INTERRUPTED_ACTION
-                error = "external_result_unknown" if external else "worker_interrupted"
+                outbox = None
+                if external:
+                    outbox = db.execute(
+                        "SELECT state,dispatch_started_at FROM external_action_outbox "
+                        "WHERE workflow_id=? AND workflow_action_id=? AND owner_scope=?",
+                        (
+                            row["workflow_id"], action["action_id"],
+                            pseudonymous_owner_scope(row["owner"]),
+                        ),
+                    ).fetchone()
+                safe_before_dispatch = bool(
+                    external
+                    and outbox
+                    and outbox["state"] == OUTBOX_PREPARED
+                    and outbox["dispatch_started_at"] is None
+                )
+                reauthorization_safe = reauthorization_safe and safe_before_dispatch
+                next_state = PAUSED_ACTION if safe_before_dispatch else (
+                    UNKNOWN_EXTERNAL_RESULT if external else INTERRUPTED_ACTION
+                )
+                error = "authorization_required" if safe_before_dispatch else (
+                    "external_result_unknown" if external else "worker_interrupted"
+                )
                 db.execute(
                     "UPDATE workflow_actions SET state=?,completed_at=?,error_category=?,execution_id=NULL "
                     "WHERE workflow_id=? AND action_id=? AND state=?",
                     (next_state, now, error, row["workflow_id"], action["action_id"], RUNNING_ACTION),
                 )
+            next_workflow_state = PAUSED if reauthorization_safe else INTERRUPTED
+            approval_state = "required" if reauthorization_safe else "not_required"
             db.execute(
-                "UPDATE workflow_runs SET status=?,updated_at=?,expires_at=?,execution_id=NULL,"
+                "UPDATE workflow_runs SET status=?,approval_state=?,updated_at=?,expires_at=?,execution_id=NULL,"
                 "lease_expires_at=0,heartbeat_at=? WHERE workflow_id=? AND owner=? AND status=?",
-                (INTERRUPTED, now, now + self.retention_seconds, now, row["workflow_id"], row["owner"], RUNNING),
+                (
+                    next_workflow_state, approval_state, now,
+                    now + (self.approval_ttl_seconds if reauthorization_safe else self.retention_seconds),
+                    now, row["workflow_id"], row["owner"], RUNNING,
+                ),
             )
+            if reauthorization_safe:
+                db.execute(
+                    "INSERT INTO workflow_approvals(workflow_id,owner,approval_state,approval_required_for,"
+                    "created_at,expires_at,claimed_at) VALUES(?,?,?,?,?,?,NULL) "
+                    "ON CONFLICT(workflow_id) DO UPDATE SET approval_state=excluded.approval_state,"
+                    "approval_required_for=excluded.approval_required_for,created_at=excluded.created_at,"
+                    "expires_at=excluded.expires_at,claimed_at=NULL",
+                    (
+                        row["workflow_id"], row["owner"], "required", "email.deliver",
+                        now, now + self.approval_ttl_seconds,
+                    ),
+                )
             self._append_event_locked(
                 db,
                 row["workflow_id"],
                 row["owner"],
-                "workflow_interrupted",
-                state=INTERRUPTED,
+                "approval_required" if reauthorization_safe else "workflow_interrupted",
+                state=next_workflow_state,
                 now=now,
             )
         return len(rows)
@@ -694,6 +751,7 @@ class SQLiteWorkflowStore:
                     not row
                     or not action
                     or capability is None
+                    or capability.effect == CapabilityEffect.EXTERNAL_MUTATION
                     or row["status"] != RUNNING
                     or row["execution_id"] != execution_id
                     or float(row["lease_expires_at"] or 0) <= now
@@ -735,6 +793,122 @@ class SQLiteWorkflowStore:
                     )
                 db.commit()
                 return changed
+            except Exception:
+                db.rollback()
+                raise
+
+    def claim_external_action_with_outbox(
+        self,
+        workflow_id: str,
+        owner: str,
+        action_id: str,
+        execution_id: str,
+        *,
+        idempotency_key: str,
+        payload_fingerprint: str,
+    ) -> dict[str, Any] | None:
+        """Claim a workflow external action and its dispatch intent atomically."""
+        now = time.time()
+        with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(db, workflow_id, owner)
+                action = db.execute(
+                    "SELECT * FROM workflow_actions WHERE workflow_id=? AND action_id=?",
+                    (workflow_id, action_id),
+                ).fetchone()
+                capability_id = WORKFLOW_ACTION_CAPABILITY_IDS.get(
+                    str(action["action_type"]) if action else ""
+                )
+                capability = CAPABILITY_REGISTRY.get(capability_id or "")
+                if (
+                    not row
+                    or not action
+                    or capability is None
+                    or capability.effect != CapabilityEffect.EXTERNAL_MUTATION
+                    or row["status"] != RUNNING
+                    or row["execution_id"] != execution_id
+                    or float(row["lease_expires_at"] or 0) <= now
+                    or bool(row["cancel_requested"])
+                    or action["state"] != PENDING_ACTION
+                    or row["approval_state"] != "approved"
+                ):
+                    db.rollback()
+                    return None
+                required = json.loads(action["depends_on_json"])
+                optional = json.loads(action["optional_depends_on_json"])
+                states = {
+                    item["action_id"]: item["state"]
+                    for item in db.execute(
+                        "SELECT action_id,state FROM workflow_actions WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+                }
+                if any(states.get(item) != COMPLETED_ACTION for item in required):
+                    db.rollback()
+                    return None
+                if any(states.get(item) not in SETTLED_ACTIONS for item in optional):
+                    db.rollback()
+                    return None
+
+                outbox, outbox_created = self.action_outbox._prepare_locked(
+                    db,
+                    owner=owner,
+                    capability_id=capability.capability_id,
+                    source="workflow",
+                    idempotency_key=idempotency_key,
+                    payload_fingerprint=payload_fingerprint,
+                    workflow_id=workflow_id,
+                    workflow_action_id=action_id,
+                    job_id=row["job_id"],
+                    now=now,
+                )
+                if outbox["state"] == OUTBOX_PREPARED:
+                    changed_outbox = db.execute(
+                        "UPDATE external_action_outbox SET state=?,attempt=attempt+1,execution_id=?,"
+                        "lease_expires_at=?,heartbeat_at=?,updated_at=? WHERE outbox_id=? AND state=? "
+                        "AND dispatch_started_at IS NULL",
+                        (
+                            OUTBOX_CLAIMED, execution_id,
+                            min(
+                                now + self.action_outbox.lease_seconds,
+                                float(row["lease_expires_at"]),
+                            ), now, now,
+                            outbox["outbox_id"], OUTBOX_PREPARED,
+                        ),
+                    ).rowcount == 1
+                    if not changed_outbox:
+                        db.rollback()
+                        return None
+                elif outbox["state"] not in {
+                    OUTBOX_SUCCEEDED, OUTBOX_FAILED, OUTBOX_UNKNOWN_EXTERNAL_RESULT,
+                }:
+                    db.rollback()
+                    return None
+                changed_action = db.execute(
+                    "UPDATE workflow_actions SET state=?,attempt=attempt+1,started_at=?,completed_at=NULL,"
+                    "error_category=NULL,execution_id=? WHERE workflow_id=? AND action_id=? AND state=?",
+                    (RUNNING_ACTION, now, execution_id, workflow_id, action_id, PENDING_ACTION),
+                ).rowcount == 1
+                if not changed_action:
+                    db.rollback()
+                    return None
+                self._append_event_locked(
+                    db, workflow_id, owner, "action_started",
+                    action_type=action["action_type"], state=RUNNING_ACTION, now=now,
+                )
+                self.action_outbox._check_capacity_locked(db)
+                self._check_capacity_locked(db)
+                db.commit()
+                committed = dict(db.execute(
+                    "SELECT * FROM external_action_outbox WHERE outbox_id=?",
+                    (outbox["outbox_id"],),
+                ).fetchone())
+                if outbox_created:
+                    self.action_outbox._emit_transition(committed, OUTBOX_PREPARED, prepared=True)
+                if committed["state"] == OUTBOX_CLAIMED:
+                    self.action_outbox._emit_transition(committed, OUTBOX_CLAIMED)
+                return committed
             except Exception:
                 db.rollback()
                 raise
@@ -811,6 +985,94 @@ class SQLiteWorkflowStore:
                 self._prune_locked(db, now)
                 self._check_capacity_locked(db)
                 db.commit()
+                return True
+            except Exception:
+                db.rollback()
+                raise
+
+    def finish_external_action_with_outbox(
+        self,
+        workflow_id: str,
+        owner: str,
+        action_id: str,
+        execution_id: str,
+        *,
+        outbox_id: str,
+        dispatch_execution_id: str,
+        state: str,
+        output: dict[str, Any] | None = None,
+        error_category: str | None = None,
+        duration_ms: int = 0,
+        receipt_reference: str | None = None,
+    ) -> bool:
+        state_map = {
+            COMPLETED_ACTION: OUTBOX_SUCCEEDED,
+            FAILED_ACTION: OUTBOX_FAILED,
+            UNKNOWN_EXTERNAL_RESULT: OUTBOX_UNKNOWN_EXTERNAL_RESULT,
+        }
+        outbox_state = state_map.get(state)
+        if outbox_state is None:
+            raise WorkflowStoreError("Unsupported external action terminal state.")
+        output_json = _json(output) if output is not None else None
+        if _bytes(output_json) > self.max_result_bytes:
+            raise WorkflowCapacityError("Workflow action result is too large to persist safely.")
+        now = time.time()
+        with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(db, workflow_id, owner)
+                action = db.execute(
+                    "SELECT action_type,state,execution_id FROM workflow_actions WHERE workflow_id=? AND action_id=?",
+                    (workflow_id, action_id),
+                ).fetchone()
+                outbox = db.execute(
+                    "SELECT * FROM external_action_outbox WHERE outbox_id=? AND owner_scope=? "
+                    "AND workflow_id=? AND workflow_action_id=?",
+                    (outbox_id, pseudonymous_owner_scope(owner), workflow_id, action_id),
+                ).fetchone()
+                if (
+                    not row or not action or not outbox
+                    or row["status"] != RUNNING
+                    or row["execution_id"] != execution_id
+                    or float(row["lease_expires_at"] or 0) <= now
+                    or action["state"] != RUNNING_ACTION
+                    or action["execution_id"] != execution_id
+                ):
+                    db.rollback()
+                    return False
+                if outbox["state"] != outbox_state:
+                    if not self.action_outbox._mark_terminal_locked(
+                        db,
+                        outbox_id=outbox_id,
+                        owner=owner,
+                        execution_id=dispatch_execution_id,
+                        state=outbox_state,
+                        receipt_reference=receipt_reference,
+                        error_category=error_category,
+                    ):
+                        db.rollback()
+                        return False
+                db.execute(
+                    "UPDATE workflow_actions SET state=?,completed_at=?,duration_ms=?,error_category=?,"
+                    "output_json=?,execution_id=NULL WHERE workflow_id=? AND action_id=? AND state=?",
+                    (
+                        state, now, max(0, min(int(duration_ms or 0), 86_400_000)),
+                        _safe_token(error_category, "unknown") if error_category else None,
+                        output_json, workflow_id, action_id, RUNNING_ACTION,
+                    ),
+                )
+                self._append_event_locked(
+                    db, workflow_id, owner,
+                    "action_completed" if state == COMPLETED_ACTION else "action_failed",
+                    action_type=action["action_type"], state=state,
+                    duration_ms=duration_ms, now=now,
+                )
+                self.action_outbox._prune_locked(db, now)
+                self.action_outbox._check_capacity_locked(db)
+                self._prune_locked(db, now)
+                self._check_capacity_locked(db)
+                db.commit()
+                self.action_outbox._emit_transition(dict(outbox), outbox_state)
                 return True
             except Exception:
                 db.rollback()
@@ -1068,6 +1330,14 @@ class SQLiteWorkflowStore:
                     "WHERE workflow_id=? AND owner=?",
                     (next_status, now, now + self.retention_seconds, workflow_id, owner),
                 )
+                outbox_rows = db.execute(
+                    "SELECT outbox_id FROM external_action_outbox WHERE workflow_id=? AND owner_scope=?",
+                    (workflow_id, pseudonymous_owner_scope(owner)),
+                ).fetchall()
+                for outbox in outbox_rows:
+                    self.action_outbox._cancel_locked(
+                        db, outbox_id=outbox["outbox_id"], owner=owner, now=now,
+                    )
                 if immediate:
                     db.execute(
                         "UPDATE workflow_actions SET state=?,completed_at=?,error_category=? "

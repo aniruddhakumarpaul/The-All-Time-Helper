@@ -169,6 +169,9 @@ def initialize_observability(*, span_exporter: Any = None, metric_reader: Any = 
                 "helper.chat_job.recovered": meter.create_counter("helper.chat_job.recovered"),
                 "helper.chat_job.cancelled": meter.create_counter("helper.chat_job.cancelled"),
                 "helper.chat_job.interrupted": meter.create_counter("helper.chat_job.interrupted"),
+                "helper.external_action.prepared": meter.create_counter("helper.external_action.prepared"),
+                "helper.external_action.dispatches": meter.create_counter("helper.external_action.dispatches"),
+                "helper.external_action.unknown_results": meter.create_counter("helper.external_action.unknown_results"),
             }
             meter.create_observable_gauge(
                 "helper.inference.queue.depth",

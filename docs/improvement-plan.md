@@ -10,7 +10,7 @@
 
 - Owner-scoped attachment IDs, size/type validation, bounded PDF/text extraction, and metadata-only frontend persistence.
 - NDJSON streaming with job IDs, status updates, heartbeats, cancellation, disconnect handling, and separate inference/tool lanes.
-- Deterministic typed email/image workflow planning, explicit approval-only delivery, request-scoped admin-key verification, owner-scoped pending state, and delivery idempotency.
+- Deterministic typed email/image workflow planning, explicit approval-only delivery, request-scoped admin-key verification, owner-scoped pending state, and transactional external-action idempotency.
 - Durable owner-scoped workflow/action/approval state with cross-worker claims, restart-safe interruption handling, bounded storage, and no automatic side-effect replay.
 - A frozen, fail-closed capability policy gateway shared by agent, direct-tool, workflow, HTTP, memory, attachment, image, and email-delivery execution paths.
 - Centralized frontend API errors, dialog focus isolation, explicit context drag handles, and reduced-motion support.
@@ -94,3 +94,11 @@
 - Added authenticated aggregate-only usage summaries for fixed windows. A frontend dashboard, raw-event API, remote telemetry backend, and multi-host ledger remain explicitly deferred.
 - Closed the final metadata privacy/cardinality boundary with central request-model validation, registry-backed request/response labels, finite provider/fallback/error/workflow/capability dimensions, and provider-specific `custom` buckets for intentionally dynamic routes.
 - Made usage-cap accounting exact for multibyte UTF-8 metadata and added transaction-by-transaction cap, malicious model, provider-response injection, metric-cardinality, raw database/WAL sentinel, and LiteLLM/token-budget double-wrap regressions.
+
+## Completed In Phase 4: Transactional External Action Outbox
+
+- Added a schema-versioned SQLite-WAL outbox in the workflow database with pseudonymous owners, hashed idempotency keys, canonical payload fingerprints, cross-worker claims, renewable leases, explicit dispatch start, stale-worker rejection, cancellation, recovery, retention, and exact logical-capacity enforcement.
+- Made workflow external-action claim/outbox creation and terminal workflow/outbox settlement atomic. A pre-dispatch crash returns to `prepared` and waits for new authorization; a post-dispatch crash becomes terminal `unknown_external_result` and is never automatically replayed.
+- Replaced email's process-local lock and legacy receipt writes as authority. Historical `email_send_log` success remains read-only compatibility evidence, while HTTP and workflow delivery share the outbox and preserve capability policy plus request-scoped Admin Key verification.
+- Added deterministic concurrency, schema-startup, duplicate/conflict, crash-window, stale-worker, workflow consistency, legacy receipt, cancellation, capacity, and payload/credential privacy tests without invoking real SMTP.
+- Explicitly deferred background dispatch/retry, provider reconciliation, MCP, automations, webhooks, calendar/Slack mutations, and multi-host coordination. SQLite coordination remains single-host, and SMTP ambiguity may require manual reconciliation.

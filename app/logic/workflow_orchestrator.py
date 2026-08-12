@@ -63,8 +63,10 @@ from app.logic.workflow_store import (
 )
 from app.services.email_delivery_service import (
     EmailAuthorizationError,
+    EmailDeliveryResult,
     EmailDeliveryService,
     EmailValidationError,
+    email_payload_fingerprint,
     email_delivery_service,
 )
 
@@ -1024,6 +1026,8 @@ class WorkflowExecutor:
     ) -> None:
         self.pending_store = pending_store
         self.delivery_service = delivery_service
+        if getattr(self.delivery_service, "outbox_store", "unavailable") is None:
+            self.delivery_service.outbox_store = self.pending_store.backend.action_outbox
         self._web_search = web_search
         self._image_search = image_search
         self._image_generate = image_generate
@@ -1061,6 +1065,7 @@ class WorkflowExecutor:
         status_callback: Callable[[str], None] | None,
         admin_key: str | None,
         capability_context: CapabilityContext,
+        external_claim: dict[str, Any] | None = None,
     ) -> WorkflowActionResult:
         if abort_event and abort_event.is_set():
             raise WorkflowCancelled()
@@ -1121,13 +1126,24 @@ class WorkflowExecutor:
             elif action.action_type == WorkflowActionType.DELIVER_EMAIL:
                 if draft is None:
                     raise RuntimeError("missing_draft")
-                output = self.delivery_service.send_approved_email(
-                    draft=draft,
-                    owner=plan.owner,
-                    admin_key=admin_key,
-                    request_id=plan.workflow_id,
-                    capability_context=capability_context,
-                )
+                delivery_arguments = {
+                    "draft": draft,
+                    "owner": plan.owner,
+                    "admin_key": admin_key,
+                    "request_id": f"workflow:{plan.workflow_id}:{action.id}",
+                    "capability_context": capability_context,
+                }
+                delivery_arguments.update({
+                    "prepared_outbox_id": (external_claim or {}).get("outbox_id"),
+                    "dispatch_execution_id": (external_claim or {}).get("execution_id"),
+                })
+                output = self.delivery_service.send_approved_email(**delivery_arguments)
+                if output.outcome == "unknown_external_result":
+                    state = WorkflowActionState.UNKNOWN_EXTERNAL_RESULT
+                    error_category = "external_result_unknown"
+                elif not output.success:
+                    state = WorkflowActionState.FAILED
+                    error_category = "delivery_failed"
             elif action.action_type == WorkflowActionType.GENERAL_RESPONSE:
                 output = str(action.arguments.get("message") or "I need a little more context to continue.")
             if (
@@ -1362,6 +1378,24 @@ class WorkflowExecutor:
             stored_state = state_map.get(result.state)
             if not stored_state:
                 return False
+            if (
+                result.action_type == WorkflowActionType.DELIVER_EMAIL
+                and isinstance(result.output, EmailDeliveryResult)
+                and result.output.outbox_id
+            ):
+                return self.pending_store.backend.finish_external_action_with_outbox(
+                    current.workflow_id,
+                    current.owner,
+                    result.action_id,
+                    execution_id,
+                    outbox_id=result.output.outbox_id,
+                    dispatch_execution_id=result.output.dispatch_execution_id or "",
+                    state=stored_state,
+                    output=_safe_action_output(result),
+                    error_category=result.error_category,
+                    duration_ms=result.duration_ms,
+                    receipt_reference=result.output.receipt_reference,
+                )
             return self.pending_store.backend.finish_action(
                 current.workflow_id,
                 current.owner,
@@ -1526,6 +1560,7 @@ class WorkflowExecutor:
                     parallel = []
 
                 claimed_actions: list[WorkflowAction] = []
+                external_claims: dict[str, dict[str, Any]] = {}
                 for action in parallel:
                     decision, context = policy_for(action)
                     if decision.decision != PolicyDecisionType.ALLOW:
@@ -1599,12 +1634,29 @@ class WorkflowExecutor:
                             lease_lost.set()
                         break
                     action_contexts[action.id] = context
-                    if not self.pending_store.backend.claim_action(
-                        current.workflow_id,
-                        current.owner,
-                        action.id,
-                        execution_id,
+                    if (
+                        action.action_type == WorkflowActionType.DELIVER_EMAIL
+                        and draft is not None
                     ):
+                        external_claim = self.pending_store.backend.claim_external_action_with_outbox(
+                            current.workflow_id,
+                            current.owner,
+                            action.id,
+                            execution_id,
+                            idempotency_key=f"workflow:{current.workflow_id}:{action.id}",
+                            payload_fingerprint=email_payload_fingerprint(draft),
+                        )
+                        claimed = external_claim is not None
+                        if external_claim:
+                            external_claims[action.id] = external_claim
+                    else:
+                        claimed = self.pending_store.backend.claim_action(
+                            current.workflow_id,
+                            current.owner,
+                            action.id,
+                            execution_id,
+                        )
+                    if not claimed:
                         if self.pending_store.backend.is_cancel_requested(
                             current.workflow_id, current.owner
                         ):
@@ -1622,6 +1674,7 @@ class WorkflowExecutor:
                             status_callback,
                             admin_key,
                             action_contexts[action.id],
+                            external_claims.get(action.id),
                         )
                     )
 

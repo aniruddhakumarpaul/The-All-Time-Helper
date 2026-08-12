@@ -422,7 +422,6 @@ def send_or_simulate_email(
         return f"ERROR: Unsupported EMAIL_MODE '{mode}'."
 
     from app.logic.bus import job_id_context
-    from app.logic.memory import user_context
     from app.database import DB_FILE
     import sqlite3
 
@@ -462,18 +461,7 @@ def send_or_simulate_email(
                     part.add_header("Content-Disposition", "attachment", filename=item["filename"])
                     message.attach(part)
                 server.send_message(message)
-        result = f"LIVE SUCCESS: Email broadcasted to {', '.join(recipients)}."
-        if current_job:
-            try:
-                with sqlite3.connect(DB_FILE) as conn:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO email_send_log (job_id, user_email, recipients, status, timestamp) VALUES (?, ?, ?, ?, ?)",
-                        (current_job, user_context.get(), ",".join(recipients), result, time.time()),
-                    )
-                    conn.commit()
-            except sqlite3.Error as exc:
-                logger.warning("Email idempotency write failed (%s)", type(exc).__name__)
-        return result
+        return f"LIVE SUCCESS: Email broadcasted to {', '.join(recipients)}."
     except Exception as exc:
         logger.error("SMTP error (%s)", type(exc).__name__)
         return "ERROR: Email delivery failed. Check the server logs and retry."

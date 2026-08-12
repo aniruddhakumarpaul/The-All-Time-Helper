@@ -2,6 +2,7 @@ import base64
 import json
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -33,6 +34,35 @@ def png_bytes(color: bytes = b"\x10\x20\x30") -> bytes:
 
 
 class EmailWorkflowTests(unittest.TestCase):
+    def test_http_rejects_request_id_reuse_with_changed_payload(self):
+        from app.logic.action_outbox import SQLiteActionOutboxStore
+        from app.services import email_delivery_service as service_module
+
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
+            service = service_module.EmailDeliveryService(
+                key_verifier=lambda key: key == "valid-key",
+                sender=lambda **_kwargs: "SIMULATE SUCCESS",
+                outbox_store=SQLiteActionOutboxStore(Path(tmp) / "workflows.db"),
+            )
+            first = email_delivery.SendDraftRequest(
+                draft={"recipient": OWNER, "subject": "First", "body": "Body"},
+                admin_key="valid-key",
+                request_id="http-conflict",
+            )
+            changed = first.model_copy(update={
+                "draft": email_delivery.EmailDraftPayload.model_validate({
+                    "recipient": OWNER, "subject": "Changed", "body": "Body",
+                }),
+            })
+            with (
+                patch.object(email_delivery, "email_delivery_service", service),
+                patch.object(service_module, "_existing_delivery", return_value=None),
+            ):
+                self.assertTrue(email_delivery.send_approved_email_draft(first, current_user=OWNER)["success"])
+                with self.assertRaises(HTTPException) as raised:
+                    email_delivery.send_approved_email_draft(changed, current_user=OWNER)
+        self.assertEqual(raised.exception.status_code, 409)
+
     def test_two_image_draft_round_trip_keeps_ids_and_drops_bytes_from_persistence(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(attachment_store, "ATTACHMENT_ROOT", tmp):
             first = attachment_store.save_attachment_bytes("first.png", "image/png", png_bytes(), OWNER)
@@ -134,6 +164,7 @@ class EmailWorkflowTests(unittest.TestCase):
         from app.logic.bus import job_id_context
         from app.logic.memory import user_context
         from app.services import email_delivery_service as service_module
+        from app.logic.action_outbox import SQLiteActionOutboxStore
 
         receipts = {}
         sends = []
@@ -145,19 +176,22 @@ class EmailWorkflowTests(unittest.TestCase):
         def record(job_id, owner, recipient, status):
             receipts[job_id] = status
 
-        service = service_module.EmailDeliveryService(
-            key_verifier=lambda candidate: candidate == "valid-key",
-            sender=sender,
-        )
         draft = {
             "recipient": OWNER,
             "subject": "Approved",
             "body": "Hello",
         }
         with (
+            tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp,
             patch.object(service_module, "_existing_delivery", side_effect=lambda job_id: receipts.get(job_id)),
             patch.object(service_module, "_record_delivery", side_effect=record),
         ):
+            db_file = Path(tmp) / "workflows.db"
+            service = service_module.EmailDeliveryService(
+                key_verifier=lambda candidate: candidate == "valid-key",
+                sender=sender,
+                outbox_store=SQLiteActionOutboxStore(db_file),
+            )
             with self.assertRaises(service_module.EmailAuthorizationError):
                 service.send_approved_email(
                     draft=draft,
@@ -185,6 +219,7 @@ class EmailWorkflowTests(unittest.TestCase):
             restarted_service = service_module.EmailDeliveryService(
                 key_verifier=lambda candidate: candidate == "valid-key",
                 sender=sender,
+                outbox_store=SQLiteActionOutboxStore(db_file),
             )
             persisted_duplicate = restarted_service.send_approved_email(
                 draft=draft,
@@ -206,6 +241,7 @@ class EmailWorkflowTests(unittest.TestCase):
         from app.logic.bus import job_id_context
         from app.logic.memory import user_context
         from app.services import email_delivery_service as service_module
+        from app.logic.action_outbox import SQLiteActionOutboxStore
 
         sends = []
 
@@ -213,28 +249,31 @@ class EmailWorkflowTests(unittest.TestCase):
             sends.append(kwargs)
             raise RuntimeError("provider included owner@example.com and secret material")
 
-        service = service_module.EmailDeliveryService(
-            key_verifier=lambda _candidate: True,
-            sender=broken_sender,
-        )
-        with self.assertRaises(service_module.EmailValidationError):
-            service.send_approved_email(
-                draft={"recipient": "not-an-email", "subject": "Invalid", "body": "Body"},
+        with tempfile.TemporaryDirectory(dir=r"C:\tmp") as tmp:
+            service = service_module.EmailDeliveryService(
+                key_verifier=lambda _candidate: True,
+                sender=broken_sender,
+                outbox_store=SQLiteActionOutboxStore(Path(tmp) / "workflows.db"),
+            )
+            with self.assertRaises(service_module.EmailValidationError):
+                service.send_approved_email(
+                    draft={"recipient": "not-an-email", "subject": "Invalid", "body": "Body"},
+                    owner=OWNER,
+                    admin_key="request-only-key",
+                    capability_context=delivery_context(authorized=True),
+                )
+            self.assertEqual(sends, [])
+
+            result = service.send_approved_email(
+                draft={"recipient": OWNER, "subject": "Safe", "body": "Body"},
                 owner=OWNER,
                 admin_key="request-only-key",
+                request_id="sender-exception",
                 capability_context=delivery_context(authorized=True),
             )
-        self.assertEqual(sends, [])
-
-        result = service.send_approved_email(
-            draft={"recipient": OWNER, "subject": "Safe", "body": "Body"},
-            owner=OWNER,
-            admin_key="request-only-key",
-            request_id="sender-exception",
-            capability_context=delivery_context(authorized=True),
-        )
         self.assertFalse(result.success)
-        self.assertEqual(result.status, "Email delivery failed. The draft remains available to retry.")
+        self.assertIn("will not be retried automatically", result.status)
+        self.assertEqual(result.outcome, "unknown_external_result")
         self.assertNotIn(OWNER, result.status)
         self.assertEqual(job_id_context.get(), "")
         self.assertIsNone(user_context.get())

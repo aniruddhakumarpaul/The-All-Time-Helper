@@ -79,6 +79,7 @@ class FakeDeliveryService:
     def __init__(self):
         self.calls = []
         self.lock = threading.Lock()
+        self.outbox_store = None
 
     @staticmethod
     def is_authorized(admin_key):
@@ -92,7 +93,14 @@ class FakeDeliveryService:
         admin_key,
         request_id,
         capability_context,
+        prepared_outbox_id=None,
+        dispatch_execution_id=None,
     ):
+        if prepared_outbox_id:
+            if not self.outbox_store.mark_dispatch_started(
+                prepared_outbox_id, owner, dispatch_execution_id,
+            ):
+                raise RuntimeError("fake_dispatch_claim_lost")
         with self.lock:
             self.calls.append(request_id)
         return EmailDeliveryResult(
@@ -100,6 +108,10 @@ class FakeDeliveryService:
             status="SIMULATE SUCCESS",
             request_id=request_id,
             mode="simulated",
+            outcome="succeeded",
+            outbox_id=prepared_outbox_id,
+            dispatch_execution_id=dispatch_execution_id,
+            receipt_reference="simulated",
         )
 
 
@@ -414,11 +426,15 @@ class CapabilityIntegrationTests(unittest.TestCase):
         from fastapi import HTTPException
         from app.routes import email_delivery
         from app.services import email_delivery_service as service_module
+        from app.logic.action_outbox import SQLiteActionOutboxStore
 
         sends = []
+        tmp = tempfile.TemporaryDirectory(dir=r"C:\tmp")
+        self.addCleanup(tmp.cleanup)
         service = service_module.EmailDeliveryService(
             key_verifier=lambda candidate: candidate == "valid-key",
             sender=lambda **kwargs: sends.append(kwargs) or "SIMULATE SUCCESS",
+            outbox_store=SQLiteActionOutboxStore(Path(tmp.name) / "workflows.db"),
         )
         request = email_delivery.SendDraftRequest(
             draft={"recipient": OWNER, "subject": "HTTP", "body": "Policy"},

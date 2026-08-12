@@ -36,7 +36,12 @@ from app.logic.workflow_store import (
     WorkflowCapacityError,
 )
 from app.routes import workflows
-from app.services.email_delivery_service import EmailAuthorizationError, EmailDeliveryResult
+from app.services.email_delivery_service import (
+    EmailAuthorizationError,
+    EmailDeliveryResult,
+    EmailDeliveryService,
+    email_payload_fingerprint,
+)
 
 
 OWNER = "owner@example.com"
@@ -47,14 +52,23 @@ class FakeDeliveryService:
     def __init__(self):
         self.calls = []
         self.lock = threading.Lock()
+        self.outbox_store = None
 
     @staticmethod
     def is_authorized(admin_key):
         return admin_key == "valid-key"
 
-    def send_approved_email(self, *, draft, owner, admin_key, request_id, capability_context):
+    def send_approved_email(
+        self, *, draft, owner, admin_key, request_id, capability_context,
+        prepared_outbox_id=None, dispatch_execution_id=None,
+    ):
         if not self.is_authorized(admin_key):
             raise EmailAuthorizationError("invalid")
+        if prepared_outbox_id:
+            if not self.outbox_store.mark_dispatch_started(
+                prepared_outbox_id, owner, dispatch_execution_id,
+            ):
+                raise RuntimeError("fake_dispatch_claim_lost")
         with self.lock:
             self.calls.append(request_id)
         return EmailDeliveryResult(
@@ -62,6 +76,10 @@ class FakeDeliveryService:
             status="SIMULATE SUCCESS",
             request_id=request_id,
             mode="simulated",
+            outcome="succeeded",
+            outbox_id=prepared_outbox_id,
+            dispatch_execution_id=dispatch_execution_id,
+            receipt_reference="simulated",
         )
 
 
@@ -243,6 +261,86 @@ class WorkflowStoreTests(unittest.TestCase):
             "execution-a",
         ))
 
+    def test_external_action_claim_and_result_are_atomic_with_outbox(self):
+        plan = make_plan()
+        store = self.backend()
+        record = serialize_workflow_for_persistence(plan)
+        store.create(record)
+        store.claim(plan.workflow_id, OWNER, "pause-execution")
+        store.pause_for_approval(
+            plan.workflow_id, OWNER, "deliver", "pause-execution",
+            record | {"approval_state": "required"},
+        )
+        store.claim(plan.workflow_id, OWNER, "execution-a")
+        store.approve(plan.workflow_id, OWNER, "execution-a")
+
+        outbox = store.claim_external_action_with_outbox(
+            plan.workflow_id,
+            OWNER,
+            "deliver",
+            "execution-a",
+            idempotency_key=f"workflow:{plan.workflow_id}:deliver",
+            payload_fingerprint=email_payload_fingerprint(plan.active_draft),
+        )
+        self.assertIsNotNone(outbox)
+        with closing(sqlite3.connect(self.db_file)) as db:
+            action_state = db.execute(
+                "SELECT state FROM workflow_actions WHERE workflow_id=? AND action_id='deliver'",
+                (plan.workflow_id,),
+            ).fetchone()[0]
+            durable_outbox = db.execute(
+                "SELECT state,workflow_action_id FROM external_action_outbox WHERE workflow_id=?",
+                (plan.workflow_id,),
+            ).fetchone()
+        self.assertEqual(action_state, "running")
+        self.assertEqual(durable_outbox, ("claimed", "deliver"))
+
+        self.assertTrue(store.action_outbox.mark_dispatch_started(
+            outbox["outbox_id"], OWNER, "execution-a",
+        ))
+        self.assertTrue(store.finish_external_action_with_outbox(
+            plan.workflow_id,
+            OWNER,
+            "deliver",
+            "execution-a",
+            outbox_id=outbox["outbox_id"],
+            dispatch_execution_id="execution-a",
+            state=COMPLETED_ACTION,
+            output={"kind": "delivery_receipt", "value": {"success": True}},
+            receipt_reference="simulated",
+        ))
+        snapshot = store.get(plan.workflow_id, OWNER)
+        self.assertEqual(snapshot["actions"][0]["state"], COMPLETED_ACTION)
+        self.assertEqual(store.action_outbox.get(outbox["outbox_id"], OWNER)["state"], "succeeded")
+
+    def test_real_workflow_delivery_converges_without_legacy_receipt(self):
+        store = self.backend()
+        calls = []
+        delivery = EmailDeliveryService(
+            key_verifier=lambda key: key == "valid-key",
+            sender=lambda **kwargs: calls.append(kwargs) or "SIMULATE SUCCESS",
+            outbox_store=store.action_outbox,
+        )
+        facade = self.facade(store)
+        paused = WorkflowExecutor(pending_store=facade, delivery_service=delivery).execute(make_plan())
+        self.assertTrue(paused.paused)
+
+        restored = facade.peek(OWNER)
+        with patch("app.services.email_delivery_service._existing_delivery", return_value=None):
+            result = WorkflowExecutor(
+                pending_store=facade, delivery_service=delivery,
+            ).execute(restored, admin_key="valid-key")
+        self.assertEqual(result.message, "Email simulated successfully.")
+        self.assertEqual(len(calls), 1)
+        with closing(sqlite3.connect(self.db_file)) as db:
+            states = db.execute(
+                "SELECT a.state,o.state FROM workflow_actions a JOIN external_action_outbox o "
+                "ON o.workflow_id=a.workflow_id AND o.workflow_action_id=a.action_id "
+                "WHERE a.workflow_id=?",
+                (restored.workflow_id,),
+            ).fetchone()
+        self.assertEqual(states, (COMPLETED_ACTION, "succeeded"))
+
     def test_lost_lease_rejects_stale_completion_and_marks_safe_action_interrupted(self):
         action = WorkflowAction(
             id="search",
@@ -282,7 +380,18 @@ class WorkflowStoreTests(unittest.TestCase):
         ))
         self.assertTrue(first.claim(plan.workflow_id, OWNER, "execution-a"))
         self.assertTrue(first.approve(plan.workflow_id, OWNER, "execution-a"))
-        self.assertTrue(first.claim_action(plan.workflow_id, OWNER, "deliver", "execution-a"))
+        outbox = first.claim_external_action_with_outbox(
+            plan.workflow_id,
+            OWNER,
+            "deliver",
+            "execution-a",
+            idempotency_key=f"workflow:{plan.workflow_id}:deliver",
+            payload_fingerprint=email_payload_fingerprint(plan.active_draft),
+        )
+        self.assertIsNotNone(outbox)
+        self.assertTrue(first.action_outbox.mark_dispatch_started(
+            outbox["outbox_id"], OWNER, "execution-a",
+        ))
         self.expire_lease(self.db_file, plan.workflow_id)
 
         restarted = self.backend()
@@ -290,6 +399,47 @@ class WorkflowStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["status"], INTERRUPTED)
         self.assertEqual(snapshot["actions"][0]["state"], UNKNOWN_EXTERNAL_RESULT)
         self.assertFalse(restarted.claim(plan.workflow_id, OWNER, "execution-b"))
+
+    def test_restart_before_dispatch_requires_fresh_authorized_resume(self):
+        plan = make_plan()
+        store = self.backend()
+        record = serialize_workflow_for_persistence(plan)
+        store.create(record)
+        store.claim(plan.workflow_id, OWNER, "pause-execution")
+        store.pause_for_approval(
+            plan.workflow_id, OWNER, "deliver", "pause-execution",
+            record | {"approval_state": "required"},
+        )
+        store.claim(plan.workflow_id, OWNER, "execution-a")
+        store.approve(plan.workflow_id, OWNER, "execution-a")
+        outbox = store.claim_external_action_with_outbox(
+            plan.workflow_id,
+            OWNER,
+            "deliver",
+            "execution-a",
+            idempotency_key=f"workflow:{plan.workflow_id}:deliver",
+            payload_fingerprint=email_payload_fingerprint(plan.active_draft),
+        )
+        with closing(sqlite3.connect(self.db_file)) as db:
+            expired = time.time() - 1
+            db.execute(
+                "UPDATE workflow_runs SET lease_expires_at=? WHERE workflow_id=?",
+                (expired, plan.workflow_id),
+            )
+            db.execute(
+                "UPDATE external_action_outbox SET lease_expires_at=? WHERE outbox_id=?",
+                (expired, outbox["outbox_id"]),
+            )
+            db.commit()
+
+        snapshot = self.backend().get(plan.workflow_id, OWNER)
+        self.assertEqual(snapshot["status"], "paused")
+        self.assertEqual(snapshot["approval_state"], "required")
+        self.assertEqual(snapshot["actions"][0]["state"], "paused")
+        self.assertEqual(
+            store.action_outbox.get(outbox["outbox_id"], OWNER)["state"],
+            "prepared",
+        )
 
     def test_approval_survives_restart_and_delivery_executes_once(self):
         delivery = FakeDeliveryService()

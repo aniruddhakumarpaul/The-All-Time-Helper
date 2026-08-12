@@ -12,6 +12,8 @@ from app.logic.capability_policy import (
 from app.security import get_current_user
 from app.services.email_delivery_service import (
     EmailAuthorizationError,
+    EmailDeliveryUnavailable,
+    EmailIdempotencyConflict,
     EmailValidationError,
     email_delivery_service,
 )
@@ -50,6 +52,10 @@ def send_approved_email_draft(
         raise HTTPException(status_code=403, detail="Invalid admin key") from exc
     except EmailValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except EmailIdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except EmailDeliveryUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "success": result.success,
         "status": result.status,
