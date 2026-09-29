@@ -31,6 +31,7 @@ class CapabilityCategory(str, Enum):
     MEMORY = "memory"
     ATTACHMENT = "attachment"
     EMAIL = "email"
+    MCP = "mcp"
 
 
 class CapabilityEffect(str, Enum):
@@ -446,6 +447,9 @@ def _build_registry() -> CapabilityRegistry:
         CapabilitySpec("email.draft.update", CapabilityCategory.EMAIL, CapabilityEffect.READ_ONLY, CapabilityRisk.LOW, ApprovalRequirement.NONE, False, _sources(CapabilitySource.WORKFLOW), accesses_user_data=True),
         CapabilitySpec("email.attachment.add", CapabilityCategory.EMAIL, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, False, _sources(CapabilitySource.WORKFLOW), accesses_user_data=True),
         CapabilitySpec("email.deliver", CapabilityCategory.EMAIL, CapabilityEffect.EXTERNAL_MUTATION, CapabilityRisk.HIGH, ApprovalRequirement.REQUEST_SCOPED_AUTHORIZATION, True, _sources(CapabilitySource.WORKFLOW, CapabilitySource.HTTP), network_access=True, accesses_user_data=True, idempotent=True, timeout_seconds=120),
+        CapabilitySpec("mcp.read", CapabilityCategory.MCP, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
+        CapabilitySpec("mcp.external_mutation", CapabilityCategory.MCP, CapabilityEffect.EXTERNAL_MUTATION, CapabilityRisk.HIGH, ApprovalRequirement.FORBIDDEN, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
+        CapabilitySpec("mcp.resource.read", CapabilityCategory.MCP, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
     )
     for spec in specs:
         registry.register(spec)

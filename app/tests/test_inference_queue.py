@@ -3,7 +3,7 @@ import threading
 import time
 import unittest
 
-from app.inference_queue import InferenceQueue
+from app.inference_queue import InferenceQueue, current_queue_lane
 
 
 class InferenceQueueReliabilityTests(unittest.IsolatedAsyncioTestCase):
@@ -115,6 +115,48 @@ class InferenceQueueReliabilityTests(unittest.IsolatedAsyncioTestCase):
             await self.queue.submit("bad-timeout", lambda: "bad", threading.Event(), timeout=0)
         await self.queue.shutdown()
         await self.queue.shutdown()
+
+    async def test_worker_bridge_uses_tool_lane_and_avoids_nested_queue_work(self):
+        self.queue = InferenceQueue(max_workers=1, fast_workers=1)
+        await self.queue._ensure_started()
+
+        def bridge_from_worker():
+            return self.queue.run_tool_from_worker(
+                current_queue_lane,
+                job_id="bridge-tool",
+                owner="owner-a",
+                timeout=1,
+                abort_event=threading.Event(),
+            )
+
+        self.assertEqual(await asyncio.to_thread(bridge_from_worker), "tool")
+
+        def nested_bridge():
+            return self.queue.run_tool_from_worker(
+                current_queue_lane,
+                job_id="nested-bridge-tool",
+                owner="owner-a",
+                timeout=1,
+                abort_event=threading.Event(),
+            )
+
+        nested = await self.queue.submit(
+            "outer-tool", nested_bridge, threading.Event(), owner="owner-a", lane="tool", timeout=1
+        )
+        self.assertEqual(nested, "tool")
+
+    async def test_worker_bridge_fails_closed_when_queue_is_not_running(self):
+        queue = InferenceQueue()
+        called = []
+        with self.assertRaisesRegex(RuntimeError, "tool_lane_unavailable"):
+            queue.run_tool_from_worker(
+                lambda: called.append(True),
+                job_id="missing-queue",
+                owner="owner-a",
+                timeout=1,
+                abort_event=threading.Event(),
+            )
+        self.assertEqual(called, [])
 
 
 if __name__ == "__main__":

@@ -528,8 +528,17 @@ def global_step_callback(step):
 def _build_agents(llm, use_tools=True, sys_config=None):
     """Internal factory to create agents with an LLM instance. Omit tools if model doesn't support them."""
     
+    mcp_tools = []
+    if use_tools:
+        try:
+            from app.logic.mcp_gateway import current_mcp_request_prompt, mcp_gateway
+
+            mcp_tools = mcp_gateway.agent_tools(current_mcp_request_prompt())
+        except Exception as exc:
+            logger.warning("[McpTrace] operation=agent_tool_exposure outcome=failed category=%s", type(exc).__name__)
+
     # Tool assignment based on capability
-    dev_tools = [tools.search_tool, tools.recall_memory, tools.archive_insight] if use_tools else []
+    dev_tools = [tools.search_tool, tools.recall_memory, tools.archive_insight, *mcp_tools] if use_tools else []
     sec_tools = [tools.build_email_draft_tool] if use_tools else []
     visual_tools = [tools.image_search_tool, tools.image_generate_tool] if use_tools else []
     mem_tools = [tools.recall_memory, tools.archive_insight] if use_tools else []
@@ -632,7 +641,7 @@ def _build_agents(llm, use_tools=True, sys_config=None):
             "You coordinate The All Time Helper's specialists. You value accuracy, privacy, momentum, and honest tool state. "
             "You distinguish a prepared draft from an approved external action and keep the user informed without narrating internal machinery."
         ),
-        tools=mem_tools + visual_tools + sec_tools,
+        tools=mem_tools + visual_tools + sec_tools + mcp_tools,
         llm=llm,
         verbose=True,
         allow_delegation=True,
@@ -1450,17 +1459,20 @@ def _execute_cloud(intent, context_data, target_model, sys_config, history, stat
         abort_context=active_abort_event,
         logger=logger,
     )
-    return execute_cloud(
-        intent,
-        context_data,
-        target_model,
-        sys_config,
-        history,
-        runtime=runtime,
-        status_callback=status_callback,
-        chunk_callback=chunk_callback,
-        abort_event=abort_event,
-    )
+    from app.logic.mcp_gateway import mcp_request_scope
+
+    with mcp_request_scope(context_data.get("final_prompt", "")):
+        return execute_cloud(
+            intent,
+            context_data,
+            target_model,
+            sys_config,
+            history,
+            runtime=runtime,
+            status_callback=status_callback,
+            chunk_callback=chunk_callback,
+            abort_event=abort_event,
+        )
 
 
 def _execute_local(intent, context_data, target_model, sys_config, history, status_callback=None, chunk_callback=None, abort_event=None, allow_cloud_fallback=True):
@@ -1476,18 +1488,21 @@ def _execute_local(intent, context_data, target_model, sys_config, history, stat
         logger=logger,
         ollama_url=OLLAMA_URL,
     )
-    return execute_local(
-        intent,
-        context_data,
-        target_model,
-        sys_config,
-        history,
-        runtime=runtime,
-        status_callback=status_callback,
-        chunk_callback=chunk_callback,
-        abort_event=abort_event,
-        allow_cloud_fallback=allow_cloud_fallback,
-    )
+    from app.logic.mcp_gateway import mcp_request_scope
+
+    with mcp_request_scope(context_data.get("final_prompt", "")):
+        return execute_local(
+            intent,
+            context_data,
+            target_model,
+            sys_config,
+            history,
+            runtime=runtime,
+            status_callback=status_callback,
+            chunk_callback=chunk_callback,
+            abort_event=abort_event,
+            allow_cloud_fallback=allow_cloud_fallback,
+        )
 
 
 def _extract_image_prompt(user_prompt: str, history: list) -> str:

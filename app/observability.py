@@ -172,6 +172,9 @@ def initialize_observability(*, span_exporter: Any = None, metric_reader: Any = 
                 "helper.external_action.prepared": meter.create_counter("helper.external_action.prepared"),
                 "helper.external_action.dispatches": meter.create_counter("helper.external_action.dispatches"),
                 "helper.external_action.unknown_results": meter.create_counter("helper.external_action.unknown_results"),
+                "helper.mcp.calls": meter.create_counter("helper.mcp.calls"),
+                "helper.mcp.failures": meter.create_counter("helper.mcp.failures"),
+                "helper.mcp.operation.duration": meter.create_histogram("helper.mcp.operation.duration", unit="s"),
             }
             meter.create_observable_gauge(
                 "helper.inference.queue.depth",

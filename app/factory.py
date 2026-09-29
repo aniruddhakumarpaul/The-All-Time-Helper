@@ -50,6 +50,10 @@ def append_cors_origin(app: FastAPI, public_url: str) -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_observability()
+    from app.logic.mcp_gateway import mcp_gateway
+
+    mcp_gateway.startup_validate()
+    app.state.mcp_gateway = mcp_gateway
     try:
         from app.diagnostics import run_startup_diagnostics
         from app.logic.memory import prune_stale_memories
@@ -66,6 +70,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await mcp_gateway.shutdown(timeout_seconds=1.0)
         shutdown_observability()
 
 

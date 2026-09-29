@@ -110,6 +110,9 @@ async def admin_status(current_user: str = Depends(get_current_user), db: sqlite
     )
     ollama = await _ollama_status()
     memory = _memory_status()
+    from app.logic.mcp_gateway import mcp_gateway
+
+    mcp = mcp_gateway.diagnostics()
     queue = _queue_status(current_user)
     public_link_enabled, public_link_active = _public_link_active()
     db_available = Path(DB_FILE).exists()
@@ -187,6 +190,12 @@ async def admin_status(current_user: str = Depends(get_current_user), db: sqlite
                 "mode": "live" if email_mode == "LIVE" else "simulate",
                 "configured": smtp_ready,
             },
+        ),
+        _component(
+            "MCP capabilities",
+            "ok" if mcp["healthy_servers"] else "warn" if mcp["configured_servers"] else "off",
+            "Approved read tools available" if mcp["healthy_servers"] else "Optional MCP servers are not connected" if mcp["configured_servers"] else "Disabled",
+            mcp,
         ),
     ]
 

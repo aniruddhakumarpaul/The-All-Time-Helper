@@ -11,6 +11,7 @@ Features:
 """
 import asyncio
 import contextvars
+import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass, field
@@ -20,6 +21,14 @@ from app.observability import record_histogram, start_span
 
 
 DEFAULT_INFERENCE_TIMEOUT = 180.0
+_CURRENT_QUEUE_LANE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_inference_queue_lane",
+    default=None,
+)
+
+
+def current_queue_lane() -> str | None:
+    return _CURRENT_QUEUE_LANE.get()
 
 @dataclass
 class InferenceJob:
@@ -65,6 +74,7 @@ class InferenceQueue:
         self._started = False
         self._start_lock: Optional[asyncio.Lock] = None
         self._active_jobs: dict[str, InferenceJob] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def _ensure_started(self):
         """Lazily initialize both execution lanes on first use."""
@@ -77,6 +87,7 @@ class InferenceQueue:
                 return
             self._queue = asyncio.Queue(maxsize=self._max_queue_depth)
             self._fast_queue = asyncio.Queue(maxsize=self._max_fast_queue_depth)
+            self._loop = asyncio.get_running_loop()
             for i in range(self._max_workers):
                 task = asyncio.create_task(
                     self._worker(f"inference-worker-{i}", self._queue),
@@ -283,7 +294,14 @@ class InferenceQueue:
         
         ctx = contextvars.copy_context()
         def context_wrapper():
-            return ctx.run(fn)
+            def invoke_with_lane():
+                token = _CURRENT_QUEUE_LANE.set(lane)
+                try:
+                    return fn()
+                finally:
+                    _CURRENT_QUEUE_LANE.reset(token)
+
+            return ctx.run(invoke_with_lane)
         
         job = InferenceJob(
             id=job_id,
@@ -318,6 +336,50 @@ class InferenceQueue:
             max_depth,
         )
         return await future
+
+    def run_tool_from_worker(
+        self,
+        fn: Callable,
+        *,
+        job_id: str,
+        owner: str,
+        timeout: float,
+        abort_event: threading.Event,
+        cancel_event: threading.Event | None = None,
+    ) -> Any:
+        """Synchronously bridge CrewAI callbacks into the existing async tool lane."""
+        if current_queue_lane() == "tool":
+            return fn()
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("tool_lane_unavailable")
+
+        async def submit_tool_job():
+            return await self.submit(
+                job_id,
+                fn,
+                abort_event,
+                timeout=timeout,
+                owner=owner,
+                lane="tool",
+            )
+
+        future = asyncio.run_coroutine_threadsafe(submit_tool_job(), loop)
+        deadline = time.monotonic() + timeout + 1.0
+        while True:
+            if abort_event.is_set() or (cancel_event is not None and cancel_event.is_set()):
+                abort_event.set()
+                future.cancel()
+                raise RuntimeError("tool_dispatch_cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                abort_event.set()
+                future.cancel()
+                raise TimeoutError("tool_dispatch_timeout")
+            try:
+                return future.result(timeout=min(0.1, remaining))
+            except concurrent.futures.TimeoutError:
+                continue
 
     def cancel(self, job_id: str, owner: str) -> bool:
         """Cancel a queued or active job only when it belongs to the caller."""
@@ -357,6 +419,7 @@ class InferenceQueue:
         self._queue = None
         self._fast_queue = None
         self._start_lock = None
+        self._loop = None
         self._started = False
 
 

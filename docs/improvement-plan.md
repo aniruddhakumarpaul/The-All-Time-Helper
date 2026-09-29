@@ -102,3 +102,10 @@
 - Replaced email's process-local lock and legacy receipt writes as authority. Historical `email_send_log` success remains read-only compatibility evidence, while HTTP and workflow delivery share the outbox and preserve capability policy plus request-scoped Admin Key verification.
 - Added deterministic concurrency, schema-startup, duplicate/conflict, crash-window, stale-worker, workflow consistency, legacy receipt, cancellation, capacity, and payload/credential privacy tests without invoking real SMTP.
 - Explicitly deferred background dispatch/retry, provider reconciliation, MCP, automations, webhooks, calendar/Slack mutations, and multi-host coordination. SQLite coordination remains single-host, and SMTP ambiguity may require manual reconciliation.
+
+## Completed In Phase 5: MCP Capability Gateway
+
+- Added a frozen approved-server registry with four GitHub read aliases and a capability policy that permits owner-scoped reads while forbidding generic external mutations.
+- Added bounded, lazy SDK v2 discovery and tool calls, schema/argument/result validation, auth-scope discovery cache, SSRF checks, server circuit state, cancellation, and sanitized admin readiness.
+- Kept CrewAI's MCP 1.x dependency intact by installing official MCP SDK 2.2.0 into an isolated `.runtime/mcp-sdk` target and invoking it through a fixed app-owned subprocess protocol. `scripts/setup_mcp_runtime.ps1` installs the optional runtime; no remote server is contacted at startup.
+- Added fake-server policy, privacy, cache, circuit, size, argument-injection, and SDK v2 stdio integration tests. Interactive OAuth, generic writes, resources/prompts/subscriptions, Tasks, and remote-account verification remain deferred.

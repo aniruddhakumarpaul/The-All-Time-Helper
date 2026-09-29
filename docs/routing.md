@@ -22,6 +22,7 @@ Routing is designed to prefer the smallest reliable execution path.
 - The browser omits the just-submitted message from `history`, and backend message builders also remove one matching current turn for older clients.
 - Every decorated tool emits low-cardinality `ToolTrace` outcome and duration telemetry without logging tool arguments.
 - Proven model-free image generation, visual continuation, explicit web/image search, and typed known compound email workflows use the bounded tool lane, so they do not wait behind serialized GPU inference. Unclassified email, attached-image analysis, persona, capability-discussion, and ambiguous requests stay on the inference lane. A compound workflow executes inside one lane job and never submits nested queue work.
+- Read-only MCP tools are discovered only when a configured server's local exposure terms match the request (currently GitHub/repository/code/commit wording). CrewAI receives only discovered tools with exact version-controlled aliases; each invocation revalidates `mcp.read` and dispatches through the existing tool lane. Missing SDK/server availability removes the optional tools without failing the chat.
 
 ## Important Rules
 - Deterministic image-to-email workflows are planned before cloud/local selection, so Helper Auto, explicit cloud, and local routes preserve the same intent, action ordering, approval boundary, draft contract, and attachment behavior.
@@ -43,6 +44,7 @@ Routing is designed to prefer the smallest reliable execution path.
 - A CrewAI draft fast-exit is valid only when draft construction is the final node. Compound workflows call pure draft/update functions after required search or generation dependencies finish.
 - Direct and agentic routes share `response_policy.py`. Response shape may be `adaptive`, `concise`, `deep`, or `creative`; English-only, supplied-context personalization, and exact one-word constraints are layered on top.
 - The assistant must never claim an external action or tool result succeeded without confirmation. Missing information should trigger one focused question only when it materially changes the result.
+- MCP server IDs and endpoints are selected only from application configuration. Remote tool names, descriptions, annotations, schemas, and instructions cannot create permissions; only exact local read bindings are callable. Generic writes, remote prompts/resources/subscriptions, and MCP Tasks are not routed.
 ## Product Boundary
 - `static/js/api.js` converts HTTP failures, FastAPI `detail` payloads, malformed JSON, and network failures into one frontend error shape. Active controls should not parse transport errors independently unless they stream.
 - Invalid uploads and missing/cross-owner task cancellations return real `4xx` responses. Unexpected sync, memory, and chat-start failures return generic `5xx` responses while detailed exceptions remain server-side.
