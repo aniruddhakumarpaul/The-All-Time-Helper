@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import math
 import os
-import socket
 import threading
 import time
 import sys
@@ -18,7 +16,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Mapping, Protocol
-from urllib.parse import urlsplit
 
 from app.logger import logger
 from app.logic.capability_policy import (
@@ -34,6 +31,11 @@ from app.logic.mcp_registry import (
     McpRegistry,
     McpServerSpec,
     McpToolBinding,
+)
+from app.logic.mcp_network import (
+    McpDestinationError,
+    McpResolutionError,
+    validate_mcp_endpoint,
 )
 from app.observability import increment_counter, record_histogram, start_span
 
@@ -400,41 +402,15 @@ class McpGateway:
     @staticmethod
     def _validate_endpoint(endpoint: str, server: McpServerSpec, *, resolve: bool) -> None:
         try:
-            parsed = urlsplit(endpoint)
-            hostname = parsed.hostname
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        except ValueError as exc:
-            raise McpGatewayError("server_not_configured") from exc
-        if (
-            not hostname or parsed.username or parsed.password or parsed.fragment or parsed.query
-            or parsed.scheme not in ({"https", "http"} if server.allow_loopback_http else {"https"})
-        ):
-            raise McpGatewayError("server_not_configured")
-        is_loopback_name = hostname.lower() == "localhost"
-        try:
-            host_ip = ipaddress.ip_address(hostname)
-            is_loopback_name = host_ip.is_loopback
-            if not host_ip.is_global and not (server.allow_loopback_http and host_ip.is_loopback):
-                raise McpGatewayError("server_not_configured")
-        except ValueError:
-            if is_loopback_name and not server.allow_loopback_http:
-                raise McpGatewayError("server_not_configured")
-        if parsed.scheme == "http" and not (server.allow_loopback_http and is_loopback_name):
-            raise McpGatewayError("server_not_configured")
-        if resolve:
-            try:
-                addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
-            except OSError as exc:
-                raise McpGatewayError("server_unavailable") from exc
-            if not addresses:
-                raise McpGatewayError("server_unavailable")
-            for address in addresses:
-                ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
-                if server.allow_loopback_http and is_loopback_name:
-                    if not ip.is_loopback:
-                        raise McpGatewayError("server_not_configured")
-                elif not ip.is_global:
-                    raise McpGatewayError("server_not_configured")
+            validate_mcp_endpoint(
+                endpoint,
+                allow_loopback=server.allow_loopback_http,
+                resolve=resolve,
+            )
+        except McpResolutionError:
+            raise McpGatewayError("server_unavailable") from None
+        except (McpDestinationError, ValueError):
+            raise McpGatewayError("server_not_configured") from None
 
     async def _sdk_request(
         self,

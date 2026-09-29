@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import http
 import json
-import ipaddress
 import os
 import sys
 from typing import Any
-from urllib.parse import urlsplit
+
+from app.logic.mcp_network import PinnedMcpNetworkBackend, validate_mcp_endpoint
 
 
 MAX_TOOLS = 64
@@ -23,7 +23,13 @@ def _dump(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def _bounded_http_transport(httpx2: Any) -> Any:
+def _bounded_http_transport(httpx2: Any, endpoint: str, allow_loopback_http: bool) -> Any:
+    hostname, port, _ = validate_mcp_endpoint(
+        endpoint,
+        allow_loopback=allow_loopback_http,
+        resolve=False,
+    )
+
     class LimitedStream(httpx2.AsyncByteStream):
         def __init__(self, inner: Any) -> None:
             self._inner = inner
@@ -43,8 +49,19 @@ def _bounded_http_transport(httpx2: Any) -> Any:
     class LimitedTransport(httpx2.AsyncBaseTransport):
         def __init__(self) -> None:
             self._inner = httpx2.AsyncHTTPTransport(
+                verify=True,
                 trust_env=False,
                 limits=httpx2.Limits(max_connections=2, max_keepalive_connections=1),
+            )
+            pool = getattr(self._inner, "_pool", None)
+            network_backend = getattr(pool, "_network_backend", None)
+            if network_backend is None:
+                raise RuntimeError("mcp_transport_pin_unavailable")
+            pool._network_backend = PinnedMcpNetworkBackend(
+                network_backend,
+                hostname=hostname,
+                port=port,
+                allow_loopback=allow_loopback_http,
             )
 
         async def handle_async_request(self, request: Any) -> Any:
@@ -116,19 +133,9 @@ async def _request(payload: dict[str, Any]) -> dict[str, Any]:
     if transport == "http":
         endpoint = payload.get("endpoint")
         allow_loopback_http = payload.get("allow_loopback_http") is True
-        try:
-            parsed = urlsplit(endpoint) if isinstance(endpoint, str) else None
-            is_loopback = bool(parsed and parsed.hostname and (
-                parsed.hostname.lower() == "localhost" or ipaddress.ip_address(parsed.hostname).is_loopback
-            ))
-        except ValueError:
-            is_loopback = False
-        if (
-            not isinstance(endpoint, str)
-            or (not endpoint.startswith("https://") and not (allow_loopback_http and endpoint.startswith("http://") and is_loopback))
-            or (parsed and (parsed.username or parsed.password or parsed.query or parsed.fragment))
-        ):
+        if not isinstance(endpoint, str):
             raise ValueError("endpoint_invalid")
+        validate_mcp_endpoint(endpoint, allow_loopback=allow_loopback_http, resolve=False)
         import httpx2
         from mcp.client.streamable_http import streamable_http_client
 
@@ -145,7 +152,7 @@ async def _request(payload: dict[str, Any]) -> dict[str, Any]:
             follow_redirects=False,
             trust_env=False,
             limits=httpx2.Limits(max_connections=2, max_keepalive_connections=1),
-            transport=_bounded_http_transport(httpx2),
+            transport=_bounded_http_transport(httpx2, endpoint, allow_loopback_http),
             event_hooks={"response": [check_content_length]},
         )
         async with http_client:

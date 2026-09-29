@@ -1,2 +1,4 @@
 # Isolated from the main app environment because CrewAI currently pins MCP SDK 1.x.
 mcp==2.2.0
+httpx2==2.13.1
+httpcore2==2.13.1
