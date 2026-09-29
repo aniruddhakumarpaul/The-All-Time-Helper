@@ -60,15 +60,34 @@ class BrowserShellTests(unittest.TestCase):
         try:
             cls.browser = cls.playwright.chromium.launch(headless=True)
         except Exception as error:
-            cls._stop_server()
-            cls.playwright.stop()
-            raise AssertionError(f"Chromium is not available: {error}") from error
+            cls.browser = None
+            for executable in cls._system_chromium_candidates():
+                if not executable.exists():
+                    continue
+                try:
+                    cls.browser = cls.playwright.chromium.launch(headless=True, executable_path=str(executable))
+                    break
+                except Exception:
+                    continue
+            if cls.browser is None:
+                cls._stop_server()
+                cls.playwright.stop()
+                raise AssertionError(f"Chromium is not available: {error}") from error
 
     @staticmethod
     def _free_port():
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
             return probe.getsockname()[1]
+
+    @staticmethod
+    def _system_chromium_candidates():
+        return (
+            Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+            Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+        )
 
     @classmethod
     def _stop_server(cls):
@@ -205,6 +224,70 @@ class BrowserShellTests(unittest.TestCase):
             }).then(response => response.json()).then(snapshot => snapshot.status === 'cancelled')""", arg={"token": token, "jobId": job_id}, timeout=10000)
         finally:
             page.close()
+
+    def test_webmcp_site_tools_register_and_reuse_visible_workspace_actions(self):
+        context = self.browser.new_context(viewport={"width": 1280, "height": 900})
+        context.add_init_script("""
+            window.__registeredSiteTools = [];
+            Object.defineProperty(document, 'modelContext', {
+                configurable: true,
+                value: {
+                    registerTool: async (definition, options) => {
+                        window.__registeredSiteTools.push({ definition, hasSignal: Boolean(options?.signal) });
+                    }
+                }
+            });
+        """)
+        page = context.new_page()
+        email = "browser-webmcp@example.com"
+        token = self._test_token(email)
+        try:
+            page.route("https://cdn.jsdelivr.net/**", lambda route: route.abort())
+            page.route("https://cdnjs.cloudflare.com/**", lambda route: route.abort())
+            page.goto(self.base_url + "/", wait_until="commit", timeout=10000)
+            page.wait_for_function("() => window.__helperWebMcpStatus?.registered === true", timeout=10000)
+            self.assertEqual(page.evaluate("() => window.__registeredSiteTools.length"), 7)
+            self.assertTrue(page.evaluate("() => window.__registeredSiteTools.every(item => item.hasSignal)"))
+            denied = page.evaluate("""async () => {
+                const tool = window.__registeredSiteTools.find(item => item.definition.name === 'helper_prepare_prompt').definition;
+                try { await tool.execute({ text: 'should not be prepared' }); return null; }
+                catch (error) { return error.message; }
+            }""")
+            self.assertIn("Sign in", denied)
+
+            page.evaluate("""({ email, token }) => {
+                localStorage.setItem('helper_token_v2', token);
+                localStorage.setItem('helper_user_v2', JSON.stringify({ email, name: 'Browser WebMCP' }));
+                localStorage.setItem('helper_chats_v2_' + email, JSON.stringify([
+                    { id: 'site-tool-chat', title: 'Launch planning', ms: [], updated_at: Date.now() }
+                ]));
+                localStorage.setItem('helper_active_chat_v2', 'site-tool-chat');
+            }""", {"email": email, "token": token})
+            page.reload(wait_until="commit", timeout=10000)
+            page.wait_for_function("() => window.__helperWebMcpStatus?.registered === true", timeout=10000)
+            page.wait_for_function("() => window.chats?.some(chat => chat.id === 'site-tool-chat')", timeout=10000)
+
+            result = page.evaluate("""async () => {
+                const tools = Object.fromEntries(window.__registeredSiteTools.map(item => [item.definition.name, item.definition]));
+                const workspace = await tools.helper_get_workspace_state.execute({});
+                const search = await tools.helper_search_conversations.execute({ query: 'launch', limit: 5 });
+                const fresh = await tools.helper_start_new_conversation.execute({});
+                const opened = await tools.helper_open_conversation.execute({ conversationId: 'site-tool-chat' });
+                const route = await tools.helper_set_assistant_route.execute({ routeId: 'helper-auto' });
+                const theme = await tools.helper_set_theme.execute({ theme: 'dark' });
+                const prompt = await tools.helper_prepare_prompt.execute({ text: 'Review the launch risks', mode: 'replace' });
+                return { workspace, search, fresh, opened, route, theme, prompt };
+            }""")
+            self.assertTrue(result["workspace"]["authenticated"])
+            self.assertEqual(result["search"]["conversations"][0]["id"], "site-tool-chat")
+            self.assertEqual(result["opened"]["activeConversation"]["id"], "site-tool-chat")
+            self.assertEqual(result["route"]["selectedRoute"], "helper-auto")
+            self.assertEqual(result["theme"]["themePreference"], "dark")
+            self.assertFalse(result["prompt"]["sent"])
+            self.assertEqual(page.locator("#prompt").input_value(), "Review the launch risks")
+            self.assertEqual(page.locator("html").get_attribute("data-theme"), "dark")
+        finally:
+            context.close()
 
     @staticmethod
     def _test_token(email):

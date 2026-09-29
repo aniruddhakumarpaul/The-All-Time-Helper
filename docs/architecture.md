@@ -49,6 +49,7 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - `static/js/dialog_manager.js`: top-modal focus trapping, background isolation with `inert`, and invoking-control focus restoration.
 - `static/js/runtime_config.js`: server-rendered UI feature flags; `OUTSIDE_CLICK_DISMISS=false` disables backdrop/outside-click dismissal while preserving Escape and explicit close controls.
 - static/js/bootstrap.js: request-origin setup, centralized expired-session recovery, and ordered supplemental extension loading; active controls are never removed after page load.
+- `static/js/webmcp_tools.js`: feature-detected, page-scoped WebMCP Site Tool registration. It delegates to the authenticated `HelperSiteTools` bridge in `app.js`, exposes bounded workspace/navigation/composer/theme/route actions, and never sends prompts, invokes providers, delivers email, or handles authorization secrets.
 - `static/js/utils.js`: markdown rendering and legacy global helpers.
 - `static/js/motion_enhancements.js`: additive prompt motion, delegated pointer/keyboard feedback, and sign-out fire lifecycle timing. CSS hover starts the sign-out fire independently, while JavaScript only keeps it alive through the return transition.
 - `static/css/premium_motion.css`: additive motion timing, press/release feedback, and reduced-motion handling for the legacy visual shell.
@@ -66,6 +67,7 @@ The All Time Helper is a FastAPI-based agentic assistant with a modular ES6 fron
 - Keep `main_v3.js` archived as rollback only.
 - Use `InferenceQueue` for execution instead of raw thread offload: model work remains serialized on one GPU-safe lane, while strictly classified model-free tools use two bounded workers with the same ownership, timeout, cancellation, and backpressure controls.
 - Keep frontend state in `state.js`, DOM work in `ui.js`, and network calls in `api.js`.
+- Keep WebMCP cooperative and human-in-the-loop: read tools may expose bounded workspace/title metadata, mutation tools may update visible UI state, and prompt preparation must stop before Send. Provider work and protected external actions remain behind their existing application controls.
 - Default new requests to `helper-auto`; resolve to the configured cloud route when credentials exist and to the local multimodal route otherwise.
 - Apply the shared response policy to direct cloud, direct local, and agentic execution so route changes do not change the assistant's honesty or output-quality contract.
 - Treat Think, Research, Create, and Act as human-facing intent lanes. Provider and model IDs remain implementation controls, not the primary product vocabulary.

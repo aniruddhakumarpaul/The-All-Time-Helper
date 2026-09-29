@@ -89,7 +89,7 @@ class FrontendChatSyncTests(unittest.TestCase):
         self.assertIn("api.cancelInferenceJob(previousJobId)", app_js)
         self.assertNotIn("state.activeJobId || readActiveJob(state.activeId)", app_js)
         self.assertIn("window.clearActiveChatJobs = clearActiveJobsForAccount;", app_js)
-        self.assertIn('/static/js/app.js?v=225', template)
+        self.assertIn('/static/js/app.js?v=226', template)
         self.assertIn('placeholder="Ask me anything..."', template)
 
 

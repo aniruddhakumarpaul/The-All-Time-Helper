@@ -66,6 +66,7 @@ window.addEventListener('unhandledrejection', function (event) {
         injectScript('chat_context_reuse', '1', 'chat-context-reuse');
         injectScript('motion_enhancements', '3', 'premium-motion');
         injectScript('composer_context_tray', '10', 'composer-context-tray');
+        injectScript('webmcp_tools', '1', 'webmcp-site-tools');
     }
 
     if (document.readyState === 'loading') {

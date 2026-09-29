@@ -1350,6 +1350,111 @@ function initImageModal() {
         }
     };
 }
+
+const SITE_TOOL_MAX_TITLE_CHARS = 120;
+
+function requireSiteToolAuthentication() {
+    if (!state.user?.email) throw new Error('Sign in before using this workspace action.');
+}
+
+function siteToolTitle(value, fallback = 'New Chat') {
+    const title = String(value || fallback).trim() || fallback;
+    return title.slice(0, SITE_TOOL_MAX_TITLE_CHARS);
+}
+
+function availableSiteToolRoutes() {
+    return Array.from(document.querySelectorAll('#model-menu [data-model-id]')).slice(0, 20).map(option => ({
+        id: String(option.dataset.modelId || ''),
+        name: String(option.dataset.modelName || option.textContent || option.dataset.modelId || '').trim().slice(0, 80),
+        mode: String(option.dataset.modelMode || '').trim().slice(0, 40),
+    })).filter(route => route.id);
+}
+
+function createSiteToolBridge() {
+    return Object.freeze({
+        getWorkspaceState() {
+            const activeChat = state.chats.find(chat => chat?.id === state.activeId);
+            return {
+                authenticated: Boolean(state.user?.email),
+                conversationCount: state.chats.length,
+                activeConversation: activeChat ? {
+                    id: String(activeChat.id),
+                    title: siteToolTitle(activeChat.title),
+                } : null,
+                responseInProgress: Boolean(readActiveJob(state.activeId)?.id || state.abortController),
+                selectedRoute: String(state.selectedModel || 'helper-auto'),
+                availableRoutes: availableSiteToolRoutes(),
+                themePreference: localStorage.getItem('helper_theme_pref') || 'system',
+            };
+        },
+
+        searchConversations(query, requestedLimit = 8) {
+            requireSiteToolAuthentication();
+            const normalizedQuery = String(query || '').trim().slice(0, 120).toLocaleLowerCase();
+            if (!normalizedQuery) throw new Error('A conversation-title search query is required.');
+            const limit = Math.min(10, Math.max(1, Number.parseInt(requestedLimit, 10) || 8));
+            const conversations = state.chats
+                .filter(chat => String(chat?.title || '').toLocaleLowerCase().includes(normalizedQuery))
+                .slice(0, limit)
+                .map(chat => ({
+                    id: String(chat.id),
+                    title: siteToolTitle(chat.title),
+                    updatedAt: Number(chat.updated_at) || null,
+                }));
+            return { query: String(query).trim().slice(0, 120), conversations };
+        },
+
+        openConversation(conversationId) {
+            requireSiteToolAuthentication();
+            const id = String(conversationId || '').trim().slice(0, 128);
+            const chat = state.chats.find(item => String(item?.id) === id);
+            if (!chat) throw new Error('That conversation is not available in this workspace.');
+            loadChat(chat.id);
+            return { activeConversation: { id: String(chat.id), title: siteToolTitle(chat.title) } };
+        },
+
+        startNewConversation() {
+            requireSiteToolAuthentication();
+            startNewChat();
+            return { activeConversation: { id: String(state.activeId), title: 'New Chat' } };
+        },
+
+        preparePrompt(text, mode = 'replace') {
+            requireSiteToolAuthentication();
+            const prompt = document.getElementById('prompt');
+            if (!prompt) throw new Error('The prompt composer is unavailable.');
+            const nextText = String(text || '');
+            if (!nextText.trim()) throw new Error('Prompt text is required.');
+            if (nextText.length > MAX_CONTEXT_CHARS) throw new Error('Prompt text exceeds the 6000 character preparation limit.');
+            const normalizedMode = mode === 'append' ? 'append' : 'replace';
+            const combined = normalizedMode === 'append' && prompt.value
+                ? `${prompt.value}\n${nextText}`
+                : nextText;
+            if (combined.length > MAX_CONTEXT_CHARS) throw new Error('The prepared prompt would exceed the 6000 character limit.');
+            prompt.value = combined;
+            prompt.dispatchEvent(new Event('input', { bubbles: true }));
+            prompt.focus({ preventScroll: true });
+            return { prepared: true, sent: false, mode: normalizedMode, characterCount: combined.length };
+        },
+
+        setTheme(choice) {
+            const theme = String(choice || '').trim();
+            if (!['light', 'dark', 'system'].includes(theme)) throw new Error('Theme must be light, dark, or system.');
+            window.applyThemeChoice(theme);
+            return { themePreference: theme, resolvedTheme: document.documentElement.getAttribute('data-theme') || theme };
+        },
+
+        setAssistantRoute(routeId) {
+            requireSiteToolAuthentication();
+            const id = String(routeId || '').trim().slice(0, 120);
+            const option = document.querySelector(`#model-menu [data-model-id="${CSS.escape(id)}"]`);
+            if (!option) throw new Error('That assistant route is not available in this workspace.');
+            ui.selModel(id, option.dataset.modelName || option.textContent || id);
+            return { selectedRoute: id, name: String(option.dataset.modelName || option.textContent || id).trim().slice(0, 80) };
+        },
+    });
+}
+
 function installWindowBridge() {
     window.handleComposerFileDrop = handleComposerFileDrop;
     window.handleAuth = handleAuth;
@@ -1388,8 +1493,10 @@ function installWindowBridge() {
     window.renderHist = ui.renderHist;
     window.requestChatPersist = requestChatPersist;
     window.deleteSelectedChat = deleteSelectedChat;
+    window.HelperSiteTools = createSiteToolBridge();
     syncWindowState();
     window.__helperAppBridgeReady = true;
+    window.dispatchEvent(new CustomEvent('helper:app-bridge-ready'));
 }
 
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {

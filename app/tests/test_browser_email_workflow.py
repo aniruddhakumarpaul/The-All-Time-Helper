@@ -19,8 +19,24 @@ class BrowserEmailWorkflowTests(unittest.TestCase):
         try:
             self.browser = self.playwright.chromium.launch(headless=True)
         except Exception as error:
-            self.playwright.stop()
-            raise AssertionError(f"Chromium is not available: {error}") from error
+            self.browser = None
+            candidates = (
+                Path("C:/Program Files/Google/Chrome/Application/chrome.exe"),
+                Path("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe"),
+                Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
+                Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
+            )
+            for executable in candidates:
+                if not executable.exists():
+                    continue
+                try:
+                    self.browser = self.playwright.chromium.launch(headless=True, executable_path=str(executable))
+                    break
+                except Exception:
+                    continue
+            if self.browser is None:
+                self.playwright.stop()
+                raise AssertionError(f"Chromium is not available: {error}") from error
         self.page = self.browser.new_page()
         self.page.set_content("""
             <!doctype html>
