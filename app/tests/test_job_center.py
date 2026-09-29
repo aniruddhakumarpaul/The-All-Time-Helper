@@ -9,7 +9,10 @@ class JobCenterTests(unittest.TestCase):
     def test_jobs_route_registered_in_factory(self):
         root = Path(__file__).resolve().parents[2]
         factory = (root / "app" / "factory.py").read_text(encoding="utf-8")
-        self.assertIn("from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy", factory)
+        self.assertIn(
+            "from app.routes import admin, approvals, auth, chat, email_delivery, health, jobs, proxy, usage, workflows",
+            factory,
+        )
         self.assertIn("app.include_router(jobs.router)", factory)
 
     def test_job_center_frontend_loader_registered(self):

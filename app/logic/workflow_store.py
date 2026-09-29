@@ -33,6 +33,11 @@ from app.logic.action_outbox import (
     initialize_action_outbox_schema,
     pseudonymous_owner_scope,
 )
+from app.logic.human_approval import (
+    PENDING as HUMAN_PENDING,
+    ApprovalManifest,
+    SQLiteHumanApprovalStore,
+)
 
 
 WORKFLOW_SCHEMA_VERSION = 1
@@ -117,6 +122,7 @@ class WorkflowStore(Protocol):
     def finish_action(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> bool: ...
     def finish_external_action_with_outbox(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> bool: ...
     def pause_for_approval(self, workflow_id: str, owner: str, action_id: str, execution_id: str, record: dict[str, Any]) -> bool: ...
+    def pause_for_human_approval(self, workflow_id: str, owner: str, action_id: str, execution_id: str, **kwargs: Any) -> dict[str, Any] | None: ...
     def approve(self, workflow_id: str, owner: str, execution_id: str) -> bool: ...
     def request_cancel(self, workflow_id: str, owner: str) -> bool: ...
     def finish_workflow(self, workflow_id: str, owner: str, execution_id: str, *, status: str) -> bool: ...
@@ -169,6 +175,7 @@ class SQLiteWorkflowStore:
         self.max_storage_bytes = max(4096, int(max_storage_bytes))
         self._init_schema()
         self.action_outbox = SQLiteActionOutboxStore(self.db_file)
+        self.human_approvals = SQLiteHumanApprovalStore(self.db_file)
 
     def _connect(self) -> sqlite3.Connection:
         for attempt in range(5):
@@ -426,6 +433,16 @@ class SQLiteWorkflowStore:
         current = time.time() if now is None else now
         changed = self._recover_interrupted_locked(db, current)
 
+        expiring = db.execute(
+            "SELECT workflow_id,owner FROM workflow_runs WHERE status IN (?,?,?,?,?) "
+            "AND expires_at<=? AND (execution_id IS NULL OR lease_expires_at<=?)",
+            (PLANNED, PAUSED, COMPLETED, FAILED, CANCELLED, current, current),
+        ).fetchall()
+        for row in expiring:
+            self.human_approvals.cancel_for_workflow_locked(
+                db, owner=row["owner"], workflow_id=row["workflow_id"], now=current,
+            )
+
         expired = db.execute(
             "DELETE FROM workflow_runs WHERE status IN (?,?,?,?) AND expires_at<=? "
             "AND (execution_id IS NULL OR lease_expires_at<=?)",
@@ -439,6 +456,13 @@ class SQLiteWorkflowStore:
             (COMPLETED, FAILED, CANCELLED, INTERRUPTED, current),
         ).fetchall()
         for row in terminal_rows[self.max_retained_runs :]:
+            owner_row = db.execute(
+                "SELECT owner FROM workflow_runs WHERE workflow_id=?", (row["workflow_id"],)
+            ).fetchone()
+            if owner_row:
+                self.human_approvals.cancel_for_workflow_locked(
+                    db, owner=owner_row["owner"], workflow_id=row["workflow_id"], now=current,
+                )
             changed += db.execute("DELETE FROM workflow_runs WHERE workflow_id=?", (row["workflow_id"],)).rowcount
 
         while self._logical_usage_locked(db) > self.max_storage_bytes:
@@ -448,6 +472,13 @@ class SQLiteWorkflowStore:
                 (COMPLETED, FAILED, CANCELLED, INTERRUPTED),
             ).fetchone()
             if victim:
+                owner_row = db.execute(
+                    "SELECT owner FROM workflow_runs WHERE workflow_id=?", (victim["workflow_id"],)
+                ).fetchone()
+                if owner_row:
+                    self.human_approvals.cancel_for_workflow_locked(
+                        db, owner=owner_row["owner"], workflow_id=victim["workflow_id"], now=current,
+                    )
                 changed += db.execute("DELETE FROM workflow_runs WHERE workflow_id=?", (victim["workflow_id"],)).rowcount
                 continue
             event = db.execute(
@@ -554,7 +585,7 @@ class SQLiteWorkflowStore:
             "intent": row["intent"],
             "status": row["status"],
             "approval_state": row["approval_state"],
-            "approval_required": row["approval_state"] == "required",
+            "approval_required": row["approval_state"] in {"required", "human_required"},
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "expires_at": row["expires_at"],
@@ -1263,6 +1294,86 @@ class SQLiteWorkflowStore:
                 db.rollback()
                 raise
 
+    def pause_for_human_approval(
+        self,
+        workflow_id: str,
+        owner: str,
+        action_id: str,
+        execution_id: str,
+        *,
+        capability_id: str,
+        payload_fingerprint: str,
+        manifest: ApprovalManifest,
+        decision: Any,
+        record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Atomically persist a generic confirmation and pause its workflow action."""
+        from app.logic.capability_policy import (
+            CapabilitySource,
+            WORKFLOW_ACTION_CAPABILITY_IDS,
+        )
+
+        now = time.time()
+        plan_json = _json(record)
+        request_key = f"workflow:{workflow_id}:{action_id}"
+        with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._row(db, workflow_id, owner)
+                action = db.execute(
+                    "SELECT action_type,state FROM workflow_actions WHERE workflow_id=? AND action_id=?",
+                    (workflow_id, action_id),
+                ).fetchone()
+                if (
+                    not row
+                    or not action
+                    or WORKFLOW_ACTION_CAPABILITY_IDS.get(action["action_type"]) != capability_id
+                    or row["status"] != RUNNING
+                    or row["execution_id"] != execution_id
+                    or float(row["lease_expires_at"] or 0) <= now
+                    or bool(row["cancel_requested"])
+                    or action["state"] not in {PENDING_ACTION, RUNNING_ACTION}
+                ):
+                    db.rollback()
+                    return None
+                approval, _created = self.human_approvals._request_locked(
+                    db,
+                    owner=owner,
+                    capability_id=capability_id,
+                    source=CapabilitySource.WORKFLOW,
+                    request_key=request_key,
+                    payload_fingerprint=payload_fingerprint,
+                    manifest=manifest,
+                    decision=decision,
+                    workflow_id=workflow_id,
+                    workflow_action_id=action_id,
+                    job_id=row["job_id"],
+                    now=now,
+                )
+                if approval["status"] != HUMAN_PENDING:
+                    db.rollback()
+                    return None
+                db.execute(
+                    "UPDATE workflow_actions SET state=?,error_category=?,execution_id=NULL "
+                    "WHERE workflow_id=? AND action_id=? AND state IN (?,?)",
+                    (PAUSED_ACTION, "human_approval_required", workflow_id, action_id, PENDING_ACTION, RUNNING_ACTION),
+                )
+                db.execute(
+                    "UPDATE workflow_runs SET status=?,approval_state=?,plan_json=?,updated_at=?,expires_at=?,"
+                    "execution_id=NULL,lease_expires_at=0,heartbeat_at=? WHERE workflow_id=? AND owner=?",
+                    (PAUSED, "human_required", plan_json, now, min(float(row["expires_at"]), now + self.human_approvals.approval_ttl_seconds), now, workflow_id, owner),
+                )
+                self._append_event_locked(
+                    db, workflow_id, owner, "approval_required",
+                    action_type=action["action_type"], state="human_required", now=now,
+                )
+                self._check_capacity_locked(db)
+                db.commit()
+                return approval
+            except Exception:
+                db.rollback()
+                raise
+
     def release(self, workflow_id: str, owner: str, execution_id: str) -> bool:
         now = time.time()
         with self._open() as db:
@@ -1301,6 +1412,9 @@ class SQLiteWorkflowStore:
                     "lease_expires_at=0,heartbeat_at=? WHERE workflow_id=? AND owner=?",
                     (final_status, now, now + self.retention_seconds, now, workflow_id, owner),
                 )
+                self.human_approvals.cancel_for_workflow_locked(
+                    db, owner=owner, workflow_id=workflow_id, now=now,
+                )
                 self._append_event_locked(db, workflow_id, owner, event, state=final_status, now=now)
                 db.commit()
                 return True
@@ -1329,6 +1443,9 @@ class SQLiteWorkflowStore:
                     "UPDATE workflow_runs SET cancel_requested=1,status=?,updated_at=?,expires_at=? "
                     "WHERE workflow_id=? AND owner=?",
                     (next_status, now, now + self.retention_seconds, workflow_id, owner),
+                )
+                self.human_approvals.cancel_for_workflow_locked(
+                    db, owner=owner, workflow_id=workflow_id, now=now,
                 )
                 outbox_rows = db.execute(
                     "SELECT outbox_id FROM external_action_outbox WHERE workflow_id=? AND owner_scope=?",

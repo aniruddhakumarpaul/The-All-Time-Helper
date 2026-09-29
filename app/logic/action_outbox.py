@@ -435,25 +435,60 @@ class SQLiteActionOutboxStore:
                 (outbox_id, pseudonymous_owner_scope(owner)),
             ).fetchone())
 
+    def _claim_locked(
+        self,
+        db: sqlite3.Connection,
+        *,
+        outbox_id: str,
+        owner: str,
+        execution_id: str,
+        now: float,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Claim inside a caller-owned transaction for future approval coupling."""
+        owner_scope = pseudonymous_owner_scope(owner)
+        self._recover_expired_locked(db, now)
+        row = db.execute(
+            "SELECT capability_id,source FROM external_action_outbox WHERE outbox_id=? AND owner_scope=?",
+            (outbox_id, owner_scope),
+        ).fetchone()
+        changed = db.execute(
+            "UPDATE external_action_outbox SET state=?,attempt=attempt+1,execution_id=?,"
+            "lease_expires_at=?,heartbeat_at=?,updated_at=? WHERE outbox_id=? AND owner_scope=? "
+            "AND state=? AND dispatch_started_at IS NULL",
+            (CLAIMED, execution_id, now + self.lease_seconds, now, now, outbox_id, owner_scope, PREPARED),
+        ).rowcount == 1
+        return changed, dict(row) if row else None
+
+    def _mark_dispatch_started_locked(
+        self,
+        db: sqlite3.Connection,
+        *,
+        outbox_id: str,
+        owner: str,
+        execution_id: str,
+        now: float,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """Cross the dispatch boundary in a caller-owned transaction."""
+        owner_scope = pseudonymous_owner_scope(owner)
+        row = db.execute(
+            "SELECT capability_id,source FROM external_action_outbox WHERE outbox_id=? AND owner_scope=?",
+            (outbox_id, owner_scope),
+        ).fetchone()
+        changed = db.execute(
+            "UPDATE external_action_outbox SET state=?,dispatch_started_at=?,updated_at=?,heartbeat_at=? "
+            "WHERE outbox_id=? AND owner_scope=? AND state=? AND execution_id=? AND lease_expires_at>?",
+            (DISPATCHING, now, now, now, outbox_id, owner_scope, CLAIMED, execution_id, now),
+        ).rowcount == 1
+        return changed, dict(row) if row else None
+
     def claim(self, outbox_id: str, owner: str, execution_id: str) -> bool:
         now = time.time()
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                self._recover_expired_locked(db, now)
-                row = db.execute(
-                    "SELECT capability_id,source FROM external_action_outbox WHERE outbox_id=? AND owner_scope=?",
-                    (outbox_id, pseudonymous_owner_scope(owner)),
-                ).fetchone()
-                changed = db.execute(
-                    "UPDATE external_action_outbox SET state=?,attempt=attempt+1,execution_id=?,"
-                    "lease_expires_at=?,heartbeat_at=?,updated_at=? WHERE outbox_id=? AND owner_scope=? "
-                    "AND state=? AND dispatch_started_at IS NULL",
-                    (
-                        CLAIMED, execution_id, now + self.lease_seconds, now, now,
-                        outbox_id, pseudonymous_owner_scope(owner), PREPARED,
-                    ),
-                ).rowcount == 1
+                changed, row = self._claim_locked(
+                    db, outbox_id=outbox_id, owner=owner, execution_id=execution_id, now=now,
+                )
                 db.commit()
             except Exception:
                 db.rollback()
@@ -467,18 +502,9 @@ class SQLiteActionOutboxStore:
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                row = db.execute(
-                    "SELECT capability_id,source FROM external_action_outbox WHERE outbox_id=? AND owner_scope=?",
-                    (outbox_id, pseudonymous_owner_scope(owner)),
-                ).fetchone()
-                changed = db.execute(
-                    "UPDATE external_action_outbox SET state=?,dispatch_started_at=?,updated_at=?,heartbeat_at=? "
-                    "WHERE outbox_id=? AND owner_scope=? AND state=? AND execution_id=? AND lease_expires_at>?",
-                    (
-                        DISPATCHING, now, now, now, outbox_id, pseudonymous_owner_scope(owner),
-                        CLAIMED, execution_id, now,
-                    ),
-                ).rowcount == 1
+                changed, row = self._mark_dispatch_started_locked(
+                    db, outbox_id=outbox_id, owner=owner, execution_id=execution_id, now=now,
+                )
                 db.commit()
             except Exception:
                 db.rollback()

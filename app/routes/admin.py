@@ -111,8 +111,10 @@ async def admin_status(current_user: str = Depends(get_current_user), db: sqlite
     ollama = await _ollama_status()
     memory = _memory_status()
     from app.logic.mcp_gateway import mcp_gateway
+    from app.logic.human_approval import human_approval_store
 
     mcp = mcp_gateway.diagnostics()
+    approval_counts = human_approval_store.aggregate_counts()
     queue = _queue_status(current_user)
     public_link_enabled, public_link_active = _public_link_active()
     db_available = Path(DB_FILE).exists()
@@ -213,5 +215,10 @@ async def admin_status(current_user: str = Depends(get_current_user), db: sqlite
         "user": current_user,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "observability": observability_status(),
+        "approvals": {
+            "pending": approval_counts.get("pending", 0),
+            "approved": approval_counts.get("approved", 0),
+            "claimed": approval_counts.get("claimed", 0),
+        },
         "components": components,
     }

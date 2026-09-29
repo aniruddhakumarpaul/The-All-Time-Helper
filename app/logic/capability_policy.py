@@ -14,10 +14,13 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 from types import MappingProxyType
-from typing import Any, Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping
 
 from app.logger import logger
 from app.observability import increment_counter, start_span, telemetry_scope
+
+if TYPE_CHECKING:
+    from app.logic.human_approval import HumanApprovalGrant
 
 
 CAPABILITY_POLICY_VERSION = 1
@@ -97,6 +100,9 @@ class CapabilityContext:
     workflow_approval_state: str | None = None
     workflow_lease_valid: bool = False
     request_authorization_verified: bool = False
+    human_approval_grant: HumanApprovalGrant | None = None
+    action_payload_fingerprint: str | None = None
+    approval_request_key: str | None = None
     cancel_requested: bool = False
 
 
@@ -232,6 +238,21 @@ class CapabilityPolicy:
                     context,
                 )
         if spec.approval == ApprovalRequirement.EXPLICIT_CONFIRMATION:
+            grant = context.human_approval_grant
+            if grant is not None:
+                from app.logic.human_approval import HumanApprovalGrant
+
+                if isinstance(grant, HumanApprovalGrant) and grant.is_valid_for(
+                    owner=context.owner,
+                    capability_id=spec.capability_id,
+                    payload_fingerprint=context.action_payload_fingerprint,
+                    request_key=context.approval_request_key,
+                ):
+                    return self._trace(
+                        PolicyDecision(PolicyDecisionType.ALLOW, "approval_grant_valid", spec),
+                        capability_id,
+                        context,
+                    )
             return self._trace(
                 PolicyDecision(PolicyDecisionType.REQUIRE_APPROVAL, "approval_required", spec),
                 capability_id,
@@ -448,7 +469,7 @@ def _build_registry() -> CapabilityRegistry:
         CapabilitySpec("email.attachment.add", CapabilityCategory.EMAIL, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, False, _sources(CapabilitySource.WORKFLOW), accesses_user_data=True),
         CapabilitySpec("email.deliver", CapabilityCategory.EMAIL, CapabilityEffect.EXTERNAL_MUTATION, CapabilityRisk.HIGH, ApprovalRequirement.REQUEST_SCOPED_AUTHORIZATION, True, _sources(CapabilitySource.WORKFLOW, CapabilitySource.HTTP), network_access=True, accesses_user_data=True, idempotent=True, timeout_seconds=120),
         CapabilitySpec("mcp.read", CapabilityCategory.MCP, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
-        CapabilitySpec("mcp.external_mutation", CapabilityCategory.MCP, CapabilityEffect.EXTERNAL_MUTATION, CapabilityRisk.HIGH, ApprovalRequirement.FORBIDDEN, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
+        CapabilitySpec("mcp.external_mutation", CapabilityCategory.MCP, CapabilityEffect.EXTERNAL_MUTATION, CapabilityRisk.HIGH, ApprovalRequirement.EXPLICIT_CONFIRMATION, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
         CapabilitySpec("mcp.resource.read", CapabilityCategory.MCP, CapabilityEffect.READ_ONLY, CapabilityRisk.MEDIUM, ApprovalRequirement.NONE, True, _sources(CapabilitySource.AGENT, CapabilitySource.DIRECT_TOOL, CapabilitySource.WORKFLOW, CapabilitySource.SYSTEM), network_access=True, accesses_user_data=True, timeout_seconds=30),
     )
     for spec in specs:

@@ -18,7 +18,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +39,7 @@ from app.logic.agent_intent import is_compound_email_media_request
 from app.logic.capability_policy import (
     CAPABILITY_POLICY,
     CAPABILITY_REGISTRY,
+    ApprovalRequirement,
     CapabilityContext,
     CapabilityDeniedError,
     CapabilityEffect,
@@ -47,6 +48,14 @@ from app.logic.capability_policy import (
     PolicyDecisionType,
     capability_scope,
     workflow_capability_id,
+)
+from app.logic.human_approval import (
+    PENDING as HUMAN_APPROVAL_PENDING,
+    ApprovalRequestMaterial,
+    HumanApprovalRequestBuilder,
+    HumanApprovalValidationError,
+    normalize_manifest,
+    validate_payload_fingerprint,
 )
 from app.logic.workflow_store import (
     BLOCKED_ACTION,
@@ -1022,6 +1031,7 @@ class WorkflowExecutor:
         web_search: Callable[[str], Any] | None = None,
         image_search: Callable[[str], Any] | None = None,
         image_generate: Callable[[str], Any] | None = None,
+        human_approval_builders: Mapping[str, HumanApprovalRequestBuilder] | None = None,
         max_parallel_actions: int = 2,
     ) -> None:
         self.pending_store = pending_store
@@ -1031,6 +1041,13 @@ class WorkflowExecutor:
         self._web_search = web_search
         self._image_search = image_search
         self._image_generate = image_generate
+        self._human_approval_builders = {
+            str(getattr(action_type, "value", action_type)): builder
+            for action_type, builder in (human_approval_builders or {}).items()
+            if str(getattr(action_type, "value", action_type))
+            in {item.value for item in WorkflowActionType}
+            and callable(getattr(builder, "build", None))
+        }
         self.max_parallel_actions = max(1, min(int(max_parallel_actions), 4))
 
     @staticmethod
@@ -1302,6 +1319,68 @@ class WorkflowExecutor:
             capability_id = workflow_capability_id(action.action_type)
             return CAPABILITY_POLICY.evaluate(capability_id, context), context
 
+        def pause_for_policy_approval(
+            action: WorkflowAction,
+            decision: PolicyDecision,
+        ) -> tuple[str, bool]:
+            capability = decision.capability
+            if capability is None:
+                return "approval_path_unavailable", False
+            current.active_draft = draft
+            current.completed_action_ids = sorted(successful)
+            if capability.approval == ApprovalRequirement.REQUEST_SCOPED_AUTHORIZATION:
+                current.approval_state = WorkflowApprovalState.REQUIRED
+                paused_ok = self.pending_store.backend.pause_for_approval(
+                    current.workflow_id,
+                    current.owner,
+                    action.id,
+                    execution_id,
+                    serialize_workflow_for_persistence(current),
+                )
+                return "request_authorization", paused_ok
+            if capability.approval != ApprovalRequirement.EXPLICIT_CONFIRMATION:
+                return "approval_path_unavailable", False
+
+            builder = self._human_approval_builders.get(action.action_type.value)
+            if builder is None:
+                return "approval_builder_unavailable", False
+            try:
+                material = builder.build(
+                    action=action,
+                    plan=current,
+                    results=results,
+                    draft=draft,
+                )
+                if not isinstance(material, ApprovalRequestMaterial):
+                    return "approval_request_invalid", False
+                validate_payload_fingerprint(material.payload_fingerprint)
+                manifest, _encoded = normalize_manifest(material.manifest)
+            except HumanApprovalValidationError:
+                return "approval_request_invalid", False
+            except Exception:
+                logger.warning(
+                    "[WorkflowTrace] approval_builder_failed action=%s",
+                    action.action_type.value,
+                )
+                return "approval_request_invalid", False
+
+            current.approval_state = WorkflowApprovalState.NOT_REQUIRED
+            approval = self.pending_store.backend.pause_for_human_approval(
+                current.workflow_id,
+                current.owner,
+                action.id,
+                execution_id,
+                capability_id=capability.capability_id,
+                payload_fingerprint=material.payload_fingerprint,
+                manifest=manifest,
+                decision=decision,
+                record=serialize_workflow_for_persistence(current),
+            )
+            return (
+                "explicit_confirmation",
+                bool(approval and approval.get("status") == HUMAN_APPROVAL_PENDING),
+            )
+
         def finish_workflow(
             result: WorkflowExecutionResult,
             status: str,
@@ -1359,14 +1438,30 @@ class WorkflowExecutor:
             if result.state == WorkflowActionState.PAUSED:
                 current.active_draft = draft
                 current.completed_action_ids = sorted(successful)
-                current.approval_state = WorkflowApprovalState.REQUIRED
-                return self.pending_store.backend.pause_for_approval(
-                    current.workflow_id,
-                    current.owner,
-                    result.action_id,
-                    execution_id,
-                    serialize_workflow_for_persistence(current),
+                action = next(
+                    (item for item in current.actions if item.id == result.action_id),
+                    None,
                 )
+                capability = (
+                    CAPABILITY_REGISTRY.get(workflow_capability_id(action.action_type))
+                    if action else None
+                )
+                if capability and capability.approval == ApprovalRequirement.REQUEST_SCOPED_AUTHORIZATION:
+                    current.approval_state = WorkflowApprovalState.REQUIRED
+                    return self.pending_store.backend.pause_for_approval(
+                        current.workflow_id,
+                        current.owner,
+                        result.action_id,
+                        execution_id,
+                        serialize_workflow_for_persistence(current),
+                    )
+                if capability and capability.approval == ApprovalRequirement.EXPLICIT_CONFIRMATION and action:
+                    decision, _context = policy_for(action)
+                    if decision.decision != PolicyDecisionType.REQUIRE_APPROVAL:
+                        return False
+                    approval_kind, paused_ok = pause_for_policy_approval(action, decision)
+                    return approval_kind == "explicit_confirmation" and paused_ok
+                return False
             state_map = {
                 WorkflowActionState.COMPLETED: COMPLETED_ACTION,
                 WorkflowActionState.FAILED: FAILED_ACTION,
@@ -1490,35 +1585,62 @@ class WorkflowExecutor:
                         action_contexts[action.id] = context
                         continue
                     if decision.decision == PolicyDecisionType.REQUIRE_APPROVAL:
-                        current.active_draft = draft
-                        current.completed_action_ids = sorted(successful)
-                        current.approval_state = WorkflowApprovalState.REQUIRED
-                        if not self.pending_store.backend.pause_for_approval(
+                        approval_kind, paused_ok = pause_for_policy_approval(action, decision)
+                        if approval_kind in {"request_authorization", "explicit_confirmation"}:
+                            if not paused_ok:
+                                return interrupted_result()
+                            if status_callback:
+                                status_callback(
+                                    "Approval is required before delivery."
+                                    if approval_kind == "request_authorization"
+                                    else "This action is paused until you approve it."
+                                )
+                            results[action.id] = WorkflowActionResult(
+                                action_id=action.id,
+                                action_type=action.action_type,
+                                state=WorkflowActionState.PAUSED,
+                                error_category=(
+                                    "authorization_required"
+                                    if approval_kind == "request_authorization"
+                                    else "human_approval_required"
+                                ),
+                            )
+                            message = (
+                                "ERROR: AUTH_REQUIRED. Please provide your Admin Key in "
+                                "the next message using the Masked input to authorize this "
+                                "delivery."
+                                if approval_kind == "request_authorization"
+                                else "This action is paused pending your confirmation. It will not run automatically."
+                            )
+                            return WorkflowExecutionResult(
+                                message=message,
+                                plan=current,
+                                actions=results,
+                                paused=True,
+                            )
+                        if approval_kind == "approval_path_unavailable":
+                            return interrupted_result()
+                        block_reason = approval_kind
+                        if not self.pending_store.backend.settle_unstarted_action(
                             current.workflow_id,
                             current.owner,
                             action.id,
                             execution_id,
-                            serialize_workflow_for_persistence(current),
+                            state=BLOCKED_ACTION,
+                            error_category=block_reason,
                         ):
                             return interrupted_result()
-                        if status_callback:
-                            status_callback("Approval is required before delivery.")
                         results[action.id] = WorkflowActionResult(
                             action_id=action.id,
                             action_type=action.action_type,
-                            state=WorkflowActionState.PAUSED,
-                            error_category="authorization_required",
+                            state=WorkflowActionState.BLOCKED,
+                            error_category=block_reason,
                         )
-                        return WorkflowExecutionResult(
-                            message=(
-                                "ERROR: AUTH_REQUIRED. Please provide your Admin Key in "
-                                "the next message using the Masked input to authorize this "
-                                "delivery."
-                            ),
-                            plan=current,
-                            actions=results,
-                            paused=True,
-                        )
+                        pending.pop(action.id, None)
+                        settled.add(action.id)
+                        blocked.add(action.id)
+                        policy_blocked = True
+                        continue
                     if decision.reason == "workflow_cancelled":
                         execution_abort.set()
                         break

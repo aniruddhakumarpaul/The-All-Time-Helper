@@ -130,7 +130,7 @@ class McpRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mcp_binding_capability_invalid"):
             McpRegistry((server,), (mutation,))
 
-    def test_mcp_capabilities_have_expected_read_and_forbidden_write_policy(self):
+    def test_mcp_capabilities_require_confirmation_but_writes_remain_blocked(self):
         read = CAPABILITY_POLICY.registry.get("mcp.read")
         write = CAPABILITY_POLICY.registry.get("mcp.external_mutation")
         self.assertEqual(read.effect, CapabilityEffect.READ_ONLY)
@@ -139,10 +139,10 @@ class McpRegistryTests(unittest.TestCase):
         self.assertTrue(read.network_access)
         self.assertTrue(read.accesses_user_data)
         self.assertEqual(write.effect, CapabilityEffect.EXTERNAL_MUTATION)
-        self.assertEqual(write.approval, ApprovalRequirement.FORBIDDEN)
+        self.assertEqual(write.approval, ApprovalRequirement.EXPLICIT_CONFIRMATION)
         denied = CAPABILITY_POLICY.evaluate("mcp.external_mutation", capability_context())
-        self.assertEqual(denied.decision, PolicyDecisionType.DENY)
-        self.assertEqual(denied.reason, "capability_forbidden")
+        self.assertEqual(denied.decision, PolicyDecisionType.REQUIRE_APPROVAL)
+        self.assertEqual(denied.reason, "approval_required")
         with self.assertRaises(McpGatewayError):
             McpMutationDispatcher().dispatch("github", "create_issue")
 

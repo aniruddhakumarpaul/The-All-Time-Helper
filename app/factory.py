@@ -19,7 +19,8 @@ from app.services.email_widget_intercept import email_widget_chat_middleware
 
 apply_cloud_token_budget()
 
-from app.routes import admin, auth, chat, email_delivery, health, jobs, proxy, usage, workflows
+from app.routes import admin, approvals, auth, chat, email_delivery, health, jobs, proxy, usage, workflows
+from app.routes.approvals import PrivateApprovalResponsesMiddleware
 
 
 def get_allowed_origins() -> list[str]:
@@ -58,10 +59,13 @@ async def lifespan(app: FastAPI):
         from app.diagnostics import run_startup_diagnostics
         from app.logic.memory import prune_stale_memories
         from app.logic.chat_job_registry import chat_job_registry
+        from app.logic.human_approval import human_approval_store
         from app.logic.workflow_orchestrator import pending_workflow_store
 
         chat_job_registry.prune()
         pending_workflow_store.backend.prune()
+        human_approval_store.recover_expired()
+        human_approval_store.prune()
         run_startup_diagnostics()
         prune_stale_memories(days=30)
     except Exception as exc:
@@ -76,6 +80,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="The All Time Helper - Pro", lifespan=lifespan)
+    app.add_middleware(PrivateApprovalResponsesMiddleware)
     app.middleware("http")(email_widget_chat_middleware)
     app.add_middleware(
         CORSMiddleware,
@@ -96,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(email_delivery.router)
     app.include_router(proxy.router)
     app.include_router(admin.router)
+    app.include_router(approvals.router)
     app.include_router(jobs.router)
     app.include_router(workflows.router)
     app.include_router(usage.router)

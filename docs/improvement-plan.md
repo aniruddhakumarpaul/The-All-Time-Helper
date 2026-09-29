@@ -109,3 +109,12 @@
 - Added bounded, lazy SDK v2 discovery and tool calls, schema/argument/result validation, auth-scope discovery cache, SSRF checks, server circuit state, cancellation, and sanitized admin readiness.
 - Kept CrewAI's MCP 1.x dependency intact by installing official MCP SDK 2.2.0 into an isolated `.runtime/mcp-sdk` target and invoking it through a fixed app-owned subprocess protocol. `scripts/setup_mcp_runtime.ps1` installs the optional runtime; no remote server is contacted at startup.
 - Added fake-server policy, privacy, cache, circuit, size, argument-injection, and SDK v2 stdio integration tests. Interactive OAuth, generic writes, resources/prompts/subscriptions, Tasks, and remote-account verification remain deferred.
+
+## Completed In Phase 6: Durable Human Approval Engine
+
+- Added a separate schema-versioned `human_approvals` table in the shared workflow database, with pseudonymous owners, exact capability/payload/request-key binding, bounded display-only manifests, idempotent internal requests, supersession, optimistic decisions, leased claims, one-way consumption, recovery, retention, and count/storage caps.
+- Added owner-only private/no-store list/detail/approve/reject routes without a public creation endpoint. Approval only records intent and never automatically runs an action.
+- Added same-transaction workflow pause/approval creation and workflow cancellation integration, plus outbox claim/dispatch transaction seams. The workflow executor distinguishes request-scoped Admin-Key authorization from explicit confirmation and requires a code-owned fingerprint/manifest builder for the latter. No such generic production mutation builder is registered; missing builders fail closed.
+- Kept email delivery on its existing request-scoped Admin Key path; approving a generic request does not resume or execute a workflow in this phase.
+- Changed `mcp.external_mutation` policy to require explicit confirmation while keeping MCP mutation registration and dispatch blocked. No generic MCP write execution or live provider mutation was added.
+- Added deterministic owner isolation, concurrency, race, expiration, restart, privacy, capacity, route, workflow, and outbox seam tests. Terminal history is configurable (30-day default) and may be pruned earlier under capacity pressure; active rows are preserved.
